@@ -1,0 +1,23 @@
+# Agentic RAG with Docling for DGX Spark
+# Document Processing
+docling>=2.0.0
+docling-core
+
+# LLM & Embeddings
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-ollama>=0.2.0
+
+# Vector Store
+chromadb>=0.5.0
+
+# Web UI
+gradio>=5.0.0
+
+# Utilities
+python-dotenv
+httpx
+aiohttp
+
+# For ARM/Blackwell optimization
+numpy
