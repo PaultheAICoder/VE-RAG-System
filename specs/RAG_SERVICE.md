@@ -1,9 +1,9 @@
 # RAG Service Specification
 
-**Version:** 2.0
+**Version:** 3.0
 **Date:** January 28, 2026
-**Status:** Draft (Revised per engineering review)
-**Depends On:** VectorService, Ollama (llama3.2, qwen3:8b)
+**Status:** FINAL
+**Depends On:** VectorService (specs/VECTOR_SERVICE.md), Ollama (llama3.2, qwen3:8b)
 
 ---
 
@@ -13,13 +13,17 @@ The RAG Service orchestrates retrieval-augmented generation by combining context
 
 **Key Principles:**
 - **Context-grounded only**: All substantive answers MUST be grounded in retrieved context
-- Uses VectorService for context retrieval (access control already enforced)
-- Deterministic citation mapping via source IDs (no LLM-dependent parsing)
+- Uses VectorService for context retrieval (access control + tenant isolation enforced there)
+- Deterministic citation mapping via SourceIds (no LLM-dependent parsing)
 - Hybrid confidence scoring (retrieval signals + LLM evaluation)
 - Routes to human when confidence is low (<60%)
 - Explicit token budgeting and truncation strategies
 - All operations are async
 - Stateless service (session state managed by Chat API)
+
+**Cross-References:**
+- VectorService tenant filtering: `specs/VECTOR_SERVICE.md` (tenant_id passed to all queries)
+- VectorService score semantics: Qdrant cosine similarity, normalized 0.0-1.0
 
 ---
 
@@ -29,7 +33,7 @@ The RAG Service orchestrates retrieval-augmented generation by combining context
 ai_ready_rag/
 ├── services/
 │   ├── __init__.py
-│   ├── vector_service.py    # Dependency
+│   ├── vector_service.py    # Dependency (see VECTOR_SERVICE.md)
 │   └── rag_service.py       # This specification
 ```
 
@@ -40,8 +44,9 @@ ai_ready_rag/
 | Dependency | Purpose | Version |
 |------------|---------|---------|
 | langchain-ollama | LLM client | >=0.3.0 |
-| tiktoken | Token counting | >=0.5.0 |
 | VectorService | Context retrieval | Internal |
+
+**Note:** Token counting uses Ollama's native tokenizer via API, not tiktoken (model-specific accuracy).
 
 ---
 
@@ -55,6 +60,8 @@ Environment variables (loaded via config.py):
 | CHAT_MODEL | llama3.2 | Default LLM model |
 | RAG_TEMPERATURE | 0.1 | LLM temperature (lower = more deterministic) |
 | RAG_TIMEOUT_SECONDS | 30 | LLM response timeout |
+| RAG_CONFIDENCE_THRESHOLD | 60 | Min confidence for CITE action (%) |
+| RAG_ADMIN_EMAIL | admin@company.com | Fallback routing email |
 
 ### Token Budget Configuration
 
@@ -65,7 +72,7 @@ Environment variables (loaded via config.py):
 | RAG_MAX_RESPONSE_TOKENS | 1024 | Max tokens for LLM response |
 | RAG_SYSTEM_PROMPT_TOKENS | 500 | Reserved for system prompt |
 
-**Total budget per model:**
+**Model Context Windows:**
 | Model | Context Window | Available for RAG |
 |-------|----------------|-------------------|
 | llama3.2 | 8192 | 8192 - 500 (system) = 7692 |
@@ -76,11 +83,33 @@ Environment variables (loaded via config.py):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| RAG_MIN_SIMILARITY_SCORE | 0.3 | Minimum cosine similarity to include chunk |
+| RAG_MIN_SIMILARITY_SCORE | 0.3 | Minimum cosine similarity (Qdrant 0-1 scale) |
 | RAG_MAX_CHUNKS_PER_DOC | 3 | Max chunks from single document |
 | RAG_TOTAL_CONTEXT_CHUNKS | 5 | Total chunks to include |
-| RAG_CHUNK_OVERLAP_THRESHOLD | 0.9 | Similarity threshold for dedup |
-| RAG_CONFIDENCE_THRESHOLD | 60 | Min confidence for CITE action (%) |
+| RAG_DEDUP_CANDIDATES_CAP | 15 | Max candidates for dedup (3x chunks) |
+| RAG_CHUNK_OVERLAP_THRESHOLD | 0.9 | Jaccard similarity for dedup |
+
+---
+
+## ID Formats
+
+### document_id Format
+
+**Format:** UUIDv4 string (lowercase, with hyphens)
+**Pattern:** `[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}`
+**Example:** `550e8400-e29b-41d4-a716-446655440000`
+
+### SourceId Format
+
+**Format:** `{document_id}:{chunk_index}`
+**Pattern:** `[a-f0-9-]{36}:\d+`
+**Example:** `550e8400-e29b-41d4-a716-446655440000:3`
+
+### Citation Extraction Regex
+
+```python
+SOURCEID_PATTERN = r'\[SourceId:\s*([a-f0-9-]{36}:\d+)\]'
+```
 
 ---
 
@@ -104,7 +133,7 @@ class ChatMessage:
 class RAGRequest:
     """Input for RAG generation."""
     query: str                          # User's question
-    user_tags: list[str]                # User's access tags (for filtering)
+    user_tags: list[str]                # User's access tags (for VectorService filtering)
     tenant_id: str = "default"          # Multi-tenant isolation (passed to VectorService)
     chat_history: list[ChatMessage] | None = None  # Previous messages
     model: str | None = None            # Override default model (must be in allowlist)
@@ -126,8 +155,10 @@ class RAGResponse:
     context_chunks_used: int            # Number of chunks in context
     context_tokens_used: int            # Actual tokens used for context
     generation_time_ms: float           # Response time
-    grounded: bool                      # True if answer based on retrieved context
+    grounded: bool                      # True iff len(citations) > 0
 ```
+
+**grounded Definition:** `grounded = True` if and only if at least one valid SourceId was found in the answer and successfully mapped to a citation. This is independent of confidence score.
 
 ### ConfidenceScore
 
@@ -137,11 +168,13 @@ class ConfidenceScore:
     """Hybrid confidence scoring with breakdown."""
     overall: int                        # 0-100 final score
     retrieval_score: float              # Average similarity of top chunks (0-1)
-    coverage_score: float               # % of answer supported by context (0-1)
+    coverage_score: float               # Keyword overlap between answer and context (0-1)
     llm_score: int                      # LLM self-assessment (0-100)
+```
 
-    # Weights for final calculation
-    # overall = (retrieval_score * 30) + (coverage_score * 40) + (llm_score * 0.3)
+**Calculation:**
+```
+overall = (retrieval_score * 30) + (coverage_score * 40) + (llm_score * 0.3)
 ```
 
 ### Citation
@@ -151,15 +184,20 @@ class ConfidenceScore:
 class Citation:
     """Deterministic source citation."""
     source_id: str                      # Format: "{document_id}:{chunk_index}"
-    document_id: str
+    document_id: str                    # UUIDv4
     document_name: str
     chunk_index: int
     page_number: int | None             # None displayed as "N/A"
     section: str | None                 # None displayed as "N/A"
     relevance_score: float              # 0.0-1.0 from vector search
-    snippet: str                        # Truncated to 200 chars, ellipsis if cut
-    snippet_full: str                   # Full chunk text for hover/expand
+    snippet: str                        # First 200 chars, "..." if truncated
+    snippet_full: str                   # Max 1000 chars (for UI hover only)
 ```
+
+**Snippet Rules:**
+- `snippet`: First 200 characters of chunk_text. Append "..." if truncated.
+- `snippet_full`: First 1000 characters. For UI hover/expand only, NOT for logging/telemetry.
+- `page_number`/`section`: Display as "N/A" if None.
 
 ### RouteTarget
 
@@ -176,6 +214,35 @@ class RouteTarget:
 
 ---
 
+## Zero-Context Handling
+
+When VectorService returns zero results (empty retrieval):
+
+```python
+INSUFFICIENT_CONTEXT_RESPONSE = RAGResponse(
+    answer="I don't have enough information in the available documents to answer this question. Please contact the relevant team for assistance.",
+    confidence=ConfidenceScore(overall=0, retrieval_score=0.0, coverage_score=0.0, llm_score=0),
+    citations=[],
+    action="ROUTE",
+    route_to=RouteTarget(
+        tag="system",
+        owner_user_id=None,
+        owner_email=settings.rag_admin_email,
+        reason="No relevant documents found",
+        fallback=True,
+    ),
+    model_used=model,
+    context_chunks_used=0,
+    context_tokens_used=0,
+    generation_time_ms=elapsed_ms,
+    grounded=False,
+)
+```
+
+**Pipeline short-circuits at step 2 if zero results.**
+
+---
+
 ## Prompt Templates
 
 ### RAG System Prompt (with context)
@@ -187,7 +254,7 @@ STRICT RULES:
 1. ONLY use information from the provided CONTEXT sections below
 2. If the context doesn't contain enough information, respond with: "I don't have enough information in the available documents to answer this question."
 3. NEVER use external knowledge or make assumptions beyond the context
-4. Cite sources using the exact SourceId provided (e.g., [SourceId: abc123:0])
+4. Cite sources using the exact SourceId provided (e.g., [SourceId: 550e8400-e29b-41d4-a716-446655440000:0])
 5. Be concise but thorough
 6. If partially answerable, answer what you can and note what's missing
 
@@ -234,72 +301,11 @@ Rate the support level from 0-100:
 Respond with ONLY a number between 0 and 100."""
 ```
 
-### Query Classification Prompt
-
-**Note:** The DIRECT path is removed. All queries go through retrieval. For truly non-document queries (greetings, clarifications), the retrieval will return low-relevance results and the response will indicate insufficient context.
-
-```python
-QUERY_CLASSIFIER_PROMPT = """Classify this query for retrieval optimization.
-
-QUERY: {query}
-
-Categories:
-- FACTUAL: Seeking specific facts from documents
-- PROCEDURAL: Asking how to do something
-- CLARIFICATION: Follow-up on previous answer (use chat history)
-- GREETING: Social interaction (still attempt retrieval, expect low relevance)
-
-Respond with exactly one category."""
-```
-
----
-
-## Citation Mapping (Deterministic)
-
-### Problem (from review)
-The original spec relied on LLM-generated inline citations like `[Source: filename, page X]` which requires parsing and is brittle/hallucination-prone.
-
-### Solution: Source ID Mapping
-
-1. **Context includes deterministic SourceIds:**
-   ```
-   [SourceId: doc-abc123:2]
-   [Document: hr-handbook.pdf]
-   ...
-   ```
-
-2. **LLM cites using SourceId:**
-   ```
-   According to the vacation policy [SourceId: doc-abc123:2], employees receive...
-   ```
-
-3. **Service extracts citations via regex:**
-   ```python
-   CITATION_PATTERN = r'\[SourceId:\s*([a-zA-Z0-9-]+:\d+)\]'
-   ```
-
-4. **Mapping is deterministic:**
-   - SourceId `doc-abc123:2` maps to `document_id="doc-abc123"`, `chunk_index=2`
-   - Metadata looked up from the search results (already fetched)
-   - Unknown SourceIds logged as warnings, not included in citations
-
-### Citation Snippet Rules
-
-| Field | Rule |
-|-------|------|
-| snippet | First 200 characters of chunk_text, add "..." if truncated |
-| snippet_full | Full chunk_text (for UI expand/hover) |
-| page_number | Display as "N/A" if None |
-| section | Display as "N/A" if None |
-
 ---
 
 ## Confidence Scoring (Hybrid)
 
-### Problem (from review)
-LLM self-assessment alone is unreliable and tends to be over-confident.
-
-### Solution: Hybrid Scoring
+### Calculation with Zero-Guard
 
 ```python
 def calculate_confidence(
@@ -311,16 +317,21 @@ def calculate_confidence(
     """
     Combine multiple signals for robust confidence.
 
-    Weights:
-    - Retrieval quality (30%): Are the retrieved chunks relevant?
-    - Coverage (40%): Does the answer use the context?
-    - LLM assessment (30%): LLM's self-evaluation
+    Returns zero confidence if no retrieval results.
     """
+    # Guard: zero results = zero confidence
+    if not retrieval_results:
+        return ConfidenceScore(
+            overall=0,
+            retrieval_score=0.0,
+            coverage_score=0.0,
+            llm_score=0,
+        )
 
     # 1. Retrieval score: average similarity of used chunks
     retrieval_score = sum(r.score for r in retrieval_results) / len(retrieval_results)
 
-    # 2. Coverage score: keyword/phrase overlap between answer and context
+    # 2. Coverage score: keyword overlap between answer and context
     coverage_score = calculate_coverage(answer, context)
 
     # 3. LLM score: from CONFIDENCE_PROMPT (0-100, normalized to 0-1)
@@ -344,22 +355,51 @@ def calculate_confidence(
 ### Coverage Calculation
 
 ```python
+import re
+from collections import Counter
+
+# Common English stopwords (expand as needed)
+STOPWORDS = {
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare',
+    'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as',
+    'into', 'through', 'during', 'before', 'after', 'above', 'below',
+    'between', 'under', 'again', 'further', 'then', 'once', 'here',
+    'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few', 'more',
+    'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own',
+    'same', 'so', 'than', 'too', 'very', 'just', 'and', 'but', 'if', 'or',
+    'because', 'until', 'while', 'this', 'that', 'these', 'those', 'i',
+    'me', 'my', 'myself', 'we', 'our', 'ours', 'you', 'your', 'yours',
+    'he', 'him', 'his', 'she', 'her', 'hers', 'it', 'its', 'they', 'them',
+}
+
+def extract_key_terms(text: str) -> set[str]:
+    """
+    Extract significant terms from text.
+
+    Method:
+    1. Lowercase and extract alphanumeric words
+    2. Filter stopwords
+    3. Filter short words (< 3 chars)
+    """
+    words = re.findall(r'\b[a-z0-9]+\b', text.lower())
+    return {w for w in words if w not in STOPWORDS and len(w) >= 3}
+
 def calculate_coverage(answer: str, context: str) -> float:
     """
     Estimate how much of the answer is grounded in context.
 
-    Method: Extract significant phrases from answer, check presence in context.
+    Returns 0.0-1.0 representing fraction of answer terms found in context.
     """
-    # Extract noun phrases and key terms from answer
-    answer_phrases = extract_key_phrases(answer)
+    answer_terms = extract_key_terms(answer)
+    context_terms = extract_key_terms(context)
 
-    # Check how many appear in context
-    matches = sum(1 for phrase in answer_phrases if phrase.lower() in context.lower())
-
-    if not answer_phrases:
+    if not answer_terms:
         return 0.0
 
-    return matches / len(answer_phrases)
+    matches = answer_terms & context_terms
+    return len(matches) / len(answer_terms)
 ```
 
 ### Confidence Thresholds
@@ -373,12 +413,146 @@ def calculate_coverage(answer: str, context: str) -> float:
 
 ---
 
+## Token Budget Management
+
+### Token Counting via Ollama
+
+```python
+async def count_tokens_ollama(self, text: str, model: str) -> int:
+    """
+    Count tokens using Ollama's native tokenizer.
+
+    More accurate than tiktoken for non-OpenAI models.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.ollama_url}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": text,
+                    "options": {"num_predict": 0},  # Don't generate, just tokenize
+                },
+                timeout=5.0,
+            )
+            data = response.json()
+            return data.get("prompt_eval_count", len(text) // 4)  # Fallback estimate
+    except Exception:
+        # Fallback: estimate 1 token per 4 characters
+        return len(text) // 4
+```
+
+### Token Budget Allocation
+
+```python
+class TokenBudget:
+    """Manages token allocation for RAG prompt."""
+
+    def __init__(self, model: str, settings: Settings):
+        self.model = model
+        self.max_context = settings.rag_max_context_tokens
+        self.max_history = settings.rag_max_history_tokens
+        self.max_response = settings.rag_max_response_tokens
+        self.system_reserve = settings.rag_system_prompt_tokens
+        self.context_window = MODEL_LIMITS[model]["context_window"]
+
+    def allocate(
+        self,
+        system_prompt: str,
+        chat_history: list[ChatMessage],
+        context_chunks: list[SearchResult],
+        count_fn: Callable[[str], int],
+    ) -> tuple[str, str, list[SearchResult]]:
+        """
+        Allocate tokens and truncate as needed.
+
+        Priority (highest to lowest):
+        1. System prompt (fixed, never truncate)
+        2. Most recent chat history (truncate oldest first)
+        3. Highest-relevance context chunks (drop lowest-scored first)
+
+        Raises:
+            TokenBudgetExceededError: If system + response exceeds context window
+
+        Returns:
+            (system_prompt, truncated_history, filtered_chunks)
+        """
+        # Calculate available budget
+        system_tokens = count_fn(system_prompt)
+        available = self.context_window - system_tokens - self.max_response
+
+        # Guard: negative budget is an error
+        if available < 0:
+            raise TokenBudgetExceededError(
+                f"System prompt ({system_tokens}) + response reserve ({self.max_response}) "
+                f"exceeds context window ({self.context_window})"
+            )
+
+        # Allocate history (cap at max_history or 1/3 of available)
+        history_budget = min(self.max_history, available // 3)
+        history_str, history_tokens = self._truncate_history(
+            chat_history, history_budget, count_fn
+        )
+        available -= history_tokens
+
+        # Allocate context (remaining budget, cap at max_context)
+        context_budget = min(self.max_context, available)
+        final_chunks = self._fit_context(context_chunks, context_budget, count_fn)
+
+        return system_prompt, history_str, final_chunks
+
+    def _truncate_history(
+        self,
+        history: list[ChatMessage],
+        max_tokens: int,
+        count_fn: Callable[[str], int],
+    ) -> tuple[str, int]:
+        """Truncate chat history, keeping most recent messages."""
+        if not history:
+            return "", 0
+
+        included = []
+        total_tokens = 0
+
+        for msg in reversed(history):
+            msg_text = f"{msg.role}: {msg.content}"
+            msg_tokens = count_fn(msg_text)
+            if total_tokens + msg_tokens <= max_tokens:
+                included.insert(0, msg)
+                total_tokens += msg_tokens
+            else:
+                break
+
+        formatted = "\n".join(f"{m.role}: {m.content}" for m in included)
+        return formatted, total_tokens
+
+    def _fit_context(
+        self,
+        chunks: list[SearchResult],
+        max_tokens: int,
+        count_fn: Callable[[str], int],
+    ) -> list[SearchResult]:
+        """Fit context chunks within token budget, dropping lowest-scored first."""
+        # Sort by score descending
+        sorted_chunks = sorted(chunks, key=lambda c: c.score, reverse=True)
+
+        included = []
+        total_tokens = 0
+
+        for chunk in sorted_chunks:
+            chunk_tokens = count_fn(chunk.chunk_text)
+            if total_tokens + chunk_tokens <= max_tokens:
+                included.append(chunk)
+                total_tokens += chunk_tokens
+
+        return included
+```
+
+---
+
 ## Retrieval Quality Controls
 
-### Problem (from review)
-Original spec only had top-k, no quality filters.
-
-### Solution: Multi-stage Filtering
+### Quality Pipeline
 
 ```python
 async def get_quality_context(
@@ -392,153 +566,137 @@ async def get_quality_context(
     Retrieve context with quality controls.
 
     Pipeline:
-    1. Retrieve 3x candidates from VectorService
-    2. Filter by minimum similarity score
-    3. Deduplicate near-identical chunks
-    4. Limit chunks per document
+    1. Retrieve 3x candidates from VectorService (capped at 15)
+    2. Filter by minimum similarity score (0.3 on Qdrant 0-1 scale)
+    3. Deduplicate near-identical chunks (Jaccard > 0.9)
+    4. Limit chunks per document (max 3)
     5. Return top-k by score
     """
-    # 1. Over-fetch candidates
+    # 1. Over-fetch candidates (capped to limit dedup cost)
+    candidate_limit = min(max_chunks * 3, self.dedup_candidates_cap)
+
     candidates = await self.vector_service.search(
         query=query,
         user_tags=user_tags,
-        tenant_id=tenant_id,
-        limit=max_chunks * 3,
+        tenant_id=tenant_id,  # Passed to VectorService for tenant isolation
+        limit=candidate_limit,
         score_threshold=0.0,  # Filter later for more control
     )
 
-    # 2. Filter by minimum similarity
+    # Early exit: no candidates
+    if not candidates:
+        return []
+
+    # 2. Filter by minimum similarity (Qdrant cosine is 0-1)
     filtered = [c for c in candidates if c.score >= self.min_similarity_score]
 
-    # 3. Deduplicate (remove chunks with >90% text similarity)
+    # 3. Deduplicate (Jaccard similarity > 0.9)
     deduped = self._deduplicate_chunks(filtered)
 
     # 4. Limit per document
-    limited = self._limit_per_document(deduped, max_per_doc=3)
+    limited = self._limit_per_document(deduped, max_per_doc=self.max_chunks_per_doc)
 
     # 5. Return top-k
     return limited[:max_chunks]
 ```
 
-### Deduplication
+### Deduplication (Capped O(n²))
 
 ```python
 def _deduplicate_chunks(self, chunks: list[SearchResult]) -> list[SearchResult]:
-    """Remove near-duplicate chunks (>90% similar)."""
+    """
+    Remove near-duplicate chunks using Jaccard similarity.
+
+    Complexity: O(n²) where n is capped at dedup_candidates_cap (default 15).
+    At n=15, this is 105 comparisons - acceptable.
+    """
     result = []
     for chunk in chunks:
         is_duplicate = False
+        chunk_words = set(chunk.chunk_text.lower().split())
+
         for existing in result:
-            similarity = self._text_similarity(chunk.chunk_text, existing.chunk_text)
+            existing_words = set(existing.chunk_text.lower().split())
+            # Jaccard similarity
+            intersection = len(chunk_words & existing_words)
+            union = len(chunk_words | existing_words)
+            similarity = intersection / union if union > 0 else 0
+
             if similarity > self.chunk_overlap_threshold:
                 is_duplicate = True
                 break
+
         if not is_duplicate:
             result.append(chunk)
+
+    return result
+
+def _limit_per_document(
+    self,
+    chunks: list[SearchResult],
+    max_per_doc: int,
+) -> list[SearchResult]:
+    """Limit chunks per document to avoid single-source dominance."""
+    doc_counts: dict[str, int] = {}
+    result = []
+
+    for chunk in chunks:
+        count = doc_counts.get(chunk.document_id, 0)
+        if count < max_per_doc:
+            result.append(chunk)
+            doc_counts[chunk.document_id] = count + 1
+
     return result
 ```
 
 ---
 
-## Token Budget Management
+## Model Validation
 
-### Problem (from review)
-No token counting or truncation strategy.
-
-### Solution: Explicit Token Budgeting
+### Allowlist Configuration
 
 ```python
-class TokenBudget:
-    """Manages token allocation for RAG prompt."""
+MODEL_LIMITS = {
+    "llama3.2": {"context_window": 8192, "max_response": 1024},
+    "qwen3:8b": {"context_window": 32768, "max_response": 2048},
+    "deepseek-r1:32b": {"context_window": 65536, "max_response": 4096},
+}
 
-    def __init__(self, model: str):
-        self.model = model
-        self.limits = MODEL_TOKEN_LIMITS.get(model, DEFAULT_LIMITS)
+async def validate_model(self, model: str) -> str:
+    """
+    Validate model is allowed and available.
 
-    def allocate(
-        self,
-        system_prompt: str,
-        chat_history: list[ChatMessage],
-        context_chunks: list[SearchResult],
-    ) -> tuple[str, str, list[SearchResult]]:
-        """
-        Allocate tokens and truncate as needed.
-
-        Priority (highest to lowest):
-        1. System prompt (fixed, never truncate)
-        2. Most recent chat history (truncate oldest first)
-        3. Highest-relevance context chunks (drop lowest-scored first)
-
-        Returns:
-            (system_prompt, truncated_history, filtered_chunks)
-        """
-        available = self.limits["context_window"]
-
-        # 1. Reserve for system prompt
-        system_tokens = count_tokens(system_prompt)
-        available -= system_tokens
-
-        # 2. Reserve for response
-        available -= self.limits["max_response"]
-
-        # 3. Allocate history (truncate oldest)
-        history_str, history_tokens = self._truncate_history(
-            chat_history,
-            max_tokens=min(available // 3, self.limits["max_history"])
-        )
-        available -= history_tokens
-
-        # 4. Allocate context (drop lowest-scored chunks)
-        final_chunks = self._fit_context(
-            context_chunks,
-            max_tokens=available
+    Raises:
+        ModelNotAllowedError: Model not in allowlist
+        ModelUnavailableError: Model not pulled in Ollama
+    """
+    if model not in MODEL_LIMITS:
+        raise ModelNotAllowedError(
+            f"Model '{model}' not in allowlist. "
+            f"Available: {list(MODEL_LIMITS.keys())}"
         )
 
-        return system_prompt, history_str, final_chunks
-```
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.ollama_url}/api/tags",
+                timeout=5.0
+            )
+            available = [m["name"].split(":")[0] for m in response.json().get("models", [])]
 
-### History Truncation
+            if model not in available:
+                raise ModelUnavailableError(
+                    f"Model '{model}' not available. Run: ollama pull {model}"
+                )
+    except httpx.RequestError as e:
+        raise LLMConnectionError(f"Cannot connect to Ollama: {e}")
 
-```python
-def _truncate_history(
-    self,
-    history: list[ChatMessage],
-    max_tokens: int,
-) -> tuple[str, int]:
-    """
-    Truncate chat history, keeping most recent messages.
-
-    Strategy: Remove oldest messages until under budget.
-    Always keep at least the last user message.
-    """
-    if not history:
-        return "", 0
-
-    # Start from most recent, work backwards
-    included = []
-    total_tokens = 0
-
-    for msg in reversed(history):
-        msg_tokens = count_tokens(f"{msg.role}: {msg.content}")
-        if total_tokens + msg_tokens <= max_tokens:
-            included.insert(0, msg)
-            total_tokens += msg_tokens
-        else:
-            break
-
-    # Format for prompt
-    formatted = "\n".join(f"{m.role}: {m.content}" for m in included)
-    return formatted, total_tokens
+    return model
 ```
 
 ---
 
 ## Tag Owner Lookup
-
-### Problem (from review)
-Tag owner lookup source not specified.
-
-### Solution: Database Lookup with Fallback
 
 ```python
 async def get_route_target(
@@ -555,14 +713,19 @@ async def get_route_target(
     3. If tag.owner_user_id exists, get user email
     4. If no owner, fallback to system admin
     """
+    # Handle empty context
+    if not context_results:
+        return self._admin_fallback("No context available")
+
     # 1. Find primary tag from context
     tag_counts: dict[str, int] = {}
     for result in context_results:
-        for tag in result.tags:
-            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        for tag in getattr(result, 'tags', []):
+            if tag != 'public':  # Skip public tag for routing
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
     if not tag_counts:
-        return self._admin_fallback("No tags in context")
+        return self._admin_fallback("No specific tags in context")
 
     primary_tag = max(tag_counts, key=tag_counts.get)
 
@@ -576,13 +739,13 @@ async def get_route_target(
     owner = db.query(User).filter(User.id == tag_record.owner_user_id).first()
 
     if not owner:
-        return self._admin_fallback(f"Owner user not found for tag '{primary_tag}'")
+        return self._admin_fallback(f"Owner not found for tag '{primary_tag}'")
 
     return RouteTarget(
         tag=primary_tag,
         owner_user_id=owner.id,
         owner_email=owner.email,
-        reason=f"Low confidence, routing to {primary_tag} owner",
+        reason=f"Routing to {primary_tag} owner",
         fallback=False,
     )
 
@@ -591,7 +754,7 @@ def _admin_fallback(self, reason: str) -> RouteTarget:
     return RouteTarget(
         tag="system",
         owner_user_id=None,
-        owner_email="admin@company.com",  # From config
+        owner_email=self.settings.rag_admin_email,
         reason=f"{reason} - routing to admin",
         fallback=True,
     )
@@ -599,71 +762,7 @@ def _admin_fallback(self, reason: str) -> RouteTarget:
 
 ---
 
-## Model Validation
-
-### Problem (from review)
-Model availability check not defined.
-
-### Solution: Allowlist with Runtime Check
-
-```python
-# Configuration
-MODEL_ALLOWLIST = {
-    "llama3.2": {"context_window": 8192, "max_response": 1024},
-    "qwen3:8b": {"context_window": 32768, "max_response": 2048},
-    "deepseek-r1:32b": {"context_window": 65536, "max_response": 4096},
-}
-
-async def validate_model(self, model: str) -> str:
-    """
-    Validate model is allowed and available.
-
-    Args:
-        model: Requested model name
-
-    Returns:
-        Validated model name
-
-    Raises:
-        ModelNotAllowedError: Model not in allowlist
-        ModelUnavailableError: Model not pulled in Ollama
-    """
-    # 1. Check allowlist
-    if model not in MODEL_ALLOWLIST:
-        raise ModelNotAllowedError(
-            f"Model '{model}' not in allowlist. "
-            f"Available: {list(MODEL_ALLOWLIST.keys())}"
-        )
-
-    # 2. Check Ollama availability
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.ollama_url}/api/tags",
-                timeout=5.0
-            )
-            available_models = [m["name"] for m in response.json().get("models", [])]
-
-            # Check for exact match or with :latest suffix
-            if model not in available_models and f"{model}:latest" not in available_models:
-                raise ModelUnavailableError(
-                    f"Model '{model}' not available in Ollama. "
-                    f"Run: ollama pull {model}"
-                )
-    except httpx.RequestError as e:
-        raise LLMConnectionError(f"Cannot connect to Ollama: {e}")
-
-    return model
-```
-
----
-
 ## Error Handling (Service Layer)
-
-### Problem (from review)
-Mixed HTTP status codes with service exceptions.
-
-### Solution: Pure Exception Hierarchy
 
 ```python
 class RAGServiceError(Exception):
@@ -691,7 +790,7 @@ class ContextError(RAGServiceError):
     pass
 
 class TokenBudgetExceededError(RAGServiceError):
-    """Query + history exceeds available token budget."""
+    """System prompt + response reserve exceeds context window."""
     pass
 ```
 
@@ -701,8 +800,6 @@ class TokenBudgetExceededError(RAGServiceError):
 
 ## Service Interface
 
-### RAGService Class
-
 ```python
 class RAGService:
     """Orchestrates RAG pipeline: retrieve → prompt → generate → evaluate."""
@@ -710,59 +807,33 @@ class RAGService:
     def __init__(
         self,
         vector_service: VectorService,
-        ollama_url: str = "http://localhost:11434",
-        default_model: str = "llama3.2",
-        temperature: float = 0.1,
-        confidence_threshold: int = 60,
-        timeout_seconds: int = 30,
-        min_similarity_score: float = 0.3,
-        max_chunks_per_doc: int = 3,
-        chunk_overlap_threshold: float = 0.9,
+        settings: Settings,
+        ollama_url: str | None = None,
+        default_model: str | None = None,
     ):
-        """Initialize RAG service with dependencies."""
+        self.vector_service = vector_service
+        self.settings = settings
+        self.ollama_url = ollama_url or settings.ollama_base_url
+        self.default_model = default_model or settings.chat_model
+        self.min_similarity_score = settings.rag_min_similarity_score
+        self.max_chunks_per_doc = settings.rag_max_chunks_per_doc
+        self.chunk_overlap_threshold = settings.rag_chunk_overlap_threshold
+        self.dedup_candidates_cap = settings.rag_dedup_candidates_cap
+        self.confidence_threshold = settings.rag_confidence_threshold
 
     async def generate(self, request: RAGRequest, db: Session) -> RAGResponse:
-        """
-        Generate RAG response for a query.
-
-        Pipeline:
-        1. Validate model (if override requested)
-        2. Retrieve quality-filtered context from VectorService
-        3. Apply token budget (truncate history/context as needed)
-        4. Build prompt with SourceIds for deterministic citations
-        5. Call LLM for response
-        6. Extract citations via SourceId regex
-        7. Calculate hybrid confidence score
-        8. Determine action (CITE or ROUTE)
-        9. If ROUTE, look up tag owner
-
-        Args:
-            request: RAGRequest with query and user context
-            db: Database session for tag owner lookup
-
-        Returns:
-            RAGResponse with answer, confidence, citations, action
-
-        Raises:
-            RAGServiceError subclasses for various failure modes
-        """
+        """Generate RAG response for a query."""
+        # Implementation follows pipeline in next section
 
     async def health_check(self) -> dict:
         """Check Ollama connectivity and model availability."""
 
-    # Internal methods
-    async def _get_quality_context(self, ...) -> list[SearchResult]
-    def _build_context_with_source_ids(self, ...) -> str
-    def _truncate_history(self, ...) -> str
-    def _extract_citations(self, answer: str, context_map: dict) -> list[Citation]
-    async def _evaluate_confidence(self, ...) -> ConfidenceScore
-    def _calculate_coverage(self, answer: str, context: str) -> float
-    async def _get_route_target(self, ...) -> RouteTarget
+    # Internal methods documented in Pipeline section
 ```
 
 ---
 
-## Pipeline Flow (Revised)
+## Pipeline Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -772,69 +843,62 @@ class RAGService:
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 1. Validate Model                                                │
-│    validate_model(request.model) → raises if invalid            │
+│    validate_model(request.model or default)                     │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 2. Retrieve Quality Context                                      │
-│    _get_quality_context(query, user_tags, tenant_id)            │
-│    - Over-fetch 3x candidates                                    │
-│    - Filter by min_similarity_score (0.3)                       │
-│    - Deduplicate (>90% similar)                                 │
-│    - Limit per document (3 max)                                 │
-│    - Return top-k                                               │
+│    get_quality_context(query, user_tags, tenant_id)             │
+│    ├─ If empty → return INSUFFICIENT_CONTEXT_RESPONSE           │
+│    └─ Else continue                                             │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 3. Apply Token Budget                                            │
 │    TokenBudget.allocate(system, history, context)               │
-│    - Reserve system prompt tokens                               │
-│    - Truncate history (oldest first)                            │
-│    - Drop lowest-scored chunks if over budget                   │
+│    ├─ If TokenBudgetExceededError → raise                       │
+│    └─ Else continue with truncated inputs                       │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 4. Build Prompt with SourceIds                                   │
-│    _build_context_with_source_ids(chunks)                       │
-│    Format: [SourceId: doc-id:chunk-idx]                         │
+│    Format: [SourceId: {uuid}:{index}]                           │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 5. Generate Response                                             │
 │    ChatOllama.invoke(messages) → answer                         │
-│    Timeout: 30 seconds                                          │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 6. Extract Citations (Deterministic)                             │
-│    Regex: \[SourceId:\s*([a-zA-Z0-9-]+:\d+)\]                   │
+│    Regex: \[SourceId:\s*([a-f0-9-]{36}:\d+)\]                   │
 │    Map to SearchResult metadata                                 │
+│    Set grounded = len(citations) > 0                            │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 7. Calculate Hybrid Confidence                                   │
-│    - Retrieval score (30%): avg similarity                      │
-│    - Coverage score (40%): answer↔context overlap               │
-│    - LLM score (30%): self-assessment                           │
+│    retrieval (30%) + coverage (40%) + LLM (30%)                 │
+│    Guard: zero results = zero confidence                        │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 8. Determine Action                                              │
-│    confidence >= 60 → CITE, grounded=True                       │
-│    confidence < 60  → ROUTE, lookup tag owner                   │
+│    confidence >= 60 → CITE                                      │
+│    confidence < 60  → ROUTE (lookup tag owner)                  │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ 9. Return RAGResponse                                            │
-│    answer, confidence, citations, action, route_to, ...         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -846,59 +910,70 @@ class RAGService:
 
 | Test | Description |
 |------|-------------|
-| test_build_context_with_source_ids | SourceIds formatted correctly |
+| test_build_context_with_source_ids | SourceIds match UUID:index format |
 | test_extract_citations_valid | Citations extracted from answer |
-| test_extract_citations_invalid | Unknown SourceIds handled gracefully |
-| test_calculate_coverage | Coverage score computed correctly |
+| test_extract_citations_invalid_format | Malformed SourceIds ignored |
+| test_extract_citations_unknown_id | Unknown SourceIds logged, not included |
+| test_calculate_coverage | Term overlap computed correctly |
+| test_calculate_coverage_empty_answer | Returns 0.0 |
+| test_calculate_confidence_zero_results | Returns overall=0 |
 | test_calculate_confidence_hybrid | Weights applied correctly |
 | test_truncate_history_overflow | Oldest messages dropped |
 | test_truncate_history_keeps_recent | Most recent preserved |
+| test_token_budget_exceeded | Raises TokenBudgetExceededError |
 | test_deduplicate_chunks | Near-duplicates removed |
+| test_deduplicate_respects_cap | Max 15 candidates processed |
 | test_limit_per_document | Max 3 chunks per doc |
 | test_validate_model_allowed | Valid model passes |
 | test_validate_model_not_allowed | Invalid model raises |
 | test_get_route_target_with_owner | Owner found and returned |
-| test_get_route_target_fallback | Admin fallback when no owner |
+| test_get_route_target_no_owner | Admin fallback |
+| test_get_route_target_empty_context | Admin fallback |
+| test_grounded_true_with_citations | grounded=True when citations exist |
+| test_grounded_false_no_citations | grounded=False when no citations |
 
 ### Integration Tests
 
 | Test | Description |
 |------|-------------|
 | test_generate_full_pipeline | End-to-end with real Ollama |
-| test_generate_low_confidence_routes | Routes when confidence low |
-| test_generate_no_context | Handles empty retrieval results |
+| test_generate_zero_context | Returns INSUFFICIENT_CONTEXT_RESPONSE |
+| test_generate_low_confidence_routes | Routes when confidence < 60 |
 | test_generate_token_budget | Large history truncated correctly |
 | test_health_check | Ollama connectivity verified |
 | test_model_override | Custom model selection works |
+| test_tenant_isolation | tenant_id passed to VectorService |
 
 ---
 
-## Implementation Issues (Revised)
+## Implementation Issues
 
 ### Issue 013: RAG Service Configuration
 **Complexity:** TRIVIAL
-- Add RAG config fields to config.py (token budgets, thresholds)
-- Add MODEL_ALLOWLIST configuration
-- Document environment variables
+- Add RAG config fields to config.py
+- Add MODEL_LIMITS configuration
+- Add STOPWORDS constant
 
 ### Issue 014: RAG Service Core
 **Complexity:** MODERATE
-- Implement RAGService class with quality retrieval
+- Implement RAGService class
+- Implement quality retrieval pipeline
 - Implement token budget management
 - Implement SourceId-based citation extraction
 - Add prompt templates
 
-### Issue 015: Confidence Scoring
+### Issue 015: Confidence and Routing
 **Complexity:** SIMPLE
 - Implement hybrid confidence calculation
-- Implement coverage scoring
+- Implement coverage scoring with extract_key_terms
 - Implement routing logic with tag owner lookup
+- Handle zero-context case
 
 ### Issue 016: RAG Service Tests
-**Complexity:** SIMPLE
-- Unit tests for all methods
+**Complexity:** MODERATE
+- Unit tests for all methods (20+ tests)
 - Integration tests with Ollama
-- Mock tests for CI (no Ollama)
+- Mock VectorService for CI testing
 
 ---
 
@@ -907,4 +982,5 @@ class RAGService:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-01-28 | Initial specification |
-| 2.0 | 2026-01-28 | Revised per engineering review: deterministic citations, hybrid confidence, token budgeting, retrieval quality controls, removed DIRECT path, clarified tag owner lookup, pure exception handling |
+| 2.0 | 2026-01-28 | Revised per engineering review round 1 |
+| 3.0 | 2026-01-28 | FINAL - Addressed round 2: zero-division guard, UUID document_id format, strict SourceId regex, Ollama tokenizer, negative budget check, grounded definition, extract_key_terms implementation, removed unused query classifier, dedup cap, config mapping, snippet limits, score semantics confirmed |
