@@ -1,13 +1,13 @@
 """User management endpoints."""
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
-from typing import List, Optional
 
-from ai_ready_rag.db.database import get_db
-from ai_ready_rag.db.models import User, Tag
-from ai_ready_rag.core.security import hash_password, generate_temporary_password
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
+
 from ai_ready_rag.core.dependencies import require_admin
+from ai_ready_rag.core.security import generate_temporary_password, hash_password
+from ai_ready_rag.db.database import get_db
+from ai_ready_rag.db.models import Tag, User
 
 router = APIRouter()
 
@@ -20,10 +20,10 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
-    display_name: Optional[str] = None
-    role: Optional[str] = None
-    is_active: Optional[bool] = None
+    email: EmailStr | None = None
+    display_name: str | None = None
+    role: str | None = None
+    is_active: bool | None = None
 
 
 class UserResponse(BaseModel):
@@ -33,29 +33,31 @@ class UserResponse(BaseModel):
     role: str
     is_active: bool
     must_reset_password: bool
-    tags: List[dict] = []
+    tags: list[dict] = []
 
     class Config:
         from_attributes = True
 
 
 class TagAssignment(BaseModel):
-    tag_ids: List[str]
+    tag_ids: list[str]
 
 
-@router.get("/", response_model=List[UserResponse])
+@router.get("/", response_model=list[UserResponse])
 async def list_users(
     skip: int = 0,
     limit: int = 100,
     current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """List all users (admin only)."""
     users = db.query(User).offset(skip).limit(limit).all()
     return [
         {
             **user.__dict__,
-            "tags": [{"id": t.id, "name": t.name, "display_name": t.display_name} for t in user.tags]
+            "tags": [
+                {"id": t.id, "name": t.name, "display_name": t.display_name} for t in user.tags
+            ],
         }
         for user in users
     ]
@@ -65,7 +67,7 @@ async def list_users(
 async def create_user(
     user_data: UserCreate,
     current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Create a new user (admin only)."""
     existing = db.query(User).filter(User.email == user_data.email).first()
@@ -77,7 +79,7 @@ async def create_user(
         display_name=user_data.display_name,
         password_hash=hash_password(user_data.password),
         role=user_data.role,
-        created_by=current_user.id
+        created_by=current_user.id,
     )
     db.add(user)
     db.commit()
@@ -87,9 +89,7 @@ async def create_user(
 
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
-    user_id: str,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    user_id: str, current_user: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
     """Get user by ID (admin only)."""
     user = db.query(User).filter(User.id == user_id).first()
@@ -97,7 +97,7 @@ async def get_user(
         raise HTTPException(status_code=404, detail="User not found")
     return {
         **user.__dict__,
-        "tags": [{"id": t.id, "name": t.name, "display_name": t.display_name} for t in user.tags]
+        "tags": [{"id": t.id, "name": t.name, "display_name": t.display_name} for t in user.tags],
     }
 
 
@@ -106,7 +106,7 @@ async def update_user(
     user_id: str,
     user_data: UserUpdate,
     current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Update user (admin only)."""
     user = db.query(User).filter(User.id == user_id).first()
@@ -120,15 +120,13 @@ async def update_user(
     db.refresh(user)
     return {
         **user.__dict__,
-        "tags": [{"id": t.id, "name": t.name, "display_name": t.display_name} for t in user.tags]
+        "tags": [{"id": t.id, "name": t.name, "display_name": t.display_name} for t in user.tags],
     }
 
 
 @router.delete("/{user_id}")
 async def deactivate_user(
-    user_id: str,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    user_id: str, current_user: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
     """Deactivate user (admin only)."""
     if user_id == current_user.id:
@@ -148,7 +146,7 @@ async def assign_tags(
     user_id: str,
     assignment: TagAssignment,
     current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Assign tags to user (admin only)."""
     user = db.query(User).filter(User.id == user_id).first()
@@ -161,15 +159,13 @@ async def assign_tags(
 
     return {
         "message": f"Assigned {len(tags)} tags to user",
-        "tags": [{"id": t.id, "name": t.name} for t in tags]
+        "tags": [{"id": t.id, "name": t.name} for t in tags],
     }
 
 
 @router.post("/{user_id}/reset-password")
 async def reset_password(
-    user_id: str,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    user_id: str, current_user: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
     """Reset user password (admin only). Returns temporary password."""
     user = db.query(User).filter(User.id == user_id).first()
@@ -183,5 +179,5 @@ async def reset_password(
 
     return {
         "temporary_password": temp_password,
-        "message": "User must change password on next login"
+        "message": "User must change password on next login",
     }

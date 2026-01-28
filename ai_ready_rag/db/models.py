@@ -1,13 +1,13 @@
 """SQLAlchemy ORM models."""
-from sqlalchemy import (
-    Column, String, Boolean, Integer, Float, Text,
-    ForeignKey, DateTime, Table
-)
-from sqlalchemy.orm import relationship
-from datetime import datetime
+
 import uuid
+from datetime import datetime
+
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Table, Text
+from sqlalchemy.orm import relationship
 
 from ai_ready_rag.db.database import Base
+
 
 def generate_uuid() -> str:
     return str(uuid.uuid4())

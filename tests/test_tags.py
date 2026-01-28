@@ -1,5 +1,4 @@
 """Tests for tag management endpoints."""
-import pytest
 
 
 class TestListTags:
@@ -24,12 +23,16 @@ class TestCreateTag:
 
     def test_create_tag_as_admin(self, client, admin_headers):
         """Test creating tag as admin."""
-        response = client.post("/api/tags/", headers=admin_headers, json={
-            "name": "finance",
-            "display_name": "Finance",
-            "description": "Financial documents",
-            "color": "#3B82F6"
-        })
+        response = client.post(
+            "/api/tags/",
+            headers=admin_headers,
+            json={
+                "name": "finance",
+                "display_name": "Finance",
+                "description": "Financial documents",
+                "color": "#3B82F6",
+            },
+        )
         assert response.status_code == 201
         data = response.json()
         assert data["name"] == "finance"
@@ -38,27 +41,26 @@ class TestCreateTag:
 
     def test_create_tag_duplicate_name(self, client, admin_headers, sample_tag):
         """Test creating tag with duplicate name."""
-        response = client.post("/api/tags/", headers=admin_headers, json={
-            "name": sample_tag.name,
-            "display_name": "Duplicate HR"
-        })
+        response = client.post(
+            "/api/tags/",
+            headers=admin_headers,
+            json={"name": sample_tag.name, "display_name": "Duplicate HR"},
+        )
         assert response.status_code == 400
         assert "already exists" in response.json()["detail"].lower()
 
     def test_create_tag_as_regular_user(self, client, user_headers):
         """Test creating tag as regular user (should fail)."""
-        response = client.post("/api/tags/", headers=user_headers, json={
-            "name": "legal",
-            "display_name": "Legal"
-        })
+        response = client.post(
+            "/api/tags/", headers=user_headers, json={"name": "legal", "display_name": "Legal"}
+        )
         assert response.status_code == 403
 
     def test_create_tag_minimal(self, client, admin_headers):
         """Test creating tag with minimal fields."""
-        response = client.post("/api/tags/", headers=admin_headers, json={
-            "name": "it",
-            "display_name": "IT Support"
-        })
+        response = client.post(
+            "/api/tags/", headers=admin_headers, json={"name": "it", "display_name": "IT Support"}
+        )
         assert response.status_code == 201
         data = response.json()
         assert data["color"] == "#6B7280"  # default color
@@ -85,10 +87,11 @@ class TestUpdateTag:
 
     def test_update_tag_as_admin(self, client, admin_headers, sample_tag):
         """Test updating tag as admin."""
-        response = client.put(f"/api/tags/{sample_tag.id}", headers=admin_headers, json={
-            "display_name": "HR Department",
-            "color": "#EF4444"
-        })
+        response = client.put(
+            f"/api/tags/{sample_tag.id}",
+            headers=admin_headers,
+            json={"display_name": "HR Department", "color": "#EF4444"},
+        )
         assert response.status_code == 200
         data = response.json()
         assert data["display_name"] == "HR Department"
@@ -96,26 +99,22 @@ class TestUpdateTag:
 
     def test_update_tag_as_regular_user(self, client, user_headers, sample_tag):
         """Test updating tag as regular user (should fail)."""
-        response = client.put(f"/api/tags/{sample_tag.id}", headers=user_headers, json={
-            "display_name": "New Name"
-        })
+        response = client.put(
+            f"/api/tags/{sample_tag.id}", headers=user_headers, json={"display_name": "New Name"}
+        )
         assert response.status_code == 403
 
     def test_update_system_tag(self, client, admin_headers, db):
         """Test updating system tag (should fail)."""
         from ai_ready_rag.db.models import Tag
 
-        system_tag = Tag(
-            name="public",
-            display_name="Public",
-            is_system=True
-        )
+        system_tag = Tag(name="public", display_name="Public", is_system=True)
         db.add(system_tag)
         db.commit()
 
-        response = client.put(f"/api/tags/{system_tag.id}", headers=admin_headers, json={
-            "display_name": "Not Public"
-        })
+        response = client.put(
+            f"/api/tags/{system_tag.id}", headers=admin_headers, json={"display_name": "Not Public"}
+        )
         assert response.status_code == 400
         assert "system" in response.json()["detail"].lower()
 
@@ -143,11 +142,7 @@ class TestDeleteTag:
         """Test deleting system tag (should fail)."""
         from ai_ready_rag.db.models import Tag
 
-        system_tag = Tag(
-            name="admin",
-            display_name="Admin",
-            is_system=True
-        )
+        system_tag = Tag(name="admin", display_name="Admin", is_system=True)
         db.add(system_tag)
         db.commit()
 

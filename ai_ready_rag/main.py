@@ -1,11 +1,13 @@
 """FastAPI application entry point."""
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+
 from contextlib import asynccontextmanager
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from ai_ready_rag.api import auth, health, tags, users
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.db.database import init_db
-from ai_ready_rag.api import health, auth, users, tags
 
 settings = get_settings()
 
@@ -55,15 +57,13 @@ async def root():
         "message": f"Welcome to {settings.app_name}",
         "version": settings.app_version,
         "docs": "/api/docs" if settings.debug else "disabled",
-        "health": "/api/health"
+        "health": "/api/health",
     }
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
-        "ai_ready_rag.main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.debug
+        "ai_ready_rag.main:app", host=settings.host, port=settings.port, reload=settings.debug
     )

@@ -28,3 +28,10 @@ Thumbs.db
 .agents/outputs/claude_checkpoints/*.transcript.jsonl
 .agents/outputs/claude_checkpoints/*_checkpoint.md
 .claude/settings.local.json
+
+# Database
+data/
+*.db
+
+# Agent outputs (session-specific)
+.agents/outputs/

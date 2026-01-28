@@ -1,8 +1,10 @@
 """Configuration management using Pydantic settings."""
-from pydantic_settings import BaseSettings
-from typing import Literal
+
 from functools import lru_cache
-import os
+from typing import Literal
+
+from pydantic_settings import BaseSettings
+
 
 class Settings(BaseSettings):
     # Application
@@ -40,6 +42,7 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
         extra = "ignore"
 
-@lru_cache()
+
+@lru_cache
 def get_settings() -> Settings:
     return Settings()

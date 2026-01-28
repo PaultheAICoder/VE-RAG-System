@@ -1,144 +1,106 @@
 #!/usr/bin/env python3
 """
-SessionStart Hook: Restores saved state when a new session begins.
-Injects PERSISTENT_STATE and critical patterns into context.
+Claude Code SessionStart hook (Optimized v2):
+- Loads compact YAML state (~300 tokens vs ~650)
+- Loads critical patterns only (~200 tokens vs ~2600)
+- Detects active orchestrate workflow and provides continue instructions
+- Total: ~500 tokens vs ~3250 (85% reduction)
 """
 
+from __future__ import annotations
+
+import json
 import os
 import sys
 from pathlib import Path
 
-# Try to import yaml, fall back to basic file reading if not available
 try:
     import yaml
+
     HAS_YAML = True
 except ImportError:
     HAS_YAML = False
 
 
-def get_project_dir():
-    """Get the project directory from environment or current working directory."""
-    return os.environ.get('CLAUDE_PROJECT_DIR', os.getcwd())
-
-
-def load_persistent_state():
-    """Load the persistent state file."""
-    project_dir = get_project_dir()
-    state_file = Path(project_dir) / '.agents' / 'outputs' / 'claude_checkpoints' / 'PERSISTENT_STATE.yaml'
-
-    if not state_file.exists():
-        return None
-
+def get_active_work(yaml_content: str) -> dict:
+    """Extract active_work from YAML content."""
+    if not HAS_YAML:
+        return {}
     try:
-        with open(state_file, 'r') as f:
-            if HAS_YAML:
-                return yaml.safe_load(f)
-            else:
-                # Return raw content if no YAML
-                return {'_raw': f.read()}
+        data = yaml.safe_load(yaml_content)
+        return data.get("active_work", {}) if data else {}
     except Exception:
-        return None
+        return {}
 
 
-def load_critical_patterns():
-    """Load the critical patterns file."""
-    project_dir = get_project_dir()
-    patterns_file = Path(project_dir) / '.claude' / 'memory' / 'patterns-critical.md'
+def main() -> int:
+    _hook_in = json.load(sys.stdin)
 
-    if not patterns_file.exists():
-        return None
+    project_dir = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
+    checkpoints_dir = project_dir / ".agents" / "outputs" / "claude_checkpoints"
+    memory_dir = project_dir / ".claude" / "memory"
 
-    try:
-        with open(patterns_file, 'r') as f:
-            return f.read()
-    except Exception:
-        return None
+    print("## Restored Context\n")
 
+    # 1. Load compact YAML state (preferred) or fallback to markdown
+    yaml_state = checkpoints_dir / "PERSISTENT_STATE.yaml"
+    md_state = checkpoints_dir / "PERSISTENT_STATE.md"
 
-def format_state_output(state):
-    """Format state for injection into context."""
-    if not state:
-        return ""
+    active_work = {}
+    if yaml_state.exists():
+        yaml_content = yaml_state.read_text(encoding="utf-8")
+        active_work = get_active_work(yaml_content)
+        print("### Project State\n")
+        print("```yaml")
+        print(yaml_content)
+        print("```\n")
+    elif md_state.exists():
+        print("### Project State\n")
+        print(md_state.read_text(encoding="utf-8"))
+        print()
 
-    if '_raw' in state:
-        return f"```yaml\n{state['_raw']}\n```"
+    # 2. Load critical patterns only (top 3 patterns = 89% of failures)
+    patterns_critical = memory_dir / "patterns-critical.md"
+    if patterns_critical.exists():
+        print("### Critical Patterns (Always Apply)\n")
+        print(patterns_critical.read_text(encoding="utf-8"))
+        print()
+    else:
+        # Fallback: print inline critical patterns
+        print("### Critical Patterns\n")
+        print("1. **VERIFICATION_GAP**: Read spec/code before assuming")
+        print("2. **ENUM_VALUE**: Use VALUES not Python names (CO-OWNER not CO_OWNER)")
+        print("3. **COMPONENT_API**: Read PropTypes before using components")
+        print()
+        print("Full patterns: `.claude/memory/patterns-full.md`\n")
 
-    lines = ["```yaml", "# Restored Session State"]
+    # 3. Check for active orchestrate workflow and provide continue instructions
+    issue = active_work.get("issue")
+    phase = active_work.get("phase")
+    branch = active_work.get("branch")
 
-    if 'active_work' in state:
-        lines.append("active_work:")
-        for k, v in state['active_work'].items():
-            lines.append(f"  {k}: {v}")
+    if issue and phase:
+        print("### ACTIVE ORCHESTRATE WORKFLOW\n")
+        print(f"**Issue**: #{issue}")
+        print(f"**Phase**: {phase}")
+        print(f"**Branch**: {branch}")
+        print()
+        print("**CRITICAL**: You were in the middle of an orchestrate workflow.")
+        print("Continue with the current phase using the Task tool:")
+        print()
+        print("1. Read `.claude/commands/orchestrate.md` for phase instructions")
+        print("2. Check for existing artifacts in `.agents/outputs/`")
+        print(f"3. Continue the `{phase}` phase for issue #{issue}")
+        print()
+        print("If the phase was completed, proceed to the next phase in the workflow.")
+        print()
 
-    if state.get('files_modified'):
-        lines.append(f"files_modified: {state['files_modified']}")
+    # 4. Hint about full patterns location
+    print("---")
+    print("*Full patterns available at `.claude/memory/patterns-full.md` if needed.*\n")
 
-    if state.get('pending_tasks'):
-        lines.append(f"pending_tasks: {state['pending_tasks']}")
-
-    lines.append("```")
-    return '\n'.join(lines)
-
-
-def get_continue_instructions(state):
-    """Generate continuation instructions if active work detected."""
-    if not state or not state.get('active_work'):
-        return ""
-
-    active = state['active_work']
-    issue = active.get('issue')
-    phase = active.get('phase')
-
-    if not issue and not phase:
-        return ""
-
-    instructions = ["\n**Active Workflow Detected:**"]
-
-    if issue:
-        instructions.append(f"- Working on: {issue}")
-    if phase:
-        instructions.append(f"- Phase: {phase}")
-    if active.get('branch') and active['branch'] != 'main':
-        instructions.append(f"- Branch: {active['branch']}")
-
-    instructions.append("\nConsider continuing from where you left off.")
-
-    return '\n'.join(instructions)
-
-
-def main():
-    try:
-        output_parts = []
-
-        # Load and format persistent state
-        state = load_persistent_state()
-        if state:
-            state_output = format_state_output(state)
-            if state_output:
-                output_parts.append("## Restored Session State")
-                output_parts.append(state_output)
-
-        # Load critical patterns
-        patterns = load_critical_patterns()
-        if patterns:
-            output_parts.append("\n## Critical Patterns")
-            output_parts.append(patterns)
-
-        # Add continuation instructions
-        if state:
-            continue_inst = get_continue_instructions(state)
-            if continue_inst:
-                output_parts.append(continue_inst)
-
-        # Output everything
-        if output_parts:
-            print('\n'.join(output_parts))
-
-    except Exception as e:
-        # Never fail the hook - just log and continue
-        print(f"<!-- Session restore warning: {e} -->", file=sys.stderr)
-        sys.exit(0)
+    return 0
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,20 +1,20 @@
 """FastAPI dependencies for authentication and authorization."""
-from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
-from typing import Optional
 
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
+
+from ai_ready_rag.core.security import decode_token
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import User
-from ai_ready_rag.core.security import decode_token
 
 security = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
     request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    db: Session = Depends(get_db)
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db),
 ) -> User:
     """Get current user from JWT token (header or cookie)."""
     token = None
@@ -54,8 +54,5 @@ async def get_current_user(
 async def require_admin(current_user: User = Depends(get_current_user)) -> User:
     """Require admin role."""
     if current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return current_user

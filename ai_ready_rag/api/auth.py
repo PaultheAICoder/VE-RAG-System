@@ -1,14 +1,16 @@
 """Authentication endpoints."""
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
-from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
+
 from datetime import datetime
 
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
+
+from ai_ready_rag.config import get_settings
+from ai_ready_rag.core.dependencies import get_current_user
+from ai_ready_rag.core.security import create_access_token, hash_password, verify_password
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import User
-from ai_ready_rag.core.security import verify_password, create_access_token, hash_password
-from ai_ready_rag.core.dependencies import get_current_user
-from ai_ready_rag.config import get_settings
 
 router = APIRouter()
 settings = get_settings()
@@ -39,24 +41,19 @@ class LoginResponse(BaseModel):
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
-    request: Request,
-    credentials: LoginRequest,
-    response: Response,
-    db: Session = Depends(get_db)
+    request: Request, credentials: LoginRequest, response: Response, db: Session = Depends(get_db)
 ):
     """Authenticate user and return JWT token."""
     user = db.query(User).filter(User.email == credentials.email).first()
 
     if not user or not verify_password(credentials.password, user.password_hash):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
         )
 
     if not user.is_active:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is deactivated"
+            status_code=status.HTTP_403_FORBIDDEN, detail="User account is deactivated"
         )
 
     # Create token
@@ -75,22 +72,14 @@ async def login(
         httponly=True,
         secure=False,
         samesite="lax",
-        max_age=expires_in
+        max_age=expires_in,
     )
 
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "expires_in": expires_in,
-        "user": user
-    }
+    return {"access_token": token, "token_type": "bearer", "expires_in": expires_in, "user": user}
 
 
 @router.post("/logout")
-async def logout(
-    response: Response,
-    current_user: User = Depends(get_current_user)
-):
+async def logout(response: Response, current_user: User = Depends(get_current_user)):
     """Logout and clear session cookie."""
     response.delete_cookie("access_token")
     return {"message": "Logged out successfully"}
@@ -110,16 +99,12 @@ class SetupRequest(BaseModel):
 
 
 @router.post("/setup", response_model=UserResponse)
-async def setup_admin(
-    setup_data: SetupRequest,
-    db: Session = Depends(get_db)
-):
+async def setup_admin(setup_data: SetupRequest, db: Session = Depends(get_db)):
     """Create first admin user (only works when no users exist)."""
     existing = db.query(User).first()
     if existing:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Setup already completed. Users exist."
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Setup already completed. Users exist."
         )
 
     admin = User(
@@ -127,7 +112,7 @@ async def setup_admin(
         display_name=setup_data.display_name,
         password_hash=hash_password(setup_data.password),
         role="admin",
-        is_active=True
+        is_active=True,
     )
     db.add(admin)
     db.commit()
