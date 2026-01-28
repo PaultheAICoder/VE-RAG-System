@@ -1,0 +1,11 @@
+active_work:
+  issue: null
+  branch: main
+  phase: null
+  last_action: Initial setup of context preservation hooks
+files_modified:
+  - DEVELOPMENT_PLANS.md
+  - CLAUDE.md
+pending_tasks: []
+key_decisions: []
+extracted_at: null

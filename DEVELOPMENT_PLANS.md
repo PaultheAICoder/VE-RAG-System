@@ -1,10 +1,19 @@
 # AI Ready RAG - Development Plans
 
 **Product Name:** AI Ready RAG
-**Version:** 0.4.1
+**Version:** 0.4.2
 **Target Deadline:** Thursday, February 13, 2026
 **Platform:** NVIDIA DGX Spark (Ubuntu, headless)
 **Last Updated:** January 27, 2026
+
+---
+
+## Change Log
+
+| Version | Date | Author | Changes |
+|---------|------|--------|---------|
+| 0.4.2 | 2026-01-27 | — | Added Plan 11: Deployment Mode Configurability (unified/siloed/hybrid); Updated Key Architectural Decisions table; Added deployment mode items to Open Items |
+| 0.4.1 | 2026-01-27 | — | Initial development plans with Plans 1-10; Architecture decisions; Timeline and milestones |
 
 ---
 
@@ -25,6 +34,7 @@ This document outlines the development plans for AI Ready RAG, incorporating fee
 | Citations | **Clickable links** | Links to source document viewer |
 | Tag Matching | **ANY match** | User needs any matching tag (flexible for future) |
 | Admin Bootstrap | **Setup wizard** | First-time web UI for creating initial admin |
+| Deployment Mode | **Configurable** | Customer-specific (unified/siloed/hybrid) |
 
 See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed rationale.
 
@@ -1199,6 +1209,148 @@ def create_version_footer():
 
 ---
 
+## Plan 11: Deployment Mode Configurability
+
+### Objective
+Enable customer-specific deployment modes to support different organizational structures and use cases.
+
+### Context
+The application will be deployed on company intranets as a self-service help system. Different customers may want different deployment modes based on their organizational structure and user experience requirements.
+
+### Deployment Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| **unified** | Single app, users see all content they're authorized for via tags | Small/medium orgs, cross-functional teams |
+| **siloed** | Separate entry points per module (/hr, /finance, /legal, /it) | Large orgs with distinct departments, compliance requirements |
+| **hybrid** | Single app with module switcher/tabs | Orgs wanting unified access with clear module boundaries |
+
+### Configuration Structure
+
+```yaml
+# config/deployment.yml
+mode: "siloed"  # unified | siloed | hybrid
+
+# Module definitions (used in siloed and hybrid modes)
+modules:
+  - name: "HR Help"
+    slug: "hr"
+    tags: ["hr", "benefits", "policy"]
+    color: "#10B981"
+    owner: "hr-admin@company.com"
+    description: "Human Resources policies and benefits information"
+
+  - name: "Finance"
+    slug: "finance"
+    tags: ["finance", "expenses", "budgets"]
+    color: "#3B82F6"
+    owner: "finance-admin@company.com"
+    description: "Financial policies, expense reports, and budgets"
+
+  - name: "Legal"
+    slug: "legal"
+    tags: ["legal", "compliance", "contracts"]
+    color: "#8B5CF6"
+    owner: "legal-admin@company.com"
+    description: "Legal guidelines and compliance documentation"
+
+  - name: "IT Support"
+    slug: "it"
+    tags: ["it", "security", "systems"]
+    color: "#F59E0B"
+    owner: "it-admin@company.com"
+    description: "IT policies, security guidelines, and system documentation"
+
+# Default module for unified mode (optional)
+default_module: null
+
+# Branding per module (optional, siloed mode)
+module_branding:
+  hr:
+    logo: "/static/logos/hr-logo.png"
+    title: "HR Help Desk"
+  finance:
+    logo: "/static/logos/finance-logo.png"
+    title: "Finance Assistant"
+```
+
+### Route Structure by Mode
+
+**Unified Mode:**
+```
+/app              → Main chat interface (all authorized content)
+/api/chat/*       → Single chat endpoint
+```
+
+**Siloed Mode:**
+```
+/hr               → HR-specific chat interface
+/finance          → Finance-specific chat interface
+/legal            → Legal-specific chat interface
+/it               → IT-specific chat interface
+/api/chat/{slug}  → Module-specific chat endpoints
+```
+
+**Hybrid Mode:**
+```
+/app              → Main interface with module tabs/switcher
+/api/chat/*       → Single endpoint with optional module filter
+```
+
+### Implementation Approach
+
+```python
+# services/deployment_service.py
+class DeploymentMode(Enum):
+    UNIFIED = "unified"
+    SILOED = "siloed"
+    HYBRID = "hybrid"
+
+@dataclass
+class Module:
+    name: str
+    slug: str
+    tags: List[str]
+    color: str
+    owner: str
+    description: str = ""
+
+class DeploymentConfig:
+    mode: DeploymentMode
+    modules: List[Module]
+
+    def get_tags_for_module(self, slug: str) -> List[str]:
+        """Get tags associated with a module."""
+        module = next((m for m in self.modules if m.slug == slug), None)
+        return module.tags if module else []
+
+    def filter_by_module(self, slug: str, user_tags: List[str]) -> List[str]:
+        """Filter user tags to only those valid for a module."""
+        module_tags = set(self.get_tags_for_module(slug))
+        return list(set(user_tags) & module_tags)
+```
+
+### Tasks
+
+| Priority | Task | Effort | Dependencies |
+|----------|------|--------|--------------|
+| P2 | Create deployment configuration schema | 1h | Config system |
+| P2 | Implement DeploymentConfig loader | 2h | Schema |
+| P2 | Add module-aware routing to FastAPI | 2h | Config loader |
+| P2 | Create siloed entry point routes | 2h | Routing |
+| P2 | Build hybrid mode module switcher UI | 2h | Gradio UI |
+| P2 | Module-specific branding support | 1h | UI |
+
+**Estimated Total: 10 hours**
+
+### Future Enhancements
+- Per-module analytics and usage tracking
+- Module-specific LLM prompt customization
+- Cross-module search (hybrid mode)
+- Module access scheduling (time-based availability)
+
+---
+
 ## Timeline Summary
 
 ### Total Estimated Hours: ~210 hours
@@ -1293,6 +1445,8 @@ If timeline slips:
 - Document viewer with highlighting
 - Tag inheritance/hierarchy
 - Per-document ANY/ALL access mode
+- Deployment mode configurability (unified/siloed/hybrid)
+- Module-specific entry points and branding
 
 ---
 

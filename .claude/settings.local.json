@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/pip:*)",
+      "Bash(python -m pip install:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
