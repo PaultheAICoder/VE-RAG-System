@@ -46,6 +46,26 @@ class Settings(BaseSettings):
     embedding_max_tokens: int = 8192
     default_tenant_id: str = "default"
 
+    # RAG Service
+    chat_model: str = "llama3.2"
+    rag_temperature: float = 0.1
+    rag_timeout_seconds: int = 30
+    rag_confidence_threshold: int = 60
+    rag_admin_email: str = "admin@company.com"
+
+    # Token Budget
+    rag_max_context_tokens: int = 3000
+    rag_max_history_tokens: int = 1000
+    rag_max_response_tokens: int = 1024
+    rag_system_prompt_tokens: int = 500
+
+    # Retrieval Quality
+    rag_min_similarity_score: float = 0.3
+    rag_max_chunks_per_doc: int = 3
+    rag_total_context_chunks: int = 5
+    rag_dedup_candidates_cap: int = 15
+    rag_chunk_overlap_threshold: float = 0.9
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

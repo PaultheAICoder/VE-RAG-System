@@ -1,5 +1,16 @@
 # Services package
 
+from ai_ready_rag.services.rag_constants import MODEL_LIMITS, STOPWORDS
+from ai_ready_rag.services.rag_service import (
+    ChatMessage,
+    Citation,
+    ConfidenceScore,
+    RAGRequest,
+    RAGResponse,
+    RAGService,
+    RouteTarget,
+    TokenBudget,
+)
 from ai_ready_rag.services.vector_service import (
     CollectionStats,
     HealthStatus,
@@ -15,13 +26,26 @@ from ai_ready_rag.services.vector_utils import (
 )
 
 __all__ = [
+    # Vector Service
     "VectorService",
     "CollectionStats",
     "HealthStatus",
     "IndexResult",
     "SearchResult",
+    # RAG Service
+    "RAGService",
+    "RAGRequest",
+    "RAGResponse",
+    "ChatMessage",
+    "Citation",
+    "ConfidenceScore",
+    "RouteTarget",
+    "TokenBudget",
+    # Utilities
     "generate_chunk_id",
     "validate_tag",
     "validate_tags_for_ingestion",
     "RESERVED_TAGS",
+    "MODEL_LIMITS",
+    "STOPWORDS",
 ]
