@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     enable_rag: bool = False  # Disabled for auth testing
     enable_gradio: bool = False
 
+    # Vector Service
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_collection: str = "documents"
+    ollama_base_url: str = "http://localhost:11434"
+    embedding_model: str = "nomic-embed-text"
+    embedding_dimension: int = 768
+    embedding_max_tokens: int = 8192
+    default_tenant_id: str = "default"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
