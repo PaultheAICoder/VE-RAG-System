@@ -164,6 +164,25 @@ git merge feat/issue-XXX-description
 git branch -d feat/issue-XXX-description
 ```
 
+### Spec Workflow
+Specs require review before committing. **Do not commit draft specs.**
+
+1. **Create branch**: `git checkout -b docs/spec-name`
+2. **Draft spec** in `specs/` directory
+3. **Share for review** (do NOT commit yet)
+4. **Revise based on feedback**
+5. **Commit only finalized spec**
+6. **Merge to main**
+
+```bash
+# Spec workflow
+git checkout -b docs/rag-service-spec
+# ... draft spec, get review, revise ...
+git add specs/RAG_SERVICE.md
+git commit -m "docs: Add RAG Service specification (finalized)"
+git checkout main && git merge docs/rag-service-spec
+```
+
 ## File Maintenance Rules
 
 ### DEVELOPMENT_PLANS.md

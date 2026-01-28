@@ -6,6 +6,7 @@
 | Pattern | Trigger | Prevention |
 |---------|---------|------------|
 | **Commit to main** | Any code change | ALWAYS use feature branch, NEVER commit directly to main |
+| **Commit draft specs** | Creating specs | Do NOT commit until finalized after review |
 | **Changelog skip** | Editing DEVELOPMENT_PLANS.md | ALWAYS update Change Log section, increment version |
 | **Access control bypass** | Adding vector search | ALWAYS filter by user tags BEFORE search |
 | **Hardcoded secrets** | Adding config values | Use environment variables, never commit secrets |
