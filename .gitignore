@@ -27,3 +27,4 @@ Thumbs.db
 # Claude Code checkpoints (session-specific)
 .agents/outputs/claude_checkpoints/*.transcript.jsonl
 .agents/outputs/claude_checkpoints/*_checkpoint.md
+.claude/settings.local.json
