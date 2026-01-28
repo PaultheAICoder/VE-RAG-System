@@ -126,6 +126,44 @@ ai_ready_rag/
 - **PRD_v0.80.md** - Current product requirements
 - **versions.md** - Component version matrix for reproducibility
 
+## Git Workflow
+
+**Main stays green at all times.** All development happens on feature branches.
+
+### Branch Strategy
+```
+main (protected - always green)
+├── feat/issue-XXX-description   # New features
+├── fix/issue-XXX-description    # Bug fixes
+├── chore/description            # Maintenance tasks
+└── test/description             # Test additions
+```
+
+### Workflow
+1. **Create branch** from main: `git checkout -b feat/issue-XXX-description`
+2. **Develop** on branch with commits
+3. **Run tests** before merge: `pytest tests/ -v`
+4. **Merge to main** only when all tests pass
+5. **Delete branch** after merge
+
+### Rules
+- **NEVER commit directly to main** (except emergency fixes)
+- **NEVER push broken code to main**
+- **Run tests before every merge to main**
+- Branch names should include issue number when applicable
+
+### Commands
+```bash
+# Create feature branch
+git checkout main
+git checkout -b feat/issue-XXX-description
+
+# After development, merge to main
+git checkout main
+git merge feat/issue-XXX-description
+git branch -d feat/issue-XXX-description
+```
+
 ## File Maintenance Rules
 
 ### DEVELOPMENT_PLANS.md

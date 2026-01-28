@@ -57,8 +57,26 @@ Every agent MUST:
 | Exceptions | `ai_ready_rag/core/exceptions.py` |
 | Tests | `tests/test_*.py` |
 
+## Git Workflow
+
+**Main stays green at all times.**
+
+- **NEVER commit directly to main**
+- All development on feature branches: `feat/issue-XXX-description`
+- Run tests before merge: `pytest tests/ -v`
+- Merge to main only when tests pass
+
+```bash
+# Create feature branch
+git checkout -b feat/issue-XXX-description
+
+# After work complete, merge to main
+git checkout main && git merge feat/issue-XXX-description
+```
+
 ## Do NOT
 
+- Commit directly to main (use feature branches)
 - Modify `requirements.txt` (use `requirements-wsl.txt`)
 - Skip writing the artifact file
 - Implement without reading the issue specification
