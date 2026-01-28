@@ -1,252 +1,234 @@
 #!/usr/bin/env python3
 """
-PreCompact Hook: Saves conversation state before context compaction.
-Extracts structured state from transcript and saves to PERSISTENT_STATE.yaml
+Claude Code PreCompact hook:
+- Extracts structured state from transcript (JSONL format)
+- Uses git for reliable branch detection
+- Updates PERSISTENT_STATE.yaml with extracted info
+- Creates checkpoint files for recovery
 """
+
+from __future__ import annotations
 
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
-# Try to import yaml, fall back to basic serialization if not available
-try:
-    import yaml
-
-    HAS_YAML = True
-except ImportError:
-    HAS_YAML = False
+MAX_TAIL_LINES = 300
 
 
-def get_project_dir():
-    """Get the Claude project directory."""
-    return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+def tail_lines(path: Path, max_lines: int) -> list[str]:
+    """Get last N lines from file."""
+    with path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        block = 8192
+        data = b""
+        while size > 0 and data.count(b"\n") <= max_lines:
+            step = min(block, size)
+            size -= step
+            f.seek(size)
+            data = f.read(step) + data
+        lines = data.splitlines()[-max_lines:]
+        return [ln.decode("utf-8", errors="replace") for ln in lines]
 
 
-def get_checkpoint_dir():
-    """Get the checkpoint output directory."""
-    project_dir = get_project_dir()
-    checkpoint_dir = Path(project_dir) / ".agents" / "outputs" / "claude_checkpoints"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    return checkpoint_dir
+def get_git_branch(project_dir: Path) -> str:
+    """Get current git branch directly from git."""
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or "main"
+    except Exception:
+        pass
+    return "main"
 
 
-def parse_transcript(transcript_path, max_lines=300):
-    """Parse transcript file looking for state patterns."""
+def extract_state_from_transcript(transcript_lines: list[str]) -> dict:
+    """Extract structured state from conversation transcript (JSONL format)."""
     state = {
-        "active_work": {
-            "issue": None,
-            "branch": "main",
-            "phase": None,
-            "last_action": None,
-        },
-        "modified_files": [],
+        "last_issue": None,
+        "last_phase": None,
+        "last_action": None,
         "pending_tasks": [],
         "key_decisions": [],
-        "extracted_at": datetime.now().isoformat(),
+        "files_modified": [],
+        "artifacts_created": [],
     }
 
-    if not transcript_path or not Path(transcript_path).exists():
-        return state
+    for line in transcript_lines:
+        try:
+            msg = json.loads(line)
+            content = str(msg.get("content", ""))
 
-    try:
-        with open(transcript_path, encoding="utf-8") as f:
-            lines = f.readlines()
+            # Extract issue numbers from issue file references (most reliable)
+            if (matches := re.findall(r"issues/(\d{3})-", content)) or (
+                matches := re.findall(r"[Ii]ssue[#\s]*(\d{1,3})\b", content)
+            ):
+                state["last_issue"] = int(matches[-1])
 
-        # Focus on last N lines
-        recent_lines = lines[-max_lines:] if len(lines) > max_lines else lines
-        content = "".join(recent_lines)
+            # Extract phase (most recent wins)
+            for phase in ["MAP-PLAN", "MAP", "PLAN", "PATCH", "PROVE"]:
+                if re.search(rf"\b{phase}\b", content):
+                    state["last_phase"] = phase
 
-        # Extract issue numbers (e.g., "Issue #123", "#456", "issue-789")
-        issue_patterns = [
-            r"[Ii]ssue\s*#?(\d+)",
-            r"#(\d+)",
-            r"issue-(\d+)",
-        ]
-        for pattern in issue_patterns:
-            matches = re.findall(pattern, content)
-            if matches:
-                state["active_work"]["issue"] = matches[-1]  # Use most recent
-                break
+            # Extract artifacts created
+            if match := re.search(r"AGENT_RETURN:\s*(\S+\.md)", content):
+                artifact = match.group(1)
+                if artifact not in state["artifacts_created"]:
+                    state["artifacts_created"].append(artifact)
 
-        # Extract phase (MAP-PLAN, PATCH, PROVE, etc.)
-        phase_patterns = [
-            r"\b(MAP-PLAN|PATCH|PROVE|PLANNING|IMPLEMENTING|TESTING|REVIEW)\b",
-            r"[Pp]hase:\s*(\w+)",
-        ]
-        for pattern in phase_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE)
-            if matches:
-                state["active_work"]["phase"] = matches[-1].upper()
-                break
+            # Extract file modifications from tool calls
+            if '"file_path"' in content:
+                for match in re.finditer(r'"file_path":\s*"([^"]+)"', content):
+                    filepath = match.group(1)
+                    if filepath not in state["files_modified"] and not filepath.endswith(".log"):
+                        state["files_modified"].append(filepath)
 
-        # Extract branch name
-        branch_patterns = [
-            r"[Bb]ranch:\s*([^\s\n]+)",
-            r"git checkout\s+([^\s\n]+)",
-            r"on branch\s+([^\s\n]+)",
-        ]
-        for pattern in branch_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE)
-            if matches:
-                state["active_work"]["branch"] = matches[-1]
-                break
+            # Extract last action from recent activity
+            if "commit" in content.lower() and (
+                "message" in content.lower() or "git commit" in content.lower()
+            ):
+                state["last_action"] = "Git commit"
+            elif "tests" in content.lower() and "pass" in content.lower():
+                state["last_action"] = "Tests passed"
 
-        # Extract modified files
-        file_patterns = [
-            r'(?:modified|edited|created|wrote)\s+[`"]?([^\s`"]+\.\w+)[`"]?',
-            r'Edit.*?file_path["\']:\s*["\']([^"\']+)["\']',
-        ]
-        modified_files = set()
-        for pattern in file_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE)
-            modified_files.update(matches)
-        state["modified_files"] = list(modified_files)[:20]  # Limit to 20
+        except (json.JSONDecodeError, TypeError):
+            continue
 
-        # Extract TODO items
-        todo_patterns = [
-            r"TODO:\s*(.+?)(?:\n|$)",
-            r"- \[ \]\s*(.+?)(?:\n|$)",
-            r"PENDING:\s*(.+?)(?:\n|$)",
-        ]
-        todos = []
-        for pattern in todo_patterns:
-            matches = re.findall(pattern, content)
-            todos.extend(matches)
-        state["pending_tasks"] = todos[:10]  # Limit to 10
-
-        # Extract key decisions
-        decision_patterns = [
-            r"[Dd]ecision:\s*(.+?)(?:\n|$)",
-            r"[Dd]ecided to\s+(.+?)(?:\.|$)",
-            r"[Ww]ill use\s+(.+?)(?:\.|$)",
-        ]
-        decisions = []
-        for pattern in decision_patterns:
-            matches = re.findall(pattern, content)
-            decisions.extend(matches)
-        state["key_decisions"] = decisions[:5]  # Limit to 5
-
-        # Determine last action from recent content
-        action_patterns = [
-            (r'commit.*?["\'](.+?)["\']', "committed"),
-            (r"created?\s+(\S+)", "created file"),
-            (r"test.*?(pass|fail)", "ran tests"),
-        ]
-        for pattern, action_type in action_patterns:
-            matches = re.findall(pattern, content[-5000:], re.IGNORECASE)
-            if matches:
-                state["active_work"]["last_action"] = f"{action_type}: {matches[-1]}"
-                break
-
-    except Exception as e:
-        # Fault-tolerant: don't fail if parsing fails
-        state["parse_error"] = str(e)
+    # Limit lists
+    state["files_modified"] = state["files_modified"][-15:]
+    state["pending_tasks"] = state["pending_tasks"][-5:]
+    state["key_decisions"] = state["key_decisions"][-5:]
 
     return state
 
 
-def save_state(state, checkpoint_dir):
-    """Save state to YAML file."""
-    state_file = checkpoint_dir / "PERSISTENT_STATE.yaml"
-
+def update_persistent_state(state_file: Path, extracted: dict, branch: str) -> None:
+    """Update PERSISTENT_STATE.yaml with extracted info."""
     try:
-        if HAS_YAML:
-            with open(state_file, "w", encoding="utf-8") as f:
-                yaml.dump(state, f, default_flow_style=False, allow_unicode=True)
-        else:
-            # Fallback: simple YAML-like format
-            with open(state_file, "w", encoding="utf-8") as f:
-                f.write("# Auto-generated state (install PyYAML for better formatting)\n")
-                f.write("active_work:\n")
-                for k, v in state.get("active_work", {}).items():
-                    f.write(f"  {k}: {v}\n")
-                f.write(f"modified_files: {state.get('modified_files', [])}\n")
-                f.write(f"pending_tasks: {state.get('pending_tasks', [])}\n")
-                f.write(f"extracted_at: {state.get('extracted_at', '')}\n")
-    except Exception as e:
-        print(f"Warning: Could not save state: {e}", file=sys.stderr)
-
-
-def backup_transcript(transcript_path, checkpoint_dir):
-    """Create a backup of the raw transcript."""
-    if not transcript_path or not Path(transcript_path).exists():
+        import yaml
+    except ImportError:
         return
 
+    # Create default structure if file doesn't exist
+    if state_file.exists():
+        try:
+            content = state_file.read_text(encoding="utf-8")
+            data = yaml.safe_load(content) or {}
+        except Exception:
+            data = {}
+    else:
+        data = {}
+
+    # Update active_work section
+    if "active_work" not in data:
+        data["active_work"] = {}
+
+    if extracted["last_issue"]:
+        data["active_work"]["issue"] = str(extracted["last_issue"])
+    data["active_work"]["branch"] = branch
+    if extracted["last_phase"]:
+        data["active_work"]["phase"] = extracted["last_phase"]
+    if extracted["last_action"]:
+        data["active_work"]["last_action"] = extracted["last_action"]
+    elif extracted["artifacts_created"]:
+        data["active_work"]["last_action"] = f"Created {extracted['artifacts_created'][-1]}"
+
+    # Update modified files
+    if extracted["files_modified"]:
+        data["modified_files"] = extracted["files_modified"]
+
+    # Update timestamp
+    data["extracted_at"] = datetime.now().isoformat()
+
+    # Write back
+    with state_file.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+
+
+def main() -> int:
+    # Read hook input from stdin
     try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = checkpoint_dir / f"{timestamp}.transcript.jsonl"
+        hook_in = json.load(sys.stdin)
+    except json.JSONDecodeError:
+        print("[precompact] Error: Invalid JSON input", file=sys.stderr)
+        return 1
 
-        with open(transcript_path, encoding="utf-8") as src:
-            with open(backup_file, "w", encoding="utf-8") as dst:
-                dst.write(src.read())
-    except Exception as e:
-        print(f"Warning: Could not backup transcript: {e}", file=sys.stderr)
+    transcript_path = Path(hook_in.get("transcript_path", "")).expanduser()
+    if not transcript_path.exists():
+        print(f"[precompact] Error: Transcript not found: {transcript_path}", file=sys.stderr)
+        return 1
 
+    # Get project directory
+    project_dir = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
+    # Handle Windows mount path
+    if str(project_dir).startswith("/mnt/c/Users/jjob/projects/"):
+        wsl_path = Path(
+            str(project_dir).replace("/mnt/c/Users/jjob/projects/", "/home/jjob/projects/")
+        )
+        if wsl_path.exists():
+            project_dir = wsl_path
 
-def create_summary_checkpoint(state, checkpoint_dir):
-    """Create a markdown summary checkpoint."""
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        summary_file = checkpoint_dir / f"{timestamp}_checkpoint.md"
+    out_dir = project_dir / ".agents" / "outputs" / "claude_checkpoints"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-        with open(summary_file, "w", encoding="utf-8") as f:
-            f.write(f"# Checkpoint: {datetime.now().isoformat()}\n\n")
-            f.write("## Active Work\n")
-            active = state.get("active_work", {})
-            f.write(f"- Issue: {active.get('issue', 'None')}\n")
-            f.write(f"- Branch: {active.get('branch', 'main')}\n")
-            f.write(f"- Phase: {active.get('phase', 'None')}\n")
-            f.write(f"- Last Action: {active.get('last_action', 'None')}\n\n")
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    session_id = hook_in.get("session_id", "unknown")
+    trigger = hook_in.get("trigger", "compact")
 
-            if state.get("modified_files"):
-                f.write("## Modified Files\n")
-                for file in state["modified_files"]:
-                    f.write(f"- {file}\n")
-                f.write("\n")
+    # 1) Copy the transcript as a raw checkpoint
+    raw_dst = out_dir / f"{ts}__{session_id}__{trigger}.transcript.jsonl"
+    shutil.copyfile(transcript_path, raw_dst)
 
-            if state.get("pending_tasks"):
-                f.write("## Pending Tasks\n")
-                for task in state["pending_tasks"]:
-                    f.write(f"- [ ] {task}\n")
-                f.write("\n")
+    # 2) Get git branch (reliable source)
+    branch = get_git_branch(project_dir)
 
-            if state.get("key_decisions"):
-                f.write("## Key Decisions\n")
-                for decision in state["key_decisions"]:
-                    f.write(f"- {decision}\n")
-    except Exception as e:
-        print(f"Warning: Could not create summary: {e}", file=sys.stderr)
+    # 3) Extract structured state from transcript
+    tail = tail_lines(transcript_path, MAX_TAIL_LINES)
+    extracted = extract_state_from_transcript(tail)
 
+    # 4) Update PERSISTENT_STATE.yaml
+    state_yaml = out_dir / "PERSISTENT_STATE.yaml"
+    update_persistent_state(state_yaml, extracted, branch)
 
-def main():
-    """Main entry point for the precompact hook."""
-    # Read input from stdin (JSON with transcript_path)
-    transcript_path = None
+    # 5) Create markdown summary
+    md_dst = out_dir / f"{ts}__{session_id}__{trigger}.md"
+    summary = f"""# Claude Code Checkpoint
 
-    try:
-        input_data = sys.stdin.read()
-        if input_data.strip():
-            data = json.loads(input_data)
-            transcript_path = data.get("transcript_path")
-    except (json.JSONDecodeError, KeyError):
-        # No input or invalid JSON - try to find transcript another way
-        pass
+- **Time**: {ts}
+- **Session**: {session_id}
+- **Trigger**: {trigger}
+- **Branch**: {branch}
 
-    checkpoint_dir = get_checkpoint_dir()
+## Extracted State
 
-    # Parse and save state
-    state = parse_transcript(transcript_path)
-    save_state(state, checkpoint_dir)
+- **Issue**: #{extracted["last_issue"] or "None"}
+- **Phase**: {extracted["last_phase"] or "None"}
+- **Last Action**: {extracted["last_action"] or "None"}
 
-    # Create backups
-    backup_transcript(transcript_path, checkpoint_dir)
-    create_summary_checkpoint(state, checkpoint_dir)
+## Files Modified
+{chr(10).join(f"- {f}" for f in extracted["files_modified"][-10:]) or "- None"}
+"""
+    md_dst.write_text(summary, encoding="utf-8")
 
-    print(f"Checkpoint saved to {checkpoint_dir}", file=sys.stderr)
+    # Output for logs
+    print(f"[precompact] Branch: {branch}")
+    print(f"[precompact] Issue: #{extracted['last_issue']}, Phase: {extracted['last_phase']}")
+    print(f"[precompact] Saved: {state_yaml.name}")
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
