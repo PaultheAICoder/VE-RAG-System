@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
 """
-Claude Code SessionStart hook (Optimized v2):
-- Loads compact YAML state (~300 tokens vs ~650)
-- Loads critical patterns only (~200 tokens vs ~2600)
-- Detects active orchestrate workflow and provides continue instructions
-- Total: ~500 tokens vs ~3250 (85% reduction)
+SessionStart Hook: Restores saved state on session start.
+Injects PERSISTENT_STATE.yaml and critical patterns into context.
 """
 
-from __future__ import annotations
-
-import json
 import os
-import sys
 from pathlib import Path
 
+# Try to import yaml, fall back to basic parsing if not available
 try:
     import yaml
 
@@ -22,85 +16,134 @@ except ImportError:
     HAS_YAML = False
 
 
-def get_active_work(yaml_content: str) -> dict:
-    """Extract active_work from YAML content."""
-    if not HAS_YAML:
-        return {}
+def get_project_dir():
+    """Get the Claude project directory."""
+    return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+
+
+def load_yaml_file(file_path):
+    """Load a YAML file, with fallback for missing PyYAML."""
+    if not file_path.exists():
+        return None
+
     try:
-        data = yaml.safe_load(yaml_content)
-        return data.get("active_work", {}) if data else {}
+        with open(file_path, encoding="utf-8") as f:
+            content = f.read()
+
+        if HAS_YAML:
+            return yaml.safe_load(content)
+        else:
+            # Return raw content if no YAML parser
+            return {"_raw": content}
     except Exception:
-        return {}
+        return None
 
 
-def main() -> int:
-    _hook_in = json.load(sys.stdin)
+def load_markdown_file(file_path):
+    """Load a markdown file."""
+    if not file_path.exists():
+        return None
 
-    project_dir = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
-    checkpoints_dir = project_dir / ".agents" / "outputs" / "claude_checkpoints"
-    memory_dir = project_dir / ".claude" / "memory"
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return None
 
-    print("## Restored Context\n")
 
-    # 1. Load compact YAML state (preferred) or fallback to markdown
-    yaml_state = checkpoints_dir / "PERSISTENT_STATE.yaml"
-    md_state = checkpoints_dir / "PERSISTENT_STATE.md"
+def format_state_output(state):
+    """Format state for minimal token output."""
+    if not state:
+        return None
 
-    active_work = {}
-    if yaml_state.exists():
-        yaml_content = yaml_state.read_text(encoding="utf-8")
-        active_work = get_active_work(yaml_content)
-        print("### Project State\n")
-        print("```yaml")
-        print(yaml_content)
-        print("```\n")
-    elif md_state.exists():
-        print("### Project State\n")
-        print(md_state.read_text(encoding="utf-8"))
-        print()
+    # Handle raw content fallback
+    if "_raw" in state:
+        return state["_raw"]
 
-    # 2. Load critical patterns only (top 3 patterns = 89% of failures)
-    patterns_critical = memory_dir / "patterns-critical.md"
-    if patterns_critical.exists():
-        print("### Critical Patterns (Always Apply)\n")
-        print(patterns_critical.read_text(encoding="utf-8"))
-        print()
+    lines = []
+
+    active = state.get("active_work", {})
+    if active.get("issue") or active.get("phase"):
+        lines.append("active_work:")
+        if active.get("issue"):
+            lines.append(f"  issue: #{active['issue']}")
+        if active.get("branch") and active["branch"] != "main":
+            lines.append(f"  branch: {active['branch']}")
+        if active.get("phase"):
+            lines.append(f"  phase: {active['phase']}")
+        if active.get("last_action"):
+            lines.append(f"  last_action: {active['last_action']}")
+
+    modified = state.get("modified_files", [])
+    if modified:
+        lines.append(f"modified_files: [{', '.join(modified[:5])}]")
+
+    pending = state.get("pending_tasks", [])
+    if pending:
+        lines.append("pending_tasks:")
+        for task in pending[:3]:
+            lines.append(f"  - {task}")
+
+    return "\n".join(lines) if lines else None
+
+
+def has_active_workflow(state):
+    """Check if there's an active workflow to continue."""
+    if not state:
+        return False
+    active = state.get("active_work", {})
+    return bool(active.get("issue") and active.get("phase"))
+
+
+def main():
+    """Main entry point for session start hook."""
+    project_dir = Path(get_project_dir())
+    output_parts = []
+
+    # Load persistent state
+    state_file = (
+        project_dir / ".agents" / "outputs" / "claude_checkpoints" / "PERSISTENT_STATE.yaml"
+    )
+    state = load_yaml_file(state_file)
+
+    if state:
+        formatted_state = format_state_output(state)
+        if formatted_state:
+            output_parts.append("**Restored State:**")
+            output_parts.append("```yaml")
+            output_parts.append(formatted_state)
+            output_parts.append("```")
+
+    # Load critical patterns
+    patterns_file = project_dir / ".claude" / "memory" / "patterns-critical.md"
+    patterns = load_markdown_file(patterns_file)
+
+    if patterns:
+        # Truncate if too long (aim for ~600 tokens)
+        max_chars = 2400  # ~600 tokens
+        if len(patterns) > max_chars:
+            patterns = patterns[:max_chars] + "\n...(truncated)"
+        output_parts.append("\n**Critical Patterns:**")
+        output_parts.append(patterns)
+
+    # Add continue instructions if active workflow detected
+    if has_active_workflow(state):
+        active = state.get("active_work", {})
+        output_parts.append("\n---")
+        output_parts.append(
+            f"**Continue:** Issue #{active.get('issue')} | Phase: {active.get('phase')}"
+        )
+        if active.get("last_action"):
+            output_parts.append(f"Last action: {active.get('last_action')}")
+        output_parts.append("Resume where you left off or ask for status update.")
+
+    # Output everything
+    if output_parts:
+        print("\n".join(output_parts))
     else:
-        # Fallback: print inline critical patterns
-        print("### Critical Patterns\n")
-        print("1. **VERIFICATION_GAP**: Read spec/code before assuming")
-        print("2. **ENUM_VALUE**: Use VALUES not Python names (CO-OWNER not CO_OWNER)")
-        print("3. **COMPONENT_API**: Read PropTypes before using components")
-        print()
-        print("Full patterns: `.claude/memory/patterns-full.md`\n")
-
-    # 3. Check for active orchestrate workflow and provide continue instructions
-    issue = active_work.get("issue")
-    phase = active_work.get("phase")
-    branch = active_work.get("branch")
-
-    if issue and phase:
-        print("### ACTIVE ORCHESTRATE WORKFLOW\n")
-        print(f"**Issue**: #{issue}")
-        print(f"**Phase**: {phase}")
-        print(f"**Branch**: {branch}")
-        print()
-        print("**CRITICAL**: You were in the middle of an orchestrate workflow.")
-        print("Continue with the current phase using the Task tool:")
-        print()
-        print("1. Read `.claude/commands/orchestrate.md` for phase instructions")
-        print("2. Check for existing artifacts in `.agents/outputs/`")
-        print(f"3. Continue the `{phase}` phase for issue #{issue}")
-        print()
-        print("If the phase was completed, proceed to the next phase in the workflow.")
-        print()
-
-    # 4. Hint about full patterns location
-    print("---")
-    print("*Full patterns available at `.claude/memory/patterns-full.md` if needed.*\n")
-
-    return 0
+        # Minimal output if nothing to restore
+        print("No saved state found. Starting fresh session.")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

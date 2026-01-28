@@ -35,3 +35,4 @@ data/
 
 # Agent outputs (session-specific)
 .agents/outputs/
+issues/

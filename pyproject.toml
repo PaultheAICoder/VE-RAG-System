@@ -50,6 +50,7 @@ ignore = [
     "E501",   # line too long (handled by formatter)
     "B008",   # do not perform function calls in argument defaults (FastAPI Depends)
     "SIM105", # contextlib.suppress doesn't work with async await
+    "SIM117", # nested with statements are clearer for file operations
 ]
 
 [tool.ruff.lint.isort]
