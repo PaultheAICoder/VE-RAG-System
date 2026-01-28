@@ -1,0 +1,25 @@
+# AI Ready RAG - FastAPI Backend (no RAG dependencies)
+# Use this for testing auth, users, tags, API endpoints
+
+# Core Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# Data Validation
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+email-validator>=2.0.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# Security
+bcrypt>=4.0.0
+pyjwt>=2.8.0
+
+# HTTP Client (for tests)
+httpx>=0.27.0
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=4.0.0
