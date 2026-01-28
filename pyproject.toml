@@ -10,6 +10,11 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: marks tests as integration tests (require Qdrant + Ollama)",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
@@ -44,6 +49,7 @@ select = [
 ignore = [
     "E501",   # line too long (handled by formatter)
     "B008",   # do not perform function calls in argument defaults (FastAPI Depends)
+    "SIM105", # contextlib.suppress doesn't work with async await
 ]
 
 [tool.ruff.lint.isort]
