@@ -340,3 +340,28 @@ class DocumentService:
         )
         self.db.commit()
         return count
+
+    def delete_all_documents(self) -> int:
+        """Delete all documents and their files from storage.
+
+        Returns:
+            Count of deleted documents
+
+        Warning:
+            This is a destructive operation. Intended for knowledge base reset.
+        """
+        # Get all documents
+        documents = self.db.query(Document).all()
+        count = len(documents)
+
+        # Delete files from storage
+        for doc in documents:
+            doc_dir = self.storage_path / doc.id
+            if doc_dir.exists():
+                shutil.rmtree(doc_dir)
+
+        # Delete all documents from database
+        self.db.query(Document).delete()
+        self.db.commit()
+
+        return count

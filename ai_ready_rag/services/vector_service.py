@@ -745,6 +745,96 @@ class VectorService:
                 tenant_id=self.tenant_id,
             )
 
+    async def get_extended_stats(self) -> dict:
+        """Get extended collection statistics including file details.
+
+        Returns:
+            dict with:
+            - total_chunks: int
+            - unique_files: int
+            - collection_name: str
+            - collection_size_bytes: int
+            - files: list[dict] with document_id, filename, chunk_count
+        """
+        try:
+            # Get collection info
+            collection_info = await self._qdrant.get_collection(self.collection_name)
+
+            total_chunks = collection_info.points_count or 0
+
+            # Collection size from storage info
+            collection_size_bytes = 0
+            if (
+                hasattr(collection_info, "payload_storage_size")
+                and collection_info.payload_storage_size
+            ):
+                collection_size_bytes += collection_info.payload_storage_size
+            if (
+                hasattr(collection_info, "vectors_storage_size")
+                and collection_info.vectors_storage_size
+            ):
+                collection_size_bytes += collection_info.vectors_storage_size
+
+            # Scroll collection to gather file details
+            # Aggregate by document_id: count chunks, capture filename
+            file_stats: dict[str, dict] = {}
+            offset = None
+
+            while True:
+                results, offset = await self._qdrant.scroll(
+                    collection_name=self.collection_name,
+                    limit=1000,
+                    offset=offset,
+                    with_payload=["document_id", "document_name"],
+                    scroll_filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="tenant_id",
+                                match=models.MatchValue(value=self.tenant_id),
+                            )
+                        ]
+                    ),
+                )
+
+                if not results:
+                    break
+
+                for point in results:
+                    if point.payload:
+                        doc_id = point.payload.get("document_id", "")
+                        doc_name = point.payload.get("document_name", "")
+                        if doc_id:
+                            if doc_id not in file_stats:
+                                file_stats[doc_id] = {
+                                    "document_id": doc_id,
+                                    "filename": doc_name,
+                                    "chunk_count": 0,
+                                }
+                            file_stats[doc_id]["chunk_count"] += 1
+
+                if offset is None:
+                    break
+
+            files_list = list(file_stats.values())
+
+            return {
+                "total_chunks": total_chunks,
+                "unique_files": len(files_list),
+                "collection_name": self.collection_name,
+                "collection_size_bytes": collection_size_bytes,
+                "files": files_list,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get extended collection stats: {e}")
+            return {
+                "total_chunks": 0,
+                "unique_files": 0,
+                "collection_name": self.collection_name,
+                "collection_size_bytes": 0,
+                "files": [],
+            }
+
     async def clear_collection(self) -> bool:
         """Delete all vectors in collection for this tenant.
 

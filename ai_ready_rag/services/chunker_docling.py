@@ -19,10 +19,16 @@ class DoclingChunker:
         enable_ocr: bool = True,
         ocr_language: str = "eng",
         max_tokens: int = 512,
+        force_full_page_ocr: bool = False,
+        table_extraction_mode: str = "accurate",
+        include_image_descriptions: bool = True,
     ):
         self.enable_ocr = enable_ocr
         self.ocr_language = ocr_language
         self.max_tokens = max_tokens
+        self.force_full_page_ocr = force_full_page_ocr
+        self.table_extraction_mode = table_extraction_mode
+        self.include_image_descriptions = include_image_descriptions
 
         self._converter = None
         self._chunker = None
@@ -51,13 +57,14 @@ class DoclingChunker:
 
             table_options = TableStructureOptions(
                 do_cell_matching=True,
-                mode="accurate",
+                mode=self.table_extraction_mode,
             )
 
             pipeline_options = PdfPipelineOptions(
                 do_ocr=self.enable_ocr,
                 do_table_structure=True,
                 table_structure_options=table_options,
+                generate_picture_images=self.include_image_descriptions,
             )
 
             if self.enable_ocr:
@@ -66,7 +73,7 @@ class DoclingChunker:
 
                     ocr_options = TesseractOcrOptions(
                         lang=[self.ocr_language],
-                        force_full_page_ocr=False,
+                        force_full_page_ocr=self.force_full_page_ocr,
                     )
                     pipeline_options.ocr_options = ocr_options
                 except ImportError:

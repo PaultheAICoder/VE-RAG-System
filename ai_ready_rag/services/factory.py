@@ -82,6 +82,9 @@ def get_chunker(settings: Settings) -> "ChunkerProtocol":
             enable_ocr=settings.enable_ocr or False,
             ocr_language=settings.ocr_language,
             max_tokens=settings.chunk_size,
+            force_full_page_ocr=settings.force_full_page_ocr,
+            table_extraction_mode=settings.table_extraction_mode,
+            include_image_descriptions=settings.include_image_descriptions,
         )
     elif backend == "simple":
         from ai_ready_rag.services.chunker_simple import SimpleChunker
