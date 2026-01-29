@@ -1,0 +1,756 @@
+"""Main Gradio Blocks application for AI Ready RAG."""
+
+from datetime import datetime
+
+import gradio as gr
+import httpx
+
+from ai_ready_rag.ui.api_client import GradioAPIClient, handle_api_error
+from ai_ready_rag.ui.components import parse_assistant_response
+from ai_ready_rag.ui.document_components import (
+    handle_delete,
+    handle_reprocess,
+    handle_upload,
+    load_documents,
+    load_tags,
+)
+from ai_ready_rag.ui.theme import custom_css, theme
+
+
+def _format_date(iso_string: str | None) -> str:
+    """Format ISO date string for display."""
+    if not iso_string:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_string.replace("Z", "+00:00"))
+        return dt.strftime("%m/%d %H:%M")
+    except Exception:
+        return iso_string[:10] if iso_string else ""
+
+
+def _format_sessions_for_display(sessions: list[dict]) -> list[list[str]]:
+    """Format sessions list for Dataframe display."""
+    return [
+        [
+            s.get("title") or f"Chat {s.get('id', '')[:8]}...",
+            _format_date(s.get("updated_at")),
+        ]
+        for s in sessions
+    ]
+
+
+def _format_messages_for_chatbot(messages: list[dict]) -> list[dict]:
+    """Format messages list for Gradio Chatbot display.
+
+    Returns messages in Gradio 5.0 format: list of dicts with 'role' and 'content'.
+    Assistant messages are formatted with citations, confidence, and routing info.
+    """
+    chat_history = []
+    for msg in messages:
+        role = msg.get("role")
+        if role == "user":
+            chat_history.append(
+                {
+                    "role": "user",
+                    "content": msg.get("content", ""),
+                }
+            )
+        elif role == "assistant":
+            chat_history.append(
+                {
+                    "role": "assistant",
+                    "content": parse_assistant_response(msg),
+                }
+            )
+    return chat_history
+
+
+def create_app() -> gr.Blocks:
+    """Create and return the Gradio app instance.
+
+    The app uses gr.State for per-session authentication state,
+    ensuring user isolation in multi-user environments.
+    """
+    with gr.Blocks(theme=theme, css=custom_css, title="AI Ready RAG") as app:
+        # Per-user auth state - isolated per browser session
+        auth_state = gr.State(
+            value={
+                "token": None,
+                "user": None,
+                "is_authenticated": False,
+            }
+        )
+
+        # Session state for chat
+        session_state = gr.State(
+            value={
+                "sessions": [],
+                "active_session_id": None,
+                "has_more_sessions": False,
+                "sessions_offset": 0,
+                "messages": [],
+            }
+        )
+
+        # ========== LOGIN CONTAINER ==========
+        with gr.Column(visible=True, elem_classes=["login-container"]) as login_container:
+            gr.Markdown("# AI Ready RAG")
+            gr.Markdown("Sign in to access your documents and chat.")
+
+            with gr.Column():
+                login_email = gr.Textbox(
+                    label="Email",
+                    placeholder="you@example.com",
+                    type="email",
+                )
+                login_password = gr.Textbox(
+                    label="Password",
+                    placeholder="Enter your password",
+                    type="password",
+                )
+                login_btn = gr.Button("Login", variant="primary")
+                login_error = gr.Markdown(visible=False, elem_classes=["error-banner"])
+
+        # ========== MAIN APP CONTAINER ==========
+        with gr.Column(visible=False) as main_container:
+            # Header bar
+            with gr.Row(elem_classes=["header-bar"]):
+                gr.Markdown("**AI Ready RAG**")
+                with gr.Row():
+                    user_display = gr.Markdown("")
+                    logout_btn = gr.Button("Logout", variant="secondary", size="sm")
+
+            # Main content area with sidebar and chat
+            with gr.Row():
+                # Sidebar
+                with gr.Column(scale=1, min_width=250, elem_classes=["sidebar"]):
+                    new_chat_btn = gr.Button("+ New Chat", variant="primary")
+
+                    # Upload button (Phase 2 - disabled)
+                    gr.Button(
+                        "Upload Document",
+                        variant="secondary",
+                        interactive=False,
+                        elem_classes=["phase2-disabled"],
+                    )
+
+                    gr.Markdown("### Recent Chats")
+                    sessions_list = gr.Dataframe(
+                        headers=["Title", "Updated"],
+                        datatype=["str", "str"],
+                        column_count=(2, "fixed"),
+                        interactive=False,
+                    )
+                    load_more_btn = gr.Button(
+                        "Load More",
+                        variant="secondary",
+                        size="sm",
+                        visible=False,
+                    )
+
+                    # Admin Document Management Section
+                    gr.Markdown("---")
+                    with gr.Accordion(
+                        "Document Management",
+                        open=False,
+                        visible=False,
+                    ) as doc_mgmt_accordion:
+                        # Upload section
+                        doc_file_input = gr.File(
+                            label="Select File",
+                            file_types=[".pdf", ".docx", ".txt", ".md"],
+                        )
+                        doc_tag_dropdown = gr.Dropdown(
+                            label="Tags (required)",
+                            multiselect=True,
+                            choices=[],
+                        )
+                        doc_title_input = gr.Textbox(
+                            label="Title (optional)",
+                            placeholder="Document title...",
+                        )
+                        doc_upload_btn = gr.Button("Upload", variant="primary", size="sm")
+                        doc_upload_status = gr.Markdown("")
+
+                        gr.Markdown("---")
+
+                        # Document list controls
+                        doc_refresh_btn = gr.Button("Refresh List", size="sm")
+                        doc_table = gr.Dataframe(
+                            headers=["ID", "Filename", "Status"],
+                            datatype=["str", "str", "str"],
+                            interactive=False,
+                        )
+
+                        # Action section
+                        doc_selected_id = gr.Textbox(
+                            label="Document ID (enter full ID for actions)",
+                            placeholder="Enter document ID...",
+                        )
+                        with gr.Row():
+                            doc_delete_btn = gr.Button("Delete", variant="stop", size="sm")
+                            doc_reprocess_btn = gr.Button("Reprocess", size="sm")
+                        doc_action_status = gr.Markdown("")
+
+                # Chat area
+                with gr.Column(scale=3, elem_classes=["chat-area"]):
+                    chat_display = gr.Chatbot(
+                        label="Chat",
+                        height=400,
+                        show_label=False,
+                        elem_classes=["chat-messages"],
+                    )
+
+                    # Loading indicator (hidden by default)
+                    loading_indicator = gr.Markdown(
+                        "Thinking...",
+                        visible=False,
+                        elem_classes=["loading-spinner"],
+                    )
+
+                    # Error banner (hidden by default)
+                    chat_error = gr.Markdown(
+                        visible=False,
+                        elem_classes=["error-banner"],
+                    )
+
+                    # Input area
+                    with gr.Row(elem_classes=["chat-input-area"]):
+                        msg_input = gr.Textbox(
+                            placeholder="Type your message...",
+                            show_label=False,
+                            scale=4,
+                        )
+                        send_btn = gr.Button("Send", variant="primary", scale=1)
+
+        # ========== EVENT HANDLERS ==========
+
+        def handle_login(email: str, password: str, auth: dict, sess: dict) -> tuple:
+            """Handle login form submission and load sessions."""
+            if not email or not password:
+                return (
+                    auth,
+                    sess,
+                    gr.update(visible=True, value="Please enter email and password."),
+                    gr.update(visible=True),  # login_container
+                    gr.update(visible=False),  # main_container
+                    "",  # user_display
+                    gr.update(value=[]),  # sessions_list
+                    gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # doc_mgmt_accordion
+                    gr.update(choices=[]),  # doc_tag_dropdown
+                )
+
+            try:
+                # Authenticate
+                result = GradioAPIClient.login(email, password)
+                token = result.get("access_token")
+                user = result.get("user", {})
+
+                new_auth = {
+                    "token": token,
+                    "user": user,
+                    "is_authenticated": True,
+                }
+
+                # Load initial sessions
+                sessions_response = GradioAPIClient.get_sessions(token, limit=20, offset=0)
+                sessions = sessions_response.get("sessions", [])
+                total = sessions_response.get("total", 0)
+                has_more = len(sessions) < total
+
+                new_sess = {
+                    "sessions": sessions,
+                    "active_session_id": None,
+                    "has_more_sessions": has_more,
+                    "sessions_offset": 20,
+                    "messages": [],
+                }
+
+                user_name = user.get("display_name", email)
+                sessions_display = _format_sessions_for_display(sessions)
+
+                # Check if admin for document management visibility
+                is_admin = user.get("role") == "admin"
+
+                # Load tags for admin document dropdown
+                tag_choices = []
+                if is_admin:
+                    tag_choices = load_tags(new_auth)
+
+                return (
+                    new_auth,
+                    new_sess,
+                    gr.update(visible=False),  # login_error
+                    gr.update(visible=False),  # login_container
+                    gr.update(visible=True),  # main_container
+                    f"**{user_name}**",  # user_display
+                    gr.update(value=sessions_display),  # sessions_list
+                    gr.update(visible=has_more),  # load_more_btn
+                    gr.update(visible=is_admin),  # doc_mgmt_accordion
+                    gr.update(choices=tag_choices),  # doc_tag_dropdown
+                )
+            except httpx.HTTPStatusError as e:
+                # For login, 401 means invalid credentials, not session expired
+                if e.response.status_code == 401:
+                    error_msg = "Invalid email or password."
+                else:
+                    error_info = handle_api_error(e)
+                    error_msg = error_info["message"]
+                return (
+                    auth,
+                    sess,
+                    gr.update(visible=True, value=f"**Error:** {error_msg}"),
+                    gr.update(visible=True),  # login_container
+                    gr.update(visible=False),  # main_container
+                    "",  # user_display
+                    gr.update(value=[]),  # sessions_list
+                    gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # doc_mgmt_accordion
+                    gr.update(choices=[]),  # doc_tag_dropdown
+                )
+            except Exception as e:
+                return (
+                    auth,
+                    sess,
+                    gr.update(visible=True, value=f"**Error:** {e!s}"),
+                    gr.update(visible=True),  # login_container
+                    gr.update(visible=False),  # main_container
+                    "",  # user_display
+                    gr.update(value=[]),  # sessions_list
+                    gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # doc_mgmt_accordion
+                    gr.update(choices=[]),  # doc_tag_dropdown
+                )
+
+        def handle_logout(auth: dict, sess: dict) -> tuple:
+            """Handle logout button click."""
+            token = auth.get("token")
+            if token:
+                try:
+                    GradioAPIClient.logout(token)
+                except Exception:
+                    pass  # Ignore logout errors
+
+            # Reset states
+            new_auth = {
+                "token": None,
+                "user": None,
+                "is_authenticated": False,
+            }
+            new_sess = {
+                "sessions": [],
+                "active_session_id": None,
+                "has_more_sessions": False,
+                "sessions_offset": 0,
+                "messages": [],
+            }
+
+            return (
+                new_auth,
+                new_sess,
+                gr.update(visible=True),  # login_container
+                gr.update(visible=False),  # main_container
+                "",  # user_display
+                gr.update(visible=False),  # login_error
+                gr.update(value=[]),  # sessions_list
+                gr.update(visible=False),  # load_more_btn
+                [],  # chat_display
+            )
+
+        def handle_new_chat(auth: dict, sess: dict) -> tuple:
+            """Create a new chat session."""
+            token = auth.get("token")
+            if not token:
+                return (
+                    sess,
+                    gr.update(),  # sessions_list unchanged
+                    [],  # chat_display cleared
+                    gr.update(visible=False),  # chat_error
+                )
+
+            try:
+                # Create new session
+                new_session = GradioAPIClient.create_session(token)
+
+                # Prepend to sessions list
+                sessions = [new_session] + sess.get("sessions", [])
+
+                new_sess = {
+                    **sess,
+                    "sessions": sessions,
+                    "active_session_id": new_session.get("id"),
+                    "messages": [],
+                }
+
+                sessions_display = _format_sessions_for_display(sessions)
+
+                return (
+                    new_sess,
+                    gr.update(value=sessions_display),  # sessions_list
+                    [],  # chat_display cleared
+                    gr.update(visible=False),  # chat_error
+                )
+            except httpx.HTTPStatusError as e:
+                error_info = handle_api_error(e)
+                return (
+                    sess,
+                    gr.update(),  # sessions_list unchanged
+                    [],  # chat_display
+                    gr.update(visible=True, value=f"**Error:** {error_info['message']}"),
+                )
+            except Exception as e:
+                return (
+                    sess,
+                    gr.update(),
+                    [],
+                    gr.update(visible=True, value=f"**Error:** {e!s}"),
+                )
+
+        def handle_load_more(auth: dict, sess: dict) -> tuple:
+            """Load more sessions (pagination)."""
+            token = auth.get("token")
+            if not token:
+                return sess, gr.update(), gr.update(visible=False)
+
+            try:
+                offset = sess.get("sessions_offset", 0)
+                response = GradioAPIClient.get_sessions(token, limit=20, offset=offset)
+
+                new_sessions = response.get("sessions", [])
+                total = response.get("total", 0)
+
+                # Append to existing sessions
+                all_sessions = sess.get("sessions", []) + new_sessions
+                new_offset = offset + len(new_sessions)
+                has_more = new_offset < total
+
+                new_sess = {
+                    **sess,
+                    "sessions": all_sessions,
+                    "sessions_offset": new_offset,
+                    "has_more_sessions": has_more,
+                }
+
+                sessions_display = _format_sessions_for_display(all_sessions)
+
+                return (
+                    new_sess,
+                    gr.update(value=sessions_display),
+                    gr.update(visible=has_more),
+                )
+            except Exception:
+                return sess, gr.update(), gr.update(visible=False)
+
+        def handle_session_select(evt: gr.SelectData, auth: dict, sess: dict) -> tuple:
+            """Handle clicking on a session in the list."""
+            token = auth.get("token")
+            sessions = sess.get("sessions", [])
+
+            if not token or evt.index[0] >= len(sessions):
+                return sess, [], gr.update(visible=False)
+
+            selected_session = sessions[evt.index[0]]
+            session_id = selected_session.get("id")
+
+            try:
+                # Load messages for this session
+                response = GradioAPIClient.get_messages(token, session_id)
+                messages = response.get("messages", [])
+
+                # Format for Chatbot - list of message dicts with role/content
+                chat_history = _format_messages_for_chatbot(messages)
+
+                new_sess = {
+                    **sess,
+                    "active_session_id": session_id,
+                    "messages": messages,
+                }
+
+                return new_sess, chat_history, gr.update(visible=False)
+            except httpx.HTTPStatusError as e:
+                error_info = handle_api_error(e)
+                return (
+                    sess,
+                    [],
+                    gr.update(visible=True, value=f"**Error:** {error_info['message']}"),
+                )
+            except Exception as e:
+                return sess, [], gr.update(visible=True, value=f"**Error:** {e!s}")
+
+        def send_message(message: str, history: list, auth: dict, sess: dict) -> tuple:
+            """Send message to RAG and get response."""
+            if not message or not message.strip():
+                return (
+                    "",
+                    history,
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    sess,
+                )
+
+            token = auth.get("token")
+            if not token:
+                return (
+                    message,
+                    history,
+                    gr.update(visible=False),
+                    gr.update(
+                        visible=True,
+                        value="**Session expired.** Please log out and log in again.",
+                    ),
+                    sess,
+                )
+
+            # Check for active session
+            session_id = sess.get("active_session_id")
+            if not session_id:
+                return (
+                    message,
+                    history,
+                    gr.update(visible=False),
+                    gr.update(
+                        visible=True,
+                        value="Please select or create a chat session first.",
+                    ),
+                    sess,
+                )
+
+            # Add user message to history immediately
+            history = history or []
+            history.append({"role": "user", "content": message})
+
+            try:
+                # Call the RAG API
+                response = GradioAPIClient.send_message(token, session_id, message)
+
+                # Format assistant response with citations, confidence, routing
+                assistant_msg = response.get("assistant_message", {})
+                formatted_response = parse_assistant_response(assistant_msg)
+
+                # Add assistant response to history
+                history.append({"role": "assistant", "content": formatted_response})
+
+                # Update session state with new messages
+                new_sess = {
+                    **sess,
+                    "messages": sess.get("messages", [])
+                    + [
+                        response.get("user_message", {}),
+                        assistant_msg,
+                    ],
+                }
+
+                return (
+                    "",  # Clear input
+                    history,
+                    gr.update(visible=False),  # Hide loading
+                    gr.update(visible=False),  # Hide error
+                    new_sess,
+                )
+            except httpx.HTTPStatusError as e:
+                error_info = handle_api_error(e)
+
+                # Remove the pending user message on error
+                if history and history[-1].get("role") == "user":
+                    history = history[:-1]
+
+                # Handle 401 specially
+                if error_info.get("action") == "redirect_to_login":
+                    return (
+                        message,
+                        history,
+                        gr.update(visible=False),
+                        gr.update(
+                            visible=True,
+                            value="**Session expired.** Please log out and log in again.",
+                        ),
+                        sess,
+                    )
+
+                return (
+                    message,  # Keep message for retry
+                    history,
+                    gr.update(visible=False),
+                    gr.update(visible=True, value=f"**Error:** {error_info['message']}"),
+                    sess,
+                )
+            except Exception as e:
+                # Remove the pending user message on error
+                if history and history[-1].get("role") == "user":
+                    history = history[:-1]
+
+                return (
+                    message,  # Keep message for retry
+                    history,
+                    gr.update(visible=False),
+                    gr.update(visible=True, value=f"**Error:** {e!s}"),
+                    sess,
+                )
+
+        def show_loading() -> gr.update:
+            """Show loading indicator."""
+            return gr.update(visible=True, value="Thinking...")
+
+        def hide_loading() -> gr.update:
+            """Hide loading indicator."""
+            return gr.update(visible=False)
+
+        # ========== CONNECT EVENT HANDLERS ==========
+
+        # Login
+        login_btn.click(
+            fn=handle_login,
+            inputs=[login_email, login_password, auth_state, session_state],
+            outputs=[
+                auth_state,
+                session_state,
+                login_error,
+                login_container,
+                main_container,
+                user_display,
+                sessions_list,
+                load_more_btn,
+                doc_mgmt_accordion,
+                doc_tag_dropdown,
+            ],
+        )
+
+        login_password.submit(
+            fn=handle_login,
+            inputs=[login_email, login_password, auth_state, session_state],
+            outputs=[
+                auth_state,
+                session_state,
+                login_error,
+                login_container,
+                main_container,
+                user_display,
+                sessions_list,
+                load_more_btn,
+                doc_mgmt_accordion,
+                doc_tag_dropdown,
+            ],
+        )
+
+        # Logout
+        logout_btn.click(
+            fn=handle_logout,
+            inputs=[auth_state, session_state],
+            outputs=[
+                auth_state,
+                session_state,
+                login_container,
+                main_container,
+                user_display,
+                login_error,
+                sessions_list,
+                load_more_btn,
+                chat_display,
+            ],
+        )
+
+        # New Chat
+        new_chat_btn.click(
+            fn=handle_new_chat,
+            inputs=[auth_state, session_state],
+            outputs=[session_state, sessions_list, chat_display, chat_error],
+        )
+
+        # Load More Sessions
+        load_more_btn.click(
+            fn=handle_load_more,
+            inputs=[auth_state, session_state],
+            outputs=[session_state, sessions_list, load_more_btn],
+        )
+
+        # Session Selection
+        sessions_list.select(
+            fn=handle_session_select,
+            inputs=[auth_state, session_state],
+            outputs=[session_state, chat_display, chat_error],
+        )
+
+        # Send Message - with loading indicator
+        send_btn.click(
+            fn=show_loading,
+            outputs=[loading_indicator],
+        ).then(
+            fn=send_message,
+            inputs=[msg_input, chat_display, auth_state, session_state],
+            outputs=[msg_input, chat_display, loading_indicator, chat_error, session_state],
+        )
+
+        msg_input.submit(
+            fn=show_loading,
+            outputs=[loading_indicator],
+        ).then(
+            fn=send_message,
+            inputs=[msg_input, chat_display, auth_state, session_state],
+            outputs=[msg_input, chat_display, loading_indicator, chat_error, session_state],
+        )
+
+        # ========== DOCUMENT MANAGEMENT EVENT HANDLERS ==========
+
+        def refresh_doc_list(auth: dict) -> list:
+            """Refresh document list."""
+            return load_documents(auth)
+
+        def do_upload(auth: dict, file, tag_ids: list, title: str) -> tuple:
+            """Handle document upload."""
+            status = handle_upload(auth, file, tag_ids, title, "")
+            docs = load_documents(auth)
+            # Use gr.update(value=[]) to clear selection without clearing choices
+            return status, docs, None, gr.update(value=[]), ""
+
+        def do_delete(auth: dict, doc_id: str) -> tuple:
+            """Handle document deletion."""
+            status = handle_delete(auth, doc_id)
+            docs = load_documents(auth)
+            return status, docs
+
+        def do_reprocess(auth: dict, doc_id: str) -> tuple:
+            """Handle document reprocessing."""
+            status = handle_reprocess(auth, doc_id)
+            docs = load_documents(auth)
+            return status, docs
+
+        # Document refresh
+        doc_refresh_btn.click(
+            fn=refresh_doc_list,
+            inputs=[auth_state],
+            outputs=[doc_table],
+        )
+
+        # Document upload
+        doc_upload_btn.click(
+            fn=do_upload,
+            inputs=[auth_state, doc_file_input, doc_tag_dropdown, doc_title_input],
+            outputs=[
+                doc_upload_status,
+                doc_table,
+                doc_file_input,
+                doc_tag_dropdown,
+                doc_title_input,
+            ],
+        )
+
+        # Document delete
+        doc_delete_btn.click(
+            fn=do_delete,
+            inputs=[auth_state, doc_selected_id],
+            outputs=[doc_action_status, doc_table],
+        )
+
+        # Document reprocess
+        doc_reprocess_btn.click(
+            fn=do_reprocess,
+            inputs=[auth_state, doc_selected_id],
+            outputs=[doc_action_status, doc_table],
+        )
+
+    return app
+
+
+# Export the app factory
+__all__ = ["create_app"]

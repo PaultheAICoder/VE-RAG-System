@@ -18,7 +18,7 @@ from ai_ready_rag.core.exceptions import (
     RAGServiceError,
 )
 from ai_ready_rag.db.database import get_db
-from ai_ready_rag.db.models import ChatMessage, ChatSession, User
+from ai_ready_rag.db.models import ChatMessage, ChatSession, Tag, User
 from ai_ready_rag.services.rag_service import (
     ChatMessage as RAGChatMessage,
 )
@@ -531,8 +531,13 @@ async def send_message(
     # Add user's new message to history
     rag_history.append(RAGChatMessage(role="user", content=message.content))
 
-    # Get user's tags
-    user_tags = [tag.name for tag in current_user.tags]
+    # Get user's tags - admins can access all documents
+    if current_user.role == "admin":
+        # Admin bypasses tag filtering - get all tags
+        all_tags = db.query(Tag).all()
+        user_tags = [tag.name for tag in all_tags]
+    else:
+        user_tags = [tag.name for tag in current_user.tags]
 
     rag_request = RAGRequest(
         query=message.content,
@@ -555,7 +560,7 @@ async def send_message(
         )
         await vector_service.initialize()
 
-        rag_service = RAGService(vector_service, settings)
+        rag_service = RAGService(settings, vector_service)
         response = await rag_service.generate(rag_request, db)
 
     except ModelNotAllowedError as e:

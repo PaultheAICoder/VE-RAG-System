@@ -43,7 +43,7 @@ class TagAssignment(BaseModel):
     tag_ids: list[str]
 
 
-@router.get("/", response_model=list[UserResponse])
+@router.get("", response_model=list[UserResponse])
 async def list_users(
     skip: int = 0,
     limit: int = 100,
@@ -63,7 +63,7 @@ async def list_users(
     ]
 
 
-@router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
     user_data: UserCreate,
     current_user: User = Depends(require_admin),

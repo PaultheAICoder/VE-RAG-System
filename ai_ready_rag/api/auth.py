@@ -62,7 +62,7 @@ async def login(
 
     # Update last login
     user.last_login = datetime.utcnow()
-    user.login_count += 1
+    user.login_count = (user.login_count or 0) + 1
     db.commit()
 
     # Set cookie

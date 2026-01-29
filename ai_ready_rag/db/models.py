@@ -84,6 +84,14 @@ class Document(Base):
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     processed_at = Column(DateTime, nullable=True)
 
+    # Extended fields (spec v1.2)
+    title = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    page_count = Column(Integer, nullable=True)
+    word_count = Column(Integer, nullable=True)
+    processing_time_ms = Column(Integer, nullable=True)
+    content_hash = Column(String, nullable=True, index=True)
+
     tags = relationship("Tag", secondary=document_tags, back_populates="documents")
 
 
