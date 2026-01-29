@@ -399,3 +399,22 @@ class GradioAPIClient:
             )
             response.raise_for_status()
             return response.json()
+
+    @staticmethod
+    def get_architecture_info(token: str) -> dict[str, Any]:
+        """Get system architecture information including OCR status.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Architecture info with document_parsing, embeddings, chat_model,
+            infrastructure, ocr_status, and profile.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get(
+                "/api/admin/architecture",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()

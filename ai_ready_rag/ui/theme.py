@@ -185,4 +185,42 @@ custom_css = """
         /* TODO: Phase 2 - mobile responsive */
     }
 }
+
+/* Status indicators for OCR availability */
+.status-available {
+    color: #10b981;
+    font-weight: 600;
+}
+
+.status-unavailable {
+    color: #ef4444;
+    font-weight: 600;
+}
+
+/* Health status badges */
+.health-healthy {
+    background-color: rgba(16, 185, 129, 0.1);
+    color: #10b981;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.875rem;
+}
+
+.health-unhealthy {
+    background-color: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.875rem;
+}
+
+/* Architecture info section spacing */
+.architecture-section {
+    margin-bottom: 1rem;
+}
+
+.architecture-label {
+    font-weight: 600;
+    color: #374151;
+}
 """

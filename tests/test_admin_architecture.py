@@ -44,7 +44,11 @@ class TestArchitectureInfo:
         assert "profile" in data
 
     def test_architecture_document_parsing(self, client, admin_headers):
-        """Document parsing section has required fields."""
+        """Document parsing section has required fields based on profile."""
+        from ai_ready_rag.config import get_settings
+
+        settings = get_settings()
+
         with patch("ai_ready_rag.api.admin.VectorService") as mock_vs_class:
             mock_vs = mock_vs_class.return_value
             mock_health = AsyncMock()
@@ -61,7 +65,9 @@ class TestArchitectureInfo:
         data = response.json()
 
         doc = data["document_parsing"]
-        assert doc["engine"] == "Docling"
+        # Engine depends on profile: "docling" -> Docling, "simple" -> SimpleChunker
+        expected_engine = "Docling" if settings.chunker_backend == "docling" else "SimpleChunker"
+        assert doc["engine"] == expected_engine
         assert "version" in doc
         assert "type" in doc
         assert "capabilities" in doc
