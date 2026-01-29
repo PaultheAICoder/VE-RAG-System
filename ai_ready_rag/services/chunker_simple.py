@@ -137,7 +137,10 @@ class SimpleChunker:
         return "\n\n".join(pages)
 
     def _extract_docx(self, path: Path) -> str:
-        """Extract text from DOCX using python-docx."""
+        """Extract text from DOCX using python-docx.
+
+        Extracts paragraphs, tables, headers, and footers.
+        """
         try:
             from docx import Document
         except ImportError as e:
@@ -146,8 +149,35 @@ class SimpleChunker:
             ) from e
 
         doc = Document(path)
-        paragraphs = [para.text for para in doc.paragraphs if para.text.strip()]
-        return "\n\n".join(paragraphs)
+        content = []
+
+        # Extract paragraphs
+        for para in doc.paragraphs:
+            if para.text.strip():
+                content.append(para.text)
+
+        # Extract tables
+        for table in doc.tables:
+            table_text = []
+            for row in table.rows:
+                row_text = [cell.text.strip() for cell in row.cells]
+                if any(row_text):
+                    table_text.append(" | ".join(row_text))
+            if table_text:
+                content.append("\n".join(table_text))
+
+        # Extract headers and footers
+        for section in doc.sections:
+            if section.header and section.header.paragraphs:
+                for para in section.header.paragraphs:
+                    if para.text.strip():
+                        content.append(para.text)
+            if section.footer and section.footer.paragraphs:
+                for para in section.footer.paragraphs:
+                    if para.text.strip():
+                        content.append(para.text)
+
+        return "\n\n".join(content)
 
     def _extract_csv(self, path: Path) -> str:
         """Extract text from CSV."""
