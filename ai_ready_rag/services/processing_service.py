@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ProcessingOptions:
+    """Per-upload processing options (optional overrides)."""
+
+    enable_ocr: bool | None = None
+    force_full_page_ocr: bool | None = None
+    ocr_language: str | None = None
+    table_extraction_mode: str | None = None
+    include_image_descriptions: bool | None = None
+
+
+@dataclass
 class ChunkInfo:
     """Information about a single chunk."""
 
@@ -83,6 +94,7 @@ class ProcessingService:
         self,
         document: Document,
         db: Session,
+        processing_options: ProcessingOptions | None = None,
     ) -> ProcessingResult:
         """Process a document and index to vectors.
 
@@ -92,6 +104,8 @@ class ProcessingService:
         Args:
             document: Document record to process.
             db: Database session for status updates.
+            processing_options: Optional per-upload processing options to override
+                global settings for this specific document.
 
         Returns:
             ProcessingResult with outcome details.
@@ -108,9 +122,15 @@ class ProcessingService:
             if not file_path.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
 
+            # Get chunker - use per-upload options if provided, otherwise use cached
+            if processing_options:
+                chunker = get_chunker(self.settings, processing_options)
+            else:
+                chunker = self.chunker
+
             # Chunk document using profile-appropriate chunker
             metadata = {"title": document.title} if document.title else None
-            chunk_dicts = self.chunker.chunk_document(str(file_path), metadata)
+            chunk_dicts = chunker.chunk_document(str(file_path), metadata)
 
             if not chunk_dicts:
                 raise ValueError("No chunks extracted from document")

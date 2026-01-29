@@ -458,6 +458,134 @@ class TestDocumentTagUpdate:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
 
+class TestUploadWithProcessingOptions:
+    """Tests for per-upload processing options."""
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_upload_with_enable_ocr_false(
+        self, mock_task, client, admin_headers, test_tag, tmp_path
+    ):
+        """Upload with enable_ocr=false passes option to background task."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("Test content")
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("test.txt", f, "text/plain")},
+                data={
+                    "tag_ids": [test_tag.id],
+                    "enable_ocr": "false",
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        # Verify task was called with options
+        mock_task.assert_called_once()
+        call_args = mock_task.call_args
+        options_dict = call_args[0][1]  # Second positional arg
+        assert options_dict is not None
+        assert options_dict["enable_ocr"] is False
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_upload_without_options_passes_none(
+        self, mock_task, client, admin_headers, test_tag, tmp_path
+    ):
+        """Upload without processing options passes None to background task."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("Test content")
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("test.txt", f, "text/plain")},
+                data={"tag_ids": [test_tag.id]},
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        mock_task.assert_called_once()
+        call_args = mock_task.call_args
+        options_dict = call_args[0][1]
+        assert options_dict is None
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_upload_with_multiple_options(
+        self, mock_task, client, admin_headers, test_tag, tmp_path
+    ):
+        """Upload with multiple processing options passes all to task."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("Test content")
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("test.txt", f, "text/plain")},
+                data={
+                    "tag_ids": [test_tag.id],
+                    "enable_ocr": "true",
+                    "force_full_page_ocr": "true",
+                    "ocr_language": "fra",
+                    "table_extraction_mode": "fast",
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        call_args = mock_task.call_args
+        options_dict = call_args[0][1]
+        assert options_dict["enable_ocr"] is True
+        assert options_dict["force_full_page_ocr"] is True
+        assert options_dict["ocr_language"] == "fra"
+        assert options_dict["table_extraction_mode"] == "fast"
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_upload_with_include_image_descriptions(
+        self, mock_task, client, admin_headers, test_tag, tmp_path
+    ):
+        """Upload with include_image_descriptions option."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("Test content")
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("test.txt", f, "text/plain")},
+                data={
+                    "tag_ids": [test_tag.id],
+                    "include_image_descriptions": "true",
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        call_args = mock_task.call_args
+        options_dict = call_args[0][1]
+        assert options_dict["include_image_descriptions"] is True
+
+    def test_upload_with_invalid_table_extraction_mode(
+        self, client, admin_headers, test_tag, tmp_path
+    ):
+        """Upload with invalid table_extraction_mode returns 400."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("Test content")
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("test.txt", f, "text/plain")},
+                data={
+                    "tag_ids": [test_tag.id],
+                    "table_extraction_mode": "invalid",
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "table_extraction_mode" in response.json()["detail"]
+
+
 class TestDocumentReprocess:
     """Tests for document reprocess endpoint."""
 

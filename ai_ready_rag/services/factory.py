@@ -5,18 +5,21 @@ Uses lazy imports to avoid loading unused dependencies:
 - Spark profile doesn't load Chroma
 """
 
+from __future__ import annotations
+
 import logging
 from typing import TYPE_CHECKING
 
 from ai_ready_rag.config import Settings
 
 if TYPE_CHECKING:
+    from ai_ready_rag.services.processing_service import ProcessingOptions
     from ai_ready_rag.services.protocols import ChunkerProtocol, VectorServiceProtocol
 
 logger = logging.getLogger(__name__)
 
 
-def get_vector_service(settings: Settings) -> "VectorServiceProtocol":
+def get_vector_service(settings: Settings) -> VectorServiceProtocol:
     """Factory that returns the appropriate vector backend.
 
     Args:
@@ -58,11 +61,16 @@ def get_vector_service(settings: Settings) -> "VectorServiceProtocol":
         raise ValueError(f"Unknown vector_backend: {backend}")
 
 
-def get_chunker(settings: Settings) -> "ChunkerProtocol":
+def get_chunker(
+    settings: Settings,
+    processing_options: ProcessingOptions | None = None,
+) -> ChunkerProtocol:
     """Factory that returns the appropriate chunker.
 
     Args:
         settings: Application settings with chunker_backend configured
+        processing_options: Optional per-upload processing options to override
+            global settings for this specific document.
 
     Returns:
         ChunkerProtocol implementation (Simple or Docling)
@@ -77,14 +85,41 @@ def get_chunker(settings: Settings) -> "ChunkerProtocol":
     if backend == "docling":
         from ai_ready_rag.services.chunker_docling import DoclingChunker
 
-        logger.info("Creating DoclingChunker with OCR=%s", settings.enable_ocr)
+        # Use per-upload options when provided, otherwise fall back to settings
+        enable_ocr = (
+            processing_options.enable_ocr
+            if processing_options and processing_options.enable_ocr is not None
+            else settings.enable_ocr or False
+        )
+        force_full_page_ocr = (
+            processing_options.force_full_page_ocr
+            if processing_options and processing_options.force_full_page_ocr is not None
+            else settings.force_full_page_ocr
+        )
+        ocr_language = (
+            processing_options.ocr_language
+            if processing_options and processing_options.ocr_language is not None
+            else settings.ocr_language
+        )
+        table_extraction_mode = (
+            processing_options.table_extraction_mode
+            if processing_options and processing_options.table_extraction_mode is not None
+            else settings.table_extraction_mode
+        )
+        include_image_descriptions = (
+            processing_options.include_image_descriptions
+            if processing_options and processing_options.include_image_descriptions is not None
+            else settings.include_image_descriptions
+        )
+
+        logger.info("Creating DoclingChunker with OCR=%s", enable_ocr)
         return DoclingChunker(
-            enable_ocr=settings.enable_ocr or False,
-            ocr_language=settings.ocr_language,
+            enable_ocr=enable_ocr,
+            ocr_language=ocr_language,
             max_tokens=settings.chunk_size,
-            force_full_page_ocr=settings.force_full_page_ocr,
-            table_extraction_mode=settings.table_extraction_mode,
-            include_image_descriptions=settings.include_image_descriptions,
+            force_full_page_ocr=force_full_page_ocr,
+            table_extraction_mode=table_extraction_mode,
+            include_image_descriptions=include_image_descriptions,
         )
     elif backend == "simple":
         from ai_ready_rag.services.chunker_simple import SimpleChunker
