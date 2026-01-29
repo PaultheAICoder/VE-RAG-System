@@ -291,6 +291,92 @@ async def delete_document(
     return None
 
 
+class BulkDeleteRequest(BaseModel):
+    """Request body for bulk delete."""
+
+    document_ids: list[str]
+
+
+class BulkDeleteResult(BaseModel):
+    """Result for a single document deletion."""
+
+    id: str
+    status: str  # "deleted" or "failed"
+    error: str | None = None
+
+
+class BulkDeleteResponse(BaseModel):
+    """Response for bulk delete operation."""
+
+    results: list[BulkDeleteResult]
+    deleted_count: int
+    failed_count: int
+
+
+@router.post("/bulk-delete", response_model=BulkDeleteResponse)
+async def bulk_delete_documents(
+    request: BulkDeleteRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete multiple documents at once (admin only).
+
+    Partial success allowed - some documents may fail while others succeed.
+    Returns detailed results for each document.
+    """
+    from ai_ready_rag.services.vector_service import VectorService
+
+    settings = get_settings()
+    service = DocumentService(db, settings)
+
+    results: list[BulkDeleteResult] = []
+    deleted_count = 0
+    failed_count = 0
+
+    for doc_id in request.document_ids:
+        try:
+            # Check document exists
+            document = db.query(Document).filter(Document.id == doc_id).first()
+            if not document:
+                results.append(
+                    BulkDeleteResult(id=doc_id, status="failed", error="Document not found")
+                )
+                failed_count += 1
+                continue
+
+            # Delete vectors from Qdrant
+            try:
+                vector_service = VectorService(
+                    qdrant_url=settings.qdrant_url,
+                    ollama_url=settings.ollama_base_url,
+                    collection_name=settings.qdrant_collection,
+                    embedding_model=settings.embedding_model,
+                    embedding_dimension=settings.embedding_dimension,
+                )
+                await vector_service.delete_document(doc_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete vectors for document {doc_id}: {e}")
+                # Continue with deletion anyway
+
+            # Delete file and database record
+            await service.delete_document(doc_id)
+
+            results.append(BulkDeleteResult(id=doc_id, status="deleted"))
+            deleted_count += 1
+            logger.info(f"Bulk delete: deleted document {doc_id}")
+
+        except Exception as e:
+            results.append(BulkDeleteResult(id=doc_id, status="failed", error=str(e)))
+            failed_count += 1
+            logger.error(f"Bulk delete: failed to delete document {doc_id}: {e}")
+
+    return BulkDeleteResponse(
+        results=results,
+        deleted_count=deleted_count,
+        failed_count=failed_count,
+    )
+
+
 @router.patch("/{document_id}/tags", response_model=DocumentResponse)
 async def update_document_tags(
     document_id: str,

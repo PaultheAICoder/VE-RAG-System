@@ -97,7 +97,7 @@ class RAGRequest:
     tenant_id: str = "default"
     chat_history: list[ChatMessage] | None = None
     model: str | None = None
-    max_context_chunks: int = 5
+    max_context_chunks: int = 8  # Increased from 5 per Spark config
 
 
 @dataclass
@@ -167,6 +167,56 @@ def extract_key_terms(text: str) -> set[str]:
     """
     words = re.findall(r"\b[a-z0-9]+\b", text.lower())
     return {w for w in words if w not in STOPWORDS and len(w) >= 3}
+
+
+def expand_query(question: str) -> list[str]:
+    """Expand query with related search terms for better recall.
+
+    Business domain-specific expansions based on common query patterns.
+    Ported from Spark's working configuration.
+
+    Args:
+        question: Original user question
+
+    Returns:
+        List of query variants (original + expansions)
+    """
+    queries = [question]
+    q_lower = question.lower()
+
+    # Customer/client queries
+    if "customer" in q_lower or "client" in q_lower:
+        queries.append("customer company revenue sales account")
+
+    # Ranking queries
+    if any(w in q_lower for w in ["top", "best", "biggest", "largest", "highest"]):
+        queries.append("highest revenue largest sales top ranking")
+
+    # Employee queries
+    if any(w in q_lower for w in ["employee", "staff", "who works", "team"]):
+        queries.append("employee directory staff name department role")
+
+    # Financial queries
+    if any(w in q_lower for w in ["budget", "financial", "cost", "expense", "revenue"]):
+        queries.append("budget expense revenue financial quarterly annual")
+
+    # Vendor/supplier queries
+    if "vendor" in q_lower or "supplier" in q_lower:
+        queries.append("vendor supplier company contact procurement")
+
+    # Inventory/product queries
+    if any(w in q_lower for w in ["inventory", "stock", "product", "sku"]):
+        queries.append("inventory product SKU quantity stock warehouse")
+
+    # Policy/procedure queries
+    if "policy" in q_lower or "procedure" in q_lower:
+        queries.append("policy procedure guideline rule compliance")
+
+    # Data/table queries
+    if any(w in q_lower for w in ["table", "data", "spreadsheet", "report"]):
+        queries.append("table data row column statistics report")
+
+    return queries
 
 
 def calculate_coverage(answer: str, context: str) -> float:
@@ -354,6 +404,8 @@ class RAGService:
         self.chunk_overlap_threshold = settings.rag_chunk_overlap_threshold
         self.dedup_candidates_cap = settings.rag_dedup_candidates_cap
         self.confidence_threshold = settings.rag_confidence_threshold
+        self.enable_query_expansion = settings.rag_enable_query_expansion
+        self.enable_hallucination_check = settings.rag_enable_hallucination_check
 
     @property
     def vector_service(self):
@@ -404,16 +456,18 @@ class RAGService:
         query: str,
         user_tags: list[str],
         tenant_id: str,
-        max_chunks: int = 5,
+        max_chunks: int = 8,
     ) -> list[SearchResult]:
-        """Retrieve context with quality controls.
+        """Retrieve context with quality controls and query expansion.
 
         Pipeline:
-        1. Retrieve 3x candidates from VectorService (capped at 15)
-        2. Filter by minimum similarity score (0.3 on Qdrant 0-1 scale)
-        3. Deduplicate near-identical chunks (Jaccard > 0.9)
-        4. Limit chunks per document (max 3)
-        5. Return top-k by score
+        1. Expand query into variants (if enabled)
+        2. Retrieve candidates for each variant
+        3. Interleave results for diversity
+        4. Filter by minimum similarity score (0.3 on Qdrant 0-1 scale)
+        5. Deduplicate near-identical chunks (Jaccard > 0.9)
+        6. Limit chunks per document (max 3)
+        7. Return top-k by score
 
         Args:
             query: User's question
@@ -424,30 +478,56 @@ class RAGService:
         Returns:
             List of quality-filtered search results
         """
+        # 1. Expand query if enabled
+        if self.enable_query_expansion:
+            queries = expand_query(query)
+            logger.debug(f"Query expansion: {len(queries)} variants")
+        else:
+            queries = [query]
+
         candidate_limit = min(max_chunks * 3, self.dedup_candidates_cap)
 
-        candidates = await self.vector_service.search(
-            query=query,
-            user_tags=user_tags,
-            tenant_id=tenant_id,
-            limit=candidate_limit,
-            score_threshold=0.0,  # Filter later for more control
-        )
+        # 2. Retrieve candidates for each query variant
+        query_results: list[list[SearchResult]] = []
+        for q in queries:
+            candidates = await self.vector_service.search(
+                query=q,
+                user_tags=user_tags,
+                tenant_id=tenant_id,
+                limit=candidate_limit,
+                score_threshold=0.0,  # Filter later for more control
+            )
+            if candidates:
+                query_results.append(candidates)
 
-        # Early exit: no candidates
-        if not candidates:
+        # Early exit: no results from any query
+        if not query_results:
             return []
 
-        # 2. Filter by minimum similarity (Qdrant cosine is 0-1)
-        filtered = [c for c in candidates if c.score >= self.min_similarity_score]
+        # 3. Interleave results for diversity (Spark pattern)
+        seen_content: set[int] = set()
+        all_candidates: list[SearchResult] = []
 
-        # 3. Deduplicate (Jaccard similarity > 0.9)
+        for i in range(candidate_limit):
+            for results in query_results:
+                if i < len(results):
+                    chunk = results[i]
+                    # Hash first 200 chars for dedup
+                    content_hash = hash(chunk.chunk_text[:200])
+                    if content_hash not in seen_content:
+                        seen_content.add(content_hash)
+                        all_candidates.append(chunk)
+
+        # 4. Filter by minimum similarity (Qdrant cosine is 0-1)
+        filtered = [c for c in all_candidates if c.score >= self.min_similarity_score]
+
+        # 5. Deduplicate (Jaccard similarity > 0.9)
         deduped = self._deduplicate_chunks(filtered)
 
-        # 4. Limit per document
+        # 6. Limit per document
         limited = self._limit_per_document(deduped, max_per_doc=self.max_chunks_per_doc)
 
-        # 5. Return top-k
+        # 7. Return top-k
         return limited[:max_chunks]
 
     def _deduplicate_chunks(self, chunks: list[SearchResult]) -> list[SearchResult]:
@@ -507,6 +587,54 @@ class RAGService:
                 doc_counts[chunk.document_id] = count + 1
 
         return result
+
+    async def evaluate_hallucination(
+        self,
+        query: str,
+        answer: str,
+        context_summary: str,
+        model: str,
+    ) -> int:
+        """Evaluate answer for hallucinations using LLM self-assessment.
+
+        Ported from Spark's working configuration.
+
+        Args:
+            query: Original user question
+            answer: LLM-generated answer
+            context_summary: Summary of context used
+            model: Model to use for evaluation
+
+        Returns:
+            Score 0-100 (higher = better grounded)
+        """
+        if not self.enable_hallucination_check:
+            return 50  # Default neutral score
+
+        try:
+            llm = ChatOllama(
+                base_url=self.ollama_url,
+                model=model,
+                temperature=0.0,  # Deterministic for evaluation
+                timeout=10,  # Shorter timeout for eval
+            )
+
+            prompt = CONFIDENCE_PROMPT.format(
+                context_summary=context_summary[:2000],  # Truncate for eval
+                query=query,
+                answer=answer[:1000],  # Truncate for eval
+            )
+
+            response = await llm.ainvoke([("human", prompt)])
+            score_text = response.content.strip()
+
+            # Extract numeric score
+            score = int(re.search(r"\d+", score_text).group())
+            return min(100, max(0, score))
+
+        except Exception as e:
+            logger.warning(f"Hallucination check failed: {e}")
+            return 50  # Fallback to neutral
 
     async def count_tokens_ollama(self, text: str, model: str) -> int:
         """Count tokens using Ollama's native tokenizer.
@@ -886,14 +1014,22 @@ class RAGService:
         citations = self._extract_citations(answer, final_chunks)
         grounded = len(citations) > 0
 
-        # 7. Calculate hybrid confidence
-        # Note: llm_score=50 placeholder until LLM self-assessment is integrated
+        # 7. Calculate hybrid confidence with LLM self-assessment
         context_for_coverage = "\n".join(c.chunk_text for c in final_chunks)
+
+        # Evaluate hallucination (Spark feature)
+        llm_score = await self.evaluate_hallucination(
+            query=request.query,
+            answer=answer,
+            context_summary=context_for_coverage,
+            model=model,
+        )
+
         confidence = self._calculate_confidence(
             retrieval_results=final_chunks,
             answer=answer,
             context=context_for_coverage,
-            llm_score=50,  # TODO: Integrate CONFIDENCE_PROMPT call
+            llm_score=llm_score,
         )
 
         # 8. Determine action based on confidence threshold
