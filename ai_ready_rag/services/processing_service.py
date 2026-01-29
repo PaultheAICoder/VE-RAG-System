@@ -149,7 +149,7 @@ class ProcessingService:
                 chunks=[chunk.text for chunk in chunks],
                 tags=tag_names,
                 uploaded_by=document.uploaded_by,
-                metadata=chunk_metadata[0] if chunk_metadata else None,
+                chunk_metadata=chunk_metadata,
             )
 
             # Calculate processing time

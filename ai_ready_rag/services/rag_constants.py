@@ -7,6 +7,7 @@ Model limits and stopwords for coverage scoring.
 # Used by TokenBudget for allocation decisions
 MODEL_LIMITS: dict[str, dict[str, int]] = {
     "llama3.2": {"context_window": 8192, "max_response": 1024},
+    "llama3.2:latest": {"context_window": 8192, "max_response": 1024},
     "qwen3:8b": {"context_window": 32768, "max_response": 2048},
     "deepseek-r1:32b": {"context_window": 65536, "max_response": 4096},
 }
