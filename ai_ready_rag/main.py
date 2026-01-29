@@ -19,6 +19,15 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown."""
     # Startup
+    logger.info("=" * 60)
+    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+    logger.info(f"  ENV_PROFILE: {settings.env_profile}")
+    logger.info(f"  Vector backend: {settings.vector_backend}")
+    logger.info(f"  Chunker backend: {settings.chunker_backend}")
+    logger.info(f"  OCR enabled: {settings.enable_ocr}")
+    logger.info(f"  Chat model: {settings.chat_model}")
+    logger.info(f"  Embedding model: {settings.embedding_model}")
+    logger.info("=" * 60)
     print(f"Starting {settings.app_name} v{settings.app_version}")
     print(f"Debug mode: {settings.debug}")
     print(f"RAG enabled: {settings.enable_rag}")

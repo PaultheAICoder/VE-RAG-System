@@ -17,6 +17,12 @@ async def health_check():
         "database": "sqlite",
         "rag_enabled": settings.enable_rag,
         "gradio_enabled": settings.enable_gradio,
+        "profile": settings.env_profile,
+        "backends": {
+            "vector": settings.vector_backend,
+            "chunker": settings.chunker_backend,
+            "ocr_enabled": settings.enable_ocr,
+        },
     }
 
 

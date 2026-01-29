@@ -1,9 +1,33 @@
 """Configuration management using Pydantic settings."""
 
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic_settings import BaseSettings
+
+# Profile defaults for laptop and spark deployments
+PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
+    "laptop": {
+        "vector_backend": "chroma",
+        "chunker_backend": "simple",
+        "enable_ocr": False,
+        "chat_model": "llama3.2:latest",
+        "embedding_model": "nomic-embed-text",
+        "rag_max_context_tokens": 2000,
+        "rag_max_history_tokens": 600,
+        "rag_max_response_tokens": 512,
+    },
+    "spark": {
+        "vector_backend": "qdrant",
+        "chunker_backend": "docling",
+        "enable_ocr": True,
+        "chat_model": "qwen3:8b",
+        "embedding_model": "nomic-embed-text",
+        "rag_max_context_tokens": 6000,
+        "rag_max_history_tokens": 1500,
+        "rag_max_response_tokens": 2048,
+    },
+}
 
 
 class Settings(BaseSettings):
@@ -37,26 +61,34 @@ class Settings(BaseSettings):
     enable_rag: bool = False  # Disabled for auth testing
     enable_gradio: bool = True
 
+    # Profile Selection
+    env_profile: Literal["laptop", "spark"] = "laptop"
+
+    # Pipeline Backends (None = use profile default)
+    vector_backend: Literal["chroma", "qdrant"] | None = None
+    chunker_backend: Literal["simple", "docling"] | None = None
+
     # Vector Service
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "documents"
+    chroma_persist_dir: str = "./data/chroma_db"
     ollama_base_url: str = "http://localhost:11434"
-    embedding_model: str = "nomic-embed-text"
+    embedding_model: str | None = None  # None = use profile default
     embedding_dimension: int = 768
     embedding_max_tokens: int = 8192
     default_tenant_id: str = "default"
 
     # RAG Service
-    chat_model: str = "llama3.2"
+    chat_model: str | None = None  # None = use profile default
     rag_temperature: float = 0.1
     rag_timeout_seconds: int = 30
     rag_confidence_threshold: int = 60
     rag_admin_email: str = "admin@company.com"
 
-    # Token Budget
-    rag_max_context_tokens: int = 3000
-    rag_max_history_tokens: int = 1000
-    rag_max_response_tokens: int = 1024
+    # Token Budget (None = use profile default)
+    rag_max_context_tokens: int | None = None
+    rag_max_history_tokens: int | None = None
+    rag_max_response_tokens: int | None = None
     rag_system_prompt_tokens: int = 500
 
     # Retrieval Quality
@@ -73,10 +105,20 @@ class Settings(BaseSettings):
     allowed_extensions: list[str] = ["pdf", "docx", "xlsx", "pptx", "txt", "md", "html", "csv"]
 
     # Document Processing
-    enable_ocr: bool = True
+    enable_ocr: bool | None = None  # None = use profile default
     ocr_language: str = "eng"
     chunk_size: int = 512
     chunk_overlap: int = 50
+
+    def model_post_init(self, __context: Any) -> None:
+        """Apply profile defaults after Pydantic initialization."""
+        profile = PROFILE_DEFAULTS.get(self.env_profile, PROFILE_DEFAULTS["laptop"])
+
+        # Apply profile defaults for settings that are None
+        for key, default_value in profile.items():
+            current = getattr(self, key, None)
+            if current is None:
+                object.__setattr__(self, key, default_value)
 
     class Config:
         env_file = ".env"

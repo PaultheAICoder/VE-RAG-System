@@ -24,8 +24,9 @@ from ai_ready_rag.core.exceptions import (
     RAGServiceError,
     TokenBudgetExceededError,
 )
+from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.services.rag_constants import MODEL_LIMITS, STOPWORDS
-from ai_ready_rag.services.vector_service import SearchResult, VectorService
+from ai_ready_rag.services.vector_service import SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -324,25 +325,28 @@ class TokenBudget:
 
 
 class RAGService:
-    """Orchestrates RAG pipeline: retrieve -> prompt -> generate -> evaluate."""
+    """Orchestrates RAG pipeline: retrieve -> prompt -> generate -> evaluate.
+
+    Uses factory pattern to obtain vector service based on ENV_PROFILE.
+    """
 
     def __init__(
         self,
-        vector_service: VectorService,
         settings: Settings,
+        vector_service: "SearchResult | None" = None,
         ollama_url: str | None = None,
         default_model: str | None = None,
     ):
         """Initialize RAG service.
 
         Args:
-            vector_service: VectorService instance for context retrieval
             settings: Application settings
+            vector_service: Optional VectorService override (uses factory if None)
             ollama_url: Optional Ollama URL override
             default_model: Optional default model override
         """
-        self.vector_service = vector_service
         self.settings = settings
+        self._vector_service = vector_service
         self.ollama_url = ollama_url or settings.ollama_base_url
         self.default_model = default_model or settings.chat_model
         self.min_similarity_score = settings.rag_min_similarity_score
@@ -350,6 +354,13 @@ class RAGService:
         self.chunk_overlap_threshold = settings.rag_chunk_overlap_threshold
         self.dedup_candidates_cap = settings.rag_dedup_candidates_cap
         self.confidence_threshold = settings.rag_confidence_threshold
+
+    @property
+    def vector_service(self):
+        """Get vector service, creating via factory if needed."""
+        if self._vector_service is None:
+            self._vector_service = get_vector_service(self.settings)
+        return self._vector_service
 
     async def validate_model(self, model: str) -> str:
         """Validate model is allowed and available.
