@@ -3,7 +3,7 @@
 | Field | Value |
 |-------|-------|
 | **Status** | DRAFT |
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 | **Created** | 2026-01-28 |
 | **Updated** | 2026-01-28 |
 | **Type** | Backend Service + API |
@@ -354,6 +354,46 @@ Delete a document (file, metadata, and vectors).
 1. Delete file from storage
 2. Delete all vectors from Qdrant (by document_id filter)
 3. Delete document record and tag associations from SQLite
+
+---
+
+### POST /api/documents/bulk-delete
+
+Delete multiple documents at once.
+
+**Authentication:** Admin only
+
+**Request Body:**
+
+```json
+{
+  "document_ids": ["doc-uuid-1", "doc-uuid-2", "doc-uuid-3"]
+}
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "results": [
+    {"id": "doc-uuid-1", "status": "deleted"},
+    {"id": "doc-uuid-2", "status": "deleted"},
+    {"id": "doc-uuid-3", "status": "failed", "error": "Document not found"}
+  ],
+  "deleted_count": 2,
+  "failed_count": 1
+}
+```
+
+**Side Effects (per document):**
+1. Delete file from storage
+2. Delete all vectors from Qdrant (by document_id filter)
+3. Delete document record and tag associations from SQLite
+
+**Notes:**
+- Partial success is allowed (some documents may fail while others succeed)
+- Returns detailed results for each document
+- Used by UI for "Delete Selected" and "Delete All" features
 
 ---
 

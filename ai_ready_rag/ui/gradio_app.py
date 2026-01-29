@@ -180,7 +180,6 @@ def create_app() -> gr.Blocks:
                             headers=["ID", "Filename", "Status"],
                             datatype=["str", "str", "str"],
                             interactive=False,
-                            max_rows=5,
                         )
 
                         # Action section
@@ -701,7 +700,8 @@ def create_app() -> gr.Blocks:
             """Handle document upload."""
             status = handle_upload(auth, file, tag_ids, title, "")
             docs = load_documents(auth)
-            return status, docs, None, [], ""  # Clear form after upload
+            # Use gr.update(value=[]) to clear selection without clearing choices
+            return status, docs, None, gr.update(value=[]), ""
 
         def do_delete(auth: dict, doc_id: str) -> tuple:
             """Handle document deletion."""

@@ -3,6 +3,7 @@
 from typing import Any
 
 import gradio as gr
+import httpx
 
 from ai_ready_rag.ui.api_client import GradioAPIClient
 
@@ -253,6 +254,27 @@ def handle_upload(
 
         return f"Uploaded successfully: {result.get('original_filename', 'document')} (Status: {result.get('status', 'pending')})"
 
+    except httpx.HTTPStatusError as e:
+        # Handle specific HTTP errors with user-friendly messages
+        if e.response.status_code == 409:
+            # Duplicate file - extract existing document ID from response
+            try:
+                detail = e.response.json().get("detail", "")
+                return (
+                    f"**Duplicate file.** {detail}. Check the document list for the existing file."
+                )
+            except Exception:
+                return "**Duplicate file.** This file has already been uploaded."
+        elif e.response.status_code == 413:
+            return "**File too large.** Please upload a smaller file."
+        elif e.response.status_code == 415:
+            return "**Unsupported file type.** Allowed types: PDF, DOCX, TXT, MD."
+        elif e.response.status_code == 401:
+            return "**Session expired.** Please log in again."
+        elif e.response.status_code == 403:
+            return "**Permission denied.** Admin access required to upload documents."
+        else:
+            return f"Upload failed (HTTP {e.response.status_code}): {e.response.text}"
     except Exception as e:
         return f"Upload failed: {e}"
 
