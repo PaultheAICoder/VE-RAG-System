@@ -24,9 +24,14 @@ Thumbs.db
 *.tmp
 *.bak
 
-# Claude Code (session-specific)
+# Claude Code (session-specific, auto-generated)
 .agents/
 .claude/settings.local.json
+
+# Claude memory (dynamic data - not committed)
+.claude/memory/*.jsonl
+.claude/memory/session-*.md
+.claude/memory/postmortems/
 
 # Database
 data/
