@@ -1192,9 +1192,11 @@ def create_app() -> gr.Blocks:
 """
 
                 if files:
-                    # Show first 10 files, indicate if more
+                    # Show first 10 files (filename only), indicate if more
+                    from pathlib import Path
+
                     file_list = files[:10]
-                    files_md = "\n".join(f"- {f}" for f in file_list)
+                    files_md = "\n".join(f"- {Path(f).name}" for f in file_list)
                     if len(files) > 10:
                         files_md += f"\n\n*...and {len(files) - 10} more files*"
                 else:
