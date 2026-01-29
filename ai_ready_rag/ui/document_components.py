@@ -241,6 +241,8 @@ def handle_upload(
         return "Please select at least one tag."
 
     try:
+        import time
+
         # file is a Gradio file object with .name attribute
         file_path = file.name if hasattr(file, "name") else str(file)
 
@@ -252,7 +254,30 @@ def handle_upload(
             description=description if description else None,
         )
 
-        return f"Uploaded successfully: {result.get('original_filename', 'document')} (Status: {result.get('status', 'pending')})"
+        # Poll for final status (PDFs can take longer)
+        doc_id = result.get("id")
+        final_status = result.get("status", "pending")
+        filename = result.get("original_filename", "document")
+
+        if doc_id and final_status in ("pending", "processing"):
+            for _ in range(30):  # Max 15 seconds (30 * 0.5s)
+                time.sleep(0.5)
+                try:
+                    doc = GradioAPIClient.get_document(token, doc_id)
+                    final_status = doc.get("status", "processing")
+                    if final_status not in ("pending", "processing"):
+                        break
+                except Exception:
+                    break
+
+        if final_status == "ready":
+            return f"Uploaded: {filename} - Ready"
+        elif final_status in ("pending", "processing"):
+            return (
+                f"Uploaded: {filename} - Still processing (refresh document list to check status)"
+            )
+        else:
+            return f"Uploaded: {filename} - Status: {final_status}"
 
     except httpx.HTTPStatusError as e:
         # Handle specific HTTP errors with user-friendly messages
@@ -299,6 +324,59 @@ def handle_delete(auth_state: dict[str, Any], document_id: str) -> str:
         return "Document deleted successfully."
     except Exception as e:
         return f"Delete failed: {e}"
+
+
+def handle_bulk_delete(auth_state: dict[str, Any], document_ids: list[str]) -> str:
+    """Handle bulk document deletion.
+
+    Args:
+        auth_state: Authentication state dict
+        document_ids: List of full document IDs to delete
+
+    Returns:
+        Status message with results.
+    """
+    token = auth_state.get("token")
+    if not token:
+        return "Not authenticated. Please log in."
+
+    if not document_ids:
+        return "No documents selected."
+
+    try:
+        result = GradioAPIClient.bulk_delete_documents(token, document_ids)
+        deleted = result.get("deleted_count", 0)
+        failed = result.get("failed_count", 0)
+
+        if failed == 0:
+            return f"Deleted {deleted} document(s) successfully."
+        else:
+            return f"Deleted {deleted} document(s). {failed} failed."
+
+    except Exception as e:
+        return f"Bulk delete failed: {e}"
+
+
+def get_document_choices(auth_state: dict[str, Any]) -> list[tuple[str, str]]:
+    """Get document choices for checkbox selection.
+
+    Returns:
+        List of (display_name, id) tuples for CheckboxGroup.
+    """
+    token = auth_state.get("token")
+    if not token:
+        return []
+
+    try:
+        result = GradioAPIClient.list_documents(token, limit=100)
+        choices = []
+        for doc in result.get("documents", []):
+            display = f"{doc.get('original_filename', 'Unknown')} ({doc.get('status', '')})"
+            doc_id = doc.get("id", "")
+            choices.append((display, doc_id))
+        return choices
+    except Exception:
+        return []
 
 
 def handle_reprocess(auth_state: dict[str, Any], document_id: str) -> str:

@@ -8,6 +8,8 @@ import httpx
 from ai_ready_rag.ui.api_client import GradioAPIClient, handle_api_error
 from ai_ready_rag.ui.components import parse_assistant_response
 from ai_ready_rag.ui.document_components import (
+    get_document_choices,
+    handle_bulk_delete,
     handle_delete,
     handle_reprocess,
     handle_upload,
@@ -182,15 +184,41 @@ def create_app() -> gr.Blocks:
                             interactive=False,
                         )
 
-                        # Action section
+                        gr.Markdown("---")
+                        gr.Markdown("**Select Documents**")
+
+                        # Multi-select checkboxes for documents
+                        doc_checkboxes = gr.CheckboxGroup(
+                            label="Select documents to delete",
+                            choices=[],
+                            value=[],
+                        )
+
+                        # Selection controls
+                        with gr.Row():
+                            doc_select_all_btn = gr.Button("Select All", size="sm")
+                            doc_clear_selection_btn = gr.Button("Clear Selection", size="sm")
+
+                        # Bulk action buttons
+                        with gr.Row():
+                            doc_delete_selected_btn = gr.Button(
+                                "Delete Selected", variant="stop", size="sm"
+                            )
+                            doc_delete_all_btn = gr.Button("Delete All", variant="stop", size="sm")
+
+                        doc_action_status = gr.Markdown("")
+
+                        gr.Markdown("---")
+                        gr.Markdown("**Single Document Actions**")
+
+                        # Single document action section (legacy)
                         doc_selected_id = gr.Textbox(
-                            label="Document ID (enter full ID for actions)",
-                            placeholder="Enter document ID...",
+                            label="Document ID (for single actions)",
+                            placeholder="Enter full document ID...",
                         )
                         with gr.Row():
-                            doc_delete_btn = gr.Button("Delete", variant="stop", size="sm")
+                            doc_delete_btn = gr.Button("Delete", size="sm")
                             doc_reprocess_btn = gr.Button("Reprocess", size="sm")
-                        doc_action_status = gr.Markdown("")
 
                 # Chat area
                 with gr.Column(scale=3, elem_classes=["chat-area"]):
@@ -692,22 +720,26 @@ def create_app() -> gr.Blocks:
 
         # ========== DOCUMENT MANAGEMENT EVENT HANDLERS ==========
 
-        def refresh_doc_list(auth: dict) -> list:
-            """Refresh document list."""
-            return load_documents(auth)
+        def refresh_doc_list(auth: dict) -> tuple:
+            """Refresh document list and checkbox choices."""
+            docs = load_documents(auth)
+            choices = get_document_choices(auth)
+            return docs, gr.update(choices=choices, value=[])
 
         def do_upload(auth: dict, file, tag_ids: list, title: str) -> tuple:
             """Handle document upload."""
             status = handle_upload(auth, file, tag_ids, title, "")
             docs = load_documents(auth)
-            # Use gr.update(value=[]) to clear selection without clearing choices
-            return status, docs, None, gr.update(value=[]), ""
+            choices = get_document_choices(auth)
+            # Clear file, tags, title and update checkbox choices
+            return status, docs, None, gr.update(value=[]), "", gr.update(choices=choices, value=[])
 
         def do_delete(auth: dict, doc_id: str) -> tuple:
             """Handle document deletion."""
             status = handle_delete(auth, doc_id)
             docs = load_documents(auth)
-            return status, docs
+            choices = get_document_choices(auth)
+            return status, docs, gr.update(choices=choices, value=[])
 
         def do_reprocess(auth: dict, doc_id: str) -> tuple:
             """Handle document reprocessing."""
@@ -715,11 +747,41 @@ def create_app() -> gr.Blocks:
             docs = load_documents(auth)
             return status, docs
 
+        def do_select_all(auth: dict) -> gr.update:
+            """Select all documents in checkbox group."""
+            choices = get_document_choices(auth)
+            all_ids = [doc_id for _, doc_id in choices]
+            return gr.update(value=all_ids)
+
+        def do_clear_selection() -> gr.update:
+            """Clear all selections."""
+            return gr.update(value=[])
+
+        def do_delete_selected(auth: dict, selected_ids: list) -> tuple:
+            """Delete selected documents."""
+            if not selected_ids:
+                return "No documents selected.", gr.update(), gr.update()
+            status = handle_bulk_delete(auth, selected_ids)
+            docs = load_documents(auth)
+            choices = get_document_choices(auth)
+            return status, docs, gr.update(choices=choices, value=[])
+
+        def do_delete_all(auth: dict) -> tuple:
+            """Delete all documents."""
+            choices = get_document_choices(auth)
+            if not choices:
+                return "No documents to delete.", gr.update(), gr.update()
+            all_ids = [doc_id for _, doc_id in choices]
+            status = handle_bulk_delete(auth, all_ids)
+            docs = load_documents(auth)
+            new_choices = get_document_choices(auth)
+            return status, docs, gr.update(choices=new_choices, value=[])
+
         # Document refresh
         doc_refresh_btn.click(
             fn=refresh_doc_list,
             inputs=[auth_state],
-            outputs=[doc_table],
+            outputs=[doc_table, doc_checkboxes],
         )
 
         # Document upload
@@ -732,14 +794,15 @@ def create_app() -> gr.Blocks:
                 doc_file_input,
                 doc_tag_dropdown,
                 doc_title_input,
+                doc_checkboxes,
             ],
         )
 
-        # Document delete
+        # Document delete (single)
         doc_delete_btn.click(
             fn=do_delete,
             inputs=[auth_state, doc_selected_id],
-            outputs=[doc_action_status, doc_table],
+            outputs=[doc_action_status, doc_table, doc_checkboxes],
         )
 
         # Document reprocess
@@ -747,6 +810,34 @@ def create_app() -> gr.Blocks:
             fn=do_reprocess,
             inputs=[auth_state, doc_selected_id],
             outputs=[doc_action_status, doc_table],
+        )
+
+        # Bulk delete - Select All
+        doc_select_all_btn.click(
+            fn=do_select_all,
+            inputs=[auth_state],
+            outputs=[doc_checkboxes],
+        )
+
+        # Bulk delete - Clear Selection
+        doc_clear_selection_btn.click(
+            fn=do_clear_selection,
+            inputs=[],
+            outputs=[doc_checkboxes],
+        )
+
+        # Bulk delete - Delete Selected
+        doc_delete_selected_btn.click(
+            fn=do_delete_selected,
+            inputs=[auth_state, doc_checkboxes],
+            outputs=[doc_action_status, doc_table, doc_checkboxes],
+        )
+
+        # Bulk delete - Delete All
+        doc_delete_all_btn.click(
+            fn=do_delete_all,
+            inputs=[auth_state],
+            outputs=[doc_action_status, doc_table, doc_checkboxes],
         )
 
     return app

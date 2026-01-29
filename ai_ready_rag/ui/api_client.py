@@ -322,6 +322,25 @@ class GradioAPIClient:
             return True
 
     @staticmethod
+    def get_document(token: str, document_id: str) -> dict[str, Any]:
+        """Get a single document by ID.
+
+        Args:
+            token: JWT access token
+            document_id: Document ID
+
+        Returns:
+            Document data dict
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get(
+                f"/api/documents/{document_id}",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
     def update_document_tags(token: str, document_id: str, tag_ids: list[str]) -> dict[str, Any]:
         """Update document tags.
 
@@ -337,6 +356,26 @@ class GradioAPIClient:
             response = client.patch(
                 f"/api/documents/{document_id}/tags",
                 json={"tag_ids": tag_ids},
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def bulk_delete_documents(token: str, document_ids: list[str]) -> dict[str, Any]:
+        """Delete multiple documents at once.
+
+        Args:
+            token: JWT access token
+            document_ids: List of document IDs to delete
+
+        Returns:
+            Dict with results, deleted_count, failed_count
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=120.0) as client:
+            response = client.post(
+                "/api/documents/bulk-delete",
+                json={"document_ids": document_ids},
                 headers=GradioAPIClient._headers(token),
             )
             response.raise_for_status()
