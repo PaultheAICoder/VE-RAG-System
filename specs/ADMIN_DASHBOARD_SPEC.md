@@ -1,9 +1,10 @@
 # Admin Dashboard Features Specification
 
-**Version**: 1.1 DRAFT
+**Version**: 1.2 DRAFT
 **Status**: For Review
 **Date**: 2026-01-29
 **Source**: Spark server UI screenshot analysis
+**Updated**: Added embedding model switching for testing purposes
 
 ---
 
@@ -52,12 +53,17 @@ This specification documents four admin dashboard features observed on the Spark
 | Function | Status | Location | Notes |
 |----------|--------|----------|-------|
 | `chat_model` setting | ✅ COMPLETE | `config.py:89` | Profile-based default |
-| List available Ollama models | ✅ COMPLETE | `rag_service.py:1077-1084` | In `check_health()` method |
-| Check model availability | ✅ COMPLETE | `rag_service.py:1086-1091` | Validates default model exists |
-| Runtime model switching | ❌ MISSING | - | No way to change model without restart |
-| Persist model selection | ❌ MISSING | - | No admin_settings table |
-| API endpoint GET models | ❌ MISSING | - | No /api/admin/models |
-| API endpoint PATCH model | ❌ MISSING | - | No /api/admin/models/chat |
+| `embedding_model` setting | ✅ COMPLETE | `config.py:83` | Profile-based default |
+| List available Ollama models | ✅ COMPLETE | `model_service.py` | ModelService.list_models() |
+| Check model availability | ✅ COMPLETE | `model_service.py` | ModelService.validate_model() |
+| Runtime chat model switching | ✅ COMPLETE | `admin.py` | PATCH /api/admin/models/chat |
+| Runtime embedding model switching | ❌ MISSING | - | Need PATCH /api/admin/models/embedding |
+| Filter models by type | ❌ MISSING | - | Separate embedding vs chat models |
+| Persist model selection | ✅ COMPLETE | `settings_service.py` | admin_settings table |
+| API endpoint GET models | ✅ COMPLETE | `admin.py` | GET /api/admin/models |
+| API endpoint PATCH chat | ✅ COMPLETE | `admin.py` | PATCH /api/admin/models/chat |
+| API endpoint PATCH embedding | ❌ MISSING | - | Need /api/admin/models/embedding |
+| Re-indexing after embedding change | ❌ MISSING | - | Mark docs pending or auto-reprocess |
 
 ### 4. Model Architecture Display
 
@@ -302,15 +308,22 @@ points = client.scroll(
 ## 3. Model Configuration
 
 ### 3.1 Purpose
-Allow runtime switching of the chat/reasoning LLM model without application restart.
+Allow runtime switching of both the **embedding model** (for vectorization) and the **chat/reasoning LLM model** (for RAG) without application restart.
 
 ### 3.2 UI Components
 
 | Component | Type | Description |
 |-----------|------|-------------|
-| Chat/Reasoning Model | Dropdown | Select from available Ollama models |
-| Model Description | Text | "Model for routing, RAG responses, and evaluation" |
-| Apply Model Change | Button | Apply the selected model |
+| **Embedding Model** | Dropdown | Select from available embedding models (filtered) |
+| Embedding Description | Text | "Model for converting text to vectors" |
+| Apply Embedding Change | Button | Apply with re-indexing warning |
+| **Chat/Reasoning Model** | Dropdown | Select from available chat/LLM models (filtered) |
+| Chat Description | Text | "Model for routing, RAG responses, and evaluation" |
+| Apply Chat Model Change | Button | Apply the selected model |
+
+**Model Filtering:**
+- Embedding dropdown: Show only models with "embed" in name
+- Chat dropdown: Exclude models with "embed" in name
 
 ### 3.3 Model Options (from Spark)
 Based on available Ollama models:
@@ -342,7 +355,7 @@ Response:
 }
 ```
 
-#### Change Model
+#### Change Chat Model
 ```
 PATCH /api/admin/models/chat
 Request Body:
@@ -357,6 +370,27 @@ Response:
   "message": str
 }
 ```
+
+#### Change Embedding Model
+```
+PATCH /api/admin/models/embedding
+Request Body:
+{
+  "model_name": "nomic-embed-text",
+  "confirm_reindex": true  // Required - acknowledges re-indexing impact
+}
+Response:
+{
+  "previous_model": str,
+  "current_model": str,
+  "success": bool,
+  "message": str,
+  "reindex_required": true,
+  "documents_affected": int
+}
+```
+
+**Warning**: Changing the embedding model invalidates all existing vectors. Documents must be re-indexed for search to work correctly.
 
 ### 3.5 Backend Implementation
 
@@ -400,7 +434,14 @@ db.admin_settings.update({"chat_model": new_model})
 
 - **Memory Management**: Switching models may require Ollama to unload/load
 - **Response Time**: First request after switch may be slower
-- **Embedding Model**: Should NOT be switchable at runtime (would require re-indexing)
+- **Embedding Model Change**: Requires re-indexing all documents. UI must show confirmation dialog with warning:
+  - "Changing the embedding model will invalidate all existing vectors."
+  - "All documents will need to be re-indexed for search to work."
+  - "This may take significant time depending on document count."
+- **Re-indexing Options** (after embedding model change):
+  - Option A: Mark all documents as "pending" for background re-processing
+  - Option B: Trigger immediate re-indexing (blocking)
+  - Option C: Clear knowledge base and require manual re-upload (simplest for testing)
 
 ---
 
@@ -585,7 +626,8 @@ INSERT INTO admin_settings (key, value) VALUES
 2. **Model Switch Behavior**: Immediate or queued for next request?
 3. **Clear Knowledge Base**: Should it require 2FA/password confirmation?
 4. **Statistics Refresh**: Auto-poll or manual only?
-5. **Embedding Model**: Should it be displayed but marked as "not changeable"?
+5. ~~**Embedding Model**: Should it be displayed but marked as "not changeable"?~~ **RESOLVED**: Embedding model is now changeable with re-indexing warning (for testing purposes).
+6. **Re-indexing Strategy**: After embedding model change, should documents be auto-reprocessed or require manual action?
 
 ---
 
@@ -608,10 +650,14 @@ INSERT INTO admin_settings (key, value) VALUES
 
 ### Model Configuration
 - [ ] Available models populated from Ollama
-- [ ] Current model displayed
-- [ ] Model change takes effect on next request
+- [ ] Models filtered by type (embedding vs chat)
+- [ ] Current embedding model displayed
+- [ ] Current chat model displayed
+- [ ] Chat model change takes effect on next request
+- [ ] Embedding model change shows re-indexing warning
+- [ ] Embedding model change requires confirmation
 - [ ] Invalid model name shows error
-- [ ] Model change is audited
+- [ ] Model changes are audited
 
 ### Model Architecture
 - [ ] All components displayed with correct info

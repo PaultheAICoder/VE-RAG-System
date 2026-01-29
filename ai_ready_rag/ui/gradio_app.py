@@ -1193,8 +1193,8 @@ def create_app() -> gr.Blocks:
 
                 if files:
                     # Show first 10 files (filename only), indicate if more
+                    # Files are FileStats dicts with 'filename' key
                     file_list = files[:10]
-                    # Files are dicts with 'filename' key from FileStats model
                     files_md = "\n".join(f"- {f.get('filename', 'Unknown')}" for f in file_list)
                     if len(files) > 10:
                         files_md += f"\n\n*...and {len(files) - 10} more files*"
