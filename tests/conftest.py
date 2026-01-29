@@ -1,5 +1,11 @@
 """Pytest configuration and fixtures."""
 
+import os
+
+# Test environment overrides - must be set BEFORE importing app
+os.environ["ENABLE_GRADIO"] = "false"
+os.environ["BCRYPT_ROUNDS"] = "4"  # Fast hashing for tests (prod uses 12)
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
