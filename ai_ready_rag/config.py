@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expiration_hours: int = 24
 
+    # Initial Admin (for seeding)
+    admin_email: str = "admin@test.com"
+    admin_password: str = "npassword"
+    admin_display_name: str = "Administrator"
+
     # Security
     password_min_length: int = 12
     lockout_attempts: int = 5
@@ -58,14 +63,14 @@ class Settings(BaseSettings):
     audit_level: Literal["essential", "comprehensive", "full_debug"] = "full_debug"
 
     # Feature Flags
-    enable_rag: bool = False  # Disabled for auth testing
+    enable_rag: bool = True  # Enabled for RAG functionality
     enable_gradio: bool = True
 
     # Profile Selection
     env_profile: Literal["laptop", "spark"] = "laptop"
 
     # Pipeline Backends (None = use profile default)
-    vector_backend: Literal["chroma", "qdrant"] | None = None
+    vector_backend: Literal["chroma", "qdrant"] | None = "qdrant"  # Using Qdrant
     chunker_backend: Literal["simple", "docling"] | None = None
 
     # Vector Service
@@ -82,7 +87,7 @@ class Settings(BaseSettings):
     chat_model: str | None = None  # None = use profile default
     rag_temperature: float = 0.1
     rag_timeout_seconds: int = 30
-    rag_confidence_threshold: int = 60
+    rag_confidence_threshold: int = 40
     rag_admin_email: str = "admin@company.com"
 
     # Token Budget (None = use profile default)
@@ -107,8 +112,8 @@ class Settings(BaseSettings):
     # Document Processing
     enable_ocr: bool | None = None  # None = use profile default
     ocr_language: str = "eng"
-    chunk_size: int = 512
-    chunk_overlap: int = 50
+    chunk_size: int = 200  # Smaller chunks = more precise matching
+    chunk_overlap: int = 40  # ~20% overlap for context continuity
 
     def model_post_init(self, __context: Any) -> None:
         """Apply profile defaults after Pydantic initialization."""
