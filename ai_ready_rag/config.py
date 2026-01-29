@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     env_profile: Literal["laptop", "spark"] = "laptop"
 
     # Pipeline Backends (None = use profile default)
-    vector_backend: Literal["chroma", "qdrant"] | None = "qdrant"  # Using Qdrant
+    vector_backend: Literal["chroma", "qdrant"] | None = None
     chunker_backend: Literal["simple", "docling"] | None = None
 
     # Vector Service
