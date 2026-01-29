@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     # Feature Flags
     enable_rag: bool = False  # Disabled for auth testing
-    enable_gradio: bool = False
+    enable_gradio: bool = True
 
     # Vector Service
     qdrant_url: str = "http://localhost:6333"
@@ -65,6 +65,18 @@ class Settings(BaseSettings):
     rag_total_context_chunks: int = 5
     rag_dedup_candidates_cap: int = 15
     rag_chunk_overlap_threshold: float = 0.9
+
+    # Document Management
+    upload_dir: str = "./data/uploads"
+    max_upload_size_mb: int = 100
+    max_storage_gb: int = 10
+    allowed_extensions: list[str] = ["pdf", "docx", "xlsx", "pptx", "txt", "md", "html", "csv"]
+
+    # Document Processing
+    enable_ocr: bool = True
+    ocr_language: str = "eng"
+    chunk_size: int = 512
+    chunk_overlap: int = 50
 
     class Config:
         env_file = ".env"
