@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     # Document Processing
     enable_ocr: bool | None = None  # None = use profile default
     ocr_language: str = "eng"
+    force_full_page_ocr: bool = False
+    table_extraction_mode: Literal["accurate", "fast"] = "accurate"
+    include_image_descriptions: bool = True
     chunk_size: int = 200  # Smaller chunks = more precise matching
     chunk_overlap: int = 40  # ~20% overlap for context continuity
 
