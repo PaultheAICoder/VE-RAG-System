@@ -11,6 +11,7 @@ from ai_ready_rag.services.rag_service import (
     RouteTarget,
     TokenBudget,
 )
+from ai_ready_rag.services.settings_service import SettingsService
 from ai_ready_rag.services.vector_service import (
     CollectionStats,
     HealthStatus,
@@ -41,6 +42,8 @@ __all__ = [
     "ConfidenceScore",
     "RouteTarget",
     "TokenBudget",
+    # Settings Service
+    "SettingsService",
     # Utilities
     "generate_chunk_id",
     "validate_tag",

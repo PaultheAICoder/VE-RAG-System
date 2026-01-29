@@ -143,3 +143,13 @@ class AuditLog(Base):
     ip_address = Column(String, nullable=True)
     user_agent = Column(String, nullable=True)
     request_id = Column(String, nullable=True)
+
+
+class AdminSetting(Base):
+    __tablename__ = "admin_settings"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    key = Column(String, unique=True, nullable=False, index=True)
+    value = Column(Text, nullable=False)  # JSON encoded
+    updated_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
