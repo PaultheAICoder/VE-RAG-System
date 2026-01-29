@@ -27,19 +27,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def process_document_task(document_id: str) -> None:
+async def process_document_task(
+    document_id: str,
+    processing_options_dict: dict | None = None,
+) -> None:
     """Background task to process a document.
 
     Creates its own db session to avoid session lifecycle issues.
 
     Args:
         document_id: Document ID to process.
+        processing_options_dict: Optional dict of per-upload processing options.
     """
-    from ai_ready_rag.services.processing_service import ProcessingService
+    from ai_ready_rag.services.processing_service import ProcessingOptions, ProcessingService
     from ai_ready_rag.services.vector_service import VectorService
 
     settings = get_settings()
     db = SessionLocal()
+
+    # Reconstruct ProcessingOptions if provided
+    processing_options = None
+    if processing_options_dict:
+        processing_options = ProcessingOptions(**processing_options_dict)
 
     try:
         # Get the document
@@ -63,8 +72,10 @@ async def process_document_task(document_id: str) -> None:
             settings=settings,
         )
 
-        # Process the document
-        result = await processing_service.process_document(document, db)
+        # Process the document with optional per-upload options
+        result = await processing_service.process_document(
+            document, db, processing_options=processing_options
+        )
 
         if result.success:
             logger.info(
@@ -145,6 +156,11 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     title: str | None = Form(None),
     description: str | None = Form(None),
+    enable_ocr: bool | None = Form(None),
+    force_full_page_ocr: bool | None = Form(None),
+    ocr_language: str | None = Form(None),
+    table_extraction_mode: str | None = Form(None),
+    include_image_descriptions: bool | None = Form(None),
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -152,7 +168,23 @@ async def upload_document(
 
     Requires admin role. File is stored and queued for background processing.
     Returns immediately with status='pending'. Processing runs in background.
+
+    Optional processing options override global defaults for this upload:
+    - enable_ocr: Enable OCR for scanned documents
+    - force_full_page_ocr: Force full page OCR even for text-based PDFs
+    - ocr_language: OCR language code (e.g., 'eng', 'fra')
+    - table_extraction_mode: 'accurate' or 'fast'
+    - include_image_descriptions: Include AI-generated image descriptions
     """
+    from ai_ready_rag.services.processing_service import ProcessingOptions
+
+    # Validate table_extraction_mode if provided
+    if table_extraction_mode is not None and table_extraction_mode not in ("accurate", "fast"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="table_extraction_mode must be 'accurate' or 'fast'",
+        )
+
     settings = get_settings()
     service = DocumentService(db, settings)
 
@@ -164,8 +196,33 @@ async def upload_document(
         description=description,
     )
 
+    # Build processing options if any are provided
+    processing_options = None
+    if any(
+        opt is not None
+        for opt in [
+            enable_ocr,
+            force_full_page_ocr,
+            ocr_language,
+            table_extraction_mode,
+            include_image_descriptions,
+        ]
+    ):
+        processing_options = ProcessingOptions(
+            enable_ocr=enable_ocr,
+            force_full_page_ocr=force_full_page_ocr,
+            ocr_language=ocr_language,
+            table_extraction_mode=table_extraction_mode,
+            include_image_descriptions=include_image_descriptions,
+        )
+
+    # Serialize options for background task (if present)
+    from dataclasses import asdict
+
+    options_dict = asdict(processing_options) if processing_options else None
+
     # Queue background processing
-    background_tasks.add_task(process_document_task, document.id)
+    background_tasks.add_task(process_document_task, document.id, options_dict)
     logger.info(f"Queued document {document.id} for background processing")
 
     return document
