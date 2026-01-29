@@ -529,12 +529,10 @@ async def get_architecture_info(
     tesseract_status = _get_tesseract_status()
     easyocr_status = _get_easyocr_status()
 
-    # Get Docling version
-    docling_version = _get_docling_version()
-
-    # Build response
-    response = ArchitectureInfoResponse(
-        document_parsing=DocumentParsingInfo(
+    # Get document parsing info based on profile
+    if settings.chunker_backend == "docling":
+        docling_version = _get_docling_version()
+        doc_parsing_info = DocumentParsingInfo(
             engine="Docling",
             version=docling_version,
             type="local ML",
@@ -544,7 +542,23 @@ async def get_architecture_info(
                 "OCR integration",
                 "Semantic chunking",
             ],
-        ),
+        )
+    else:
+        # SimpleChunker for laptop profile
+        doc_parsing_info = DocumentParsingInfo(
+            engine="SimpleChunker",
+            version="built-in",
+            type="basic text splitting",
+            capabilities=[
+                "Plain text extraction",
+                "Token-based chunking",
+                "Lightweight processing",
+            ],
+        )
+
+    # Build response
+    response = ArchitectureInfoResponse(
+        document_parsing=doc_parsing_info,
         embeddings=EmbeddingsInfo(
             model=settings.embedding_model,
             dimensions=settings.embedding_dimension,

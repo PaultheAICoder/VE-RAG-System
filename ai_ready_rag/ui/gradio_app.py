@@ -150,75 +150,114 @@ def create_app() -> gr.Blocks:
                         visible=False,
                     )
 
-                    # Admin Document Management Section
-                    gr.Markdown("---")
-                    with gr.Accordion(
-                        "Document Management",
-                        open=False,
-                        visible=False,
-                    ) as doc_mgmt_accordion:
-                        # Upload section
-                        doc_file_input = gr.File(
-                            label="Select File",
-                            file_types=[".pdf", ".docx", ".txt", ".md"],
-                        )
-                        doc_tag_dropdown = gr.Dropdown(
-                            label="Tags (required)",
-                            multiselect=True,
-                            choices=[],
-                        )
-                        doc_title_input = gr.Textbox(
-                            label="Title (optional)",
-                            placeholder="Document title...",
-                        )
-                        doc_upload_btn = gr.Button("Upload", variant="primary", size="sm")
-                        doc_upload_status = gr.Markdown("")
-
+                    # Admin sections container (visibility controlled on login)
+                    with gr.Column(visible=False) as admin_sections:
                         gr.Markdown("---")
-
-                        # Document list controls
-                        doc_refresh_btn = gr.Button("Refresh List", size="sm")
-                        doc_table = gr.Dataframe(
-                            headers=["ID", "Filename", "Status"],
-                            datatype=["str", "str", "str"],
-                            interactive=False,
-                        )
-
-                        gr.Markdown("---")
-                        gr.Markdown("**Select Documents**")
-
-                        # Multi-select checkboxes for documents
-                        doc_checkboxes = gr.CheckboxGroup(
-                            label="Select documents to delete",
-                            choices=[],
-                            value=[],
-                        )
-
-                        # Selection controls
-                        with gr.Row():
-                            doc_select_all_btn = gr.Button("Select All", size="sm")
-                            doc_clear_selection_btn = gr.Button("Clear Selection", size="sm")
-
-                        # Bulk action buttons
-                        with gr.Row():
-                            doc_delete_selected_btn = gr.Button(
-                                "Delete Selected", variant="stop", size="sm"
+                        with gr.Accordion(
+                            "Document Management",
+                            open=False,
+                        ):
+                            # Upload section
+                            doc_file_input = gr.File(
+                                label="Select File",
+                                file_types=[".pdf", ".docx", ".txt", ".md"],
                             )
-                            doc_delete_all_btn = gr.Button("Delete All", variant="stop", size="sm")
+                            doc_tag_dropdown = gr.Dropdown(
+                                label="Tags (required)",
+                                multiselect=True,
+                                choices=[],
+                            )
+                            doc_title_input = gr.Textbox(
+                                label="Title (optional)",
+                                placeholder="Document title...",
+                            )
+                            doc_upload_btn = gr.Button("Upload", variant="primary", size="sm")
+                            doc_upload_status = gr.Markdown("")
 
-                        doc_action_status = gr.Markdown("")
+                            gr.Markdown("---")
 
-                        gr.Markdown("---")
-                        gr.Markdown("**Single Document Actions**")
+                            # Document list controls
+                            doc_refresh_btn = gr.Button("Refresh List", size="sm")
+                            doc_table = gr.Dataframe(
+                                headers=["ID", "Filename", "Status"],
+                                datatype=["str", "str", "str"],
+                                interactive=False,
+                            )
 
-                        # Single document action section (legacy)
-                        doc_selected_id = gr.Textbox(
-                            label="Document ID (for single actions)",
-                            placeholder="Enter full document ID...",
-                        )
-                        with gr.Row():
-                            doc_delete_btn = gr.Button("Delete", size="sm")
-                            doc_reprocess_btn = gr.Button("Reprocess", size="sm")
+                            gr.Markdown("---")
+                            gr.Markdown("**Select Documents**")
+
+                            # Multi-select checkboxes for documents
+                            doc_checkboxes = gr.CheckboxGroup(
+                                label="Select documents to delete",
+                                choices=[],
+                                value=[],
+                            )
+
+                            # Selection controls
+                            with gr.Row():
+                                doc_select_all_btn = gr.Button("Select All", size="sm")
+                                doc_clear_selection_btn = gr.Button("Clear Selection", size="sm")
+
+                            # Bulk action buttons
+                            with gr.Row():
+                                doc_delete_selected_btn = gr.Button(
+                                    "Delete Selected", variant="stop", size="sm"
+                                )
+                                doc_delete_all_btn = gr.Button(
+                                    "Delete All", variant="stop", size="sm"
+                                )
+
+                            doc_action_status = gr.Markdown("")
+
+                            gr.Markdown("---")
+                            gr.Markdown("**Single Document Actions**")
+
+                            # Single document action section (legacy)
+                            doc_selected_id = gr.Textbox(
+                                label="Document ID (for single actions)",
+                                placeholder="Enter full document ID...",
+                            )
+                            with gr.Row():
+                                doc_delete_btn = gr.Button("Delete", size="sm")
+                                doc_reprocess_btn = gr.Button("Reprocess", size="sm")
+
+                        # Admin System Architecture Section
+                        with gr.Accordion(
+                            "Model Architecture",
+                            open=False,
+                        ):
+                            arch_refresh_btn = gr.Button("Refresh Architecture Info", size="sm")
+                            arch_status = gr.Markdown(
+                                "Click 'Refresh' to load architecture information."
+                            )
+
+                            # Document Parsing subsection
+                            gr.Markdown("### Document Parsing")
+                            arch_doc_parsing = gr.Markdown("")
+
+                            # Embeddings subsection
+                            gr.Markdown("### Embeddings")
+                            arch_embeddings = gr.Markdown("")
+
+                            # Chat Model subsection
+                            gr.Markdown("### Chat Model")
+                            arch_chat_model = gr.Markdown("")
+
+                            # Infrastructure subsection
+                            gr.Markdown("### Infrastructure")
+                            arch_infrastructure = gr.Markdown("")
+
+                        # Admin OCR Status Section
+                        with gr.Accordion(
+                            "OCR Status",
+                            open=False,
+                        ):
+                            ocr_refresh_btn = gr.Button("Refresh OCR Status", size="sm")
+
+                            # OCR status display
+                            ocr_tesseract = gr.Markdown("")
+                            ocr_easyocr = gr.Markdown("")
 
                 # Chat area
                 with gr.Column(scale=3, elem_classes=["chat-area"]):
@@ -265,7 +304,7 @@ def create_app() -> gr.Blocks:
                     "",  # user_display
                     gr.update(value=[]),  # sessions_list
                     gr.update(visible=False),  # load_more_btn
-                    gr.update(visible=False),  # doc_mgmt_accordion
+                    gr.update(visible=False),  # admin_sections
                     gr.update(choices=[]),  # doc_tag_dropdown
                 )
 
@@ -315,7 +354,7 @@ def create_app() -> gr.Blocks:
                     f"**{user_name}**",  # user_display
                     gr.update(value=sessions_display),  # sessions_list
                     gr.update(visible=has_more),  # load_more_btn
-                    gr.update(visible=is_admin),  # doc_mgmt_accordion
+                    gr.update(visible=is_admin),  # admin_sections
                     gr.update(choices=tag_choices),  # doc_tag_dropdown
                 )
             except httpx.HTTPStatusError as e:
@@ -334,7 +373,7 @@ def create_app() -> gr.Blocks:
                     "",  # user_display
                     gr.update(value=[]),  # sessions_list
                     gr.update(visible=False),  # load_more_btn
-                    gr.update(visible=False),  # doc_mgmt_accordion
+                    gr.update(visible=False),  # admin_sections
                     gr.update(choices=[]),  # doc_tag_dropdown
                 )
             except Exception as e:
@@ -347,7 +386,7 @@ def create_app() -> gr.Blocks:
                     "",  # user_display
                     gr.update(value=[]),  # sessions_list
                     gr.update(visible=False),  # load_more_btn
-                    gr.update(visible=False),  # doc_mgmt_accordion
+                    gr.update(visible=False),  # admin_sections
                     gr.update(choices=[]),  # doc_tag_dropdown
                 )
 
@@ -384,6 +423,8 @@ def create_app() -> gr.Blocks:
                 gr.update(value=[]),  # sessions_list
                 gr.update(visible=False),  # load_more_btn
                 [],  # chat_display
+                gr.update(visible=False),  # admin_sections
+                gr.update(choices=[]),  # doc_tag_dropdown
             )
 
         def handle_new_chat(auth: dict, sess: dict) -> tuple:
@@ -639,7 +680,7 @@ def create_app() -> gr.Blocks:
                 user_display,
                 sessions_list,
                 load_more_btn,
-                doc_mgmt_accordion,
+                admin_sections,
                 doc_tag_dropdown,
             ],
         )
@@ -656,7 +697,7 @@ def create_app() -> gr.Blocks:
                 user_display,
                 sessions_list,
                 load_more_btn,
-                doc_mgmt_accordion,
+                admin_sections,
                 doc_tag_dropdown,
             ],
         )
@@ -675,6 +716,8 @@ def create_app() -> gr.Blocks:
                 sessions_list,
                 load_more_btn,
                 chat_display,
+                admin_sections,
+                doc_tag_dropdown,
             ],
         )
 
@@ -777,6 +820,107 @@ def create_app() -> gr.Blocks:
             new_choices = get_document_choices(auth)
             return status, docs, gr.update(choices=new_choices, value=[])
 
+        # ========== ARCHITECTURE INFO EVENT HANDLERS ==========
+
+        def load_architecture_info(auth: dict) -> tuple:
+            """Load architecture information from API."""
+            token = auth.get("token")
+            if not token:
+                return (
+                    "Not authenticated.",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                )
+
+            try:
+                data = GradioAPIClient.get_architecture_info(token)
+
+                # Format Document Parsing
+                doc = data.get("document_parsing", {})
+                doc_parsing_md = f"""
+**Engine**: {doc.get("engine", "Unknown")} ({doc.get("type", "")})
+**Version**: {doc.get("version", "Unknown")}
+**Capabilities**:
+{chr(10).join(f"- {cap}" for cap in doc.get("capabilities", []))}
+"""
+
+                # Format Embeddings
+                emb = data.get("embeddings", {})
+                embeddings_md = f"""
+**Model**: {emb.get("model", "Unknown")}
+**Dimensions**: {emb.get("dimensions", "Unknown")}
+**Vector Store**: {emb.get("vector_store", "Unknown")}
+**URL**: {emb.get("vector_store_url", "Unknown")}
+"""
+
+                # Format Chat Model
+                chat = data.get("chat_model", {})
+                chat_model_md = f"""
+**Model**: {chat.get("name", "Unknown")}
+**Provider**: {chat.get("provider", "Unknown")}
+**Capabilities**:
+{chr(10).join(f"- {cap}" for cap in chat.get("capabilities", []))}
+"""
+
+                # Format Infrastructure
+                infra = data.get("infrastructure", {})
+                ollama_status = infra.get("ollama_status", "unknown")
+                vector_status = infra.get("vector_db_status", "unknown")
+
+                ollama_badge = "healthy" if ollama_status == "healthy" else "unhealthy"
+                vector_badge = "healthy" if vector_status == "healthy" else "unhealthy"
+
+                infrastructure_md = f"""
+**Ollama URL**: {infra.get("ollama_url", "Unknown")}
+**Ollama Status**: <span class="health-{ollama_badge}">{ollama_status}</span>
+**Vector DB Status**: <span class="health-{vector_badge}">{vector_status}</span>
+**Profile**: {data.get("profile", "Unknown")}
+"""
+
+                # Format OCR Status
+                ocr = data.get("ocr_status", {})
+                tess = ocr.get("tesseract", {})
+                easy = ocr.get("easyocr", {})
+
+                tess_available = tess.get("available", False)
+                tess_version = tess.get("version", "N/A")
+                tess_status_class = "available" if tess_available else "unavailable"
+                tess_status_text = "Available" if tess_available else "Not Available"
+                tesseract_md = f"""
+**Tesseract OCR**: <span class="status-{tess_status_class}">{tess_status_text}</span>
+**Version**: {tess_version if tess_available else "N/A"}
+"""
+
+                easy_available = easy.get("available", False)
+                easy_version = easy.get("version", "N/A")
+                easy_status_class = "available" if easy_available else "unavailable"
+                easy_status_text = "Available" if easy_available else "Not Available"
+                easyocr_md = f"""
+**EasyOCR**: <span class="status-{easy_status_class}">{easy_status_text}</span>
+**Version**: {easy_version if easy_available else "N/A"}
+"""
+
+                return (
+                    "Architecture info loaded successfully.",
+                    doc_parsing_md,
+                    embeddings_md,
+                    chat_model_md,
+                    infrastructure_md,
+                    tesseract_md,
+                    easyocr_md,
+                )
+
+            except httpx.HTTPStatusError as e:
+                error_msg = f"Failed to load architecture info (HTTP {e.response.status_code})"
+                return (error_msg, "", "", "", "", "", "")
+            except Exception as e:
+                error_msg = f"Error: {e}"
+                return (error_msg, "", "", "", "", "", "")
+
         # Document refresh
         doc_refresh_btn.click(
             fn=refresh_doc_list,
@@ -838,6 +982,38 @@ def create_app() -> gr.Blocks:
             fn=do_delete_all,
             inputs=[auth_state],
             outputs=[doc_action_status, doc_table, doc_checkboxes],
+        )
+
+        # ========== ARCHITECTURE INFO EVENT HANDLERS ==========
+
+        # Architecture refresh button - loads both architecture and OCR sections
+        arch_refresh_btn.click(
+            fn=load_architecture_info,
+            inputs=[auth_state],
+            outputs=[
+                arch_status,
+                arch_doc_parsing,
+                arch_embeddings,
+                arch_chat_model,
+                arch_infrastructure,
+                ocr_tesseract,
+                ocr_easyocr,
+            ],
+        )
+
+        # OCR refresh button - same handler, same endpoint
+        ocr_refresh_btn.click(
+            fn=load_architecture_info,
+            inputs=[auth_state],
+            outputs=[
+                arch_status,
+                arch_doc_parsing,
+                arch_embeddings,
+                arch_chat_model,
+                arch_infrastructure,
+                ocr_tesseract,
+                ocr_easyocr,
+            ],
         )
 
     return app
