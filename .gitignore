@@ -24,15 +24,11 @@ Thumbs.db
 *.tmp
 *.bak
 
-# Claude Code checkpoints (session-specific)
-.agents/outputs/claude_checkpoints/*.transcript.jsonl
-.agents/outputs/claude_checkpoints/*_checkpoint.md
+# Claude Code (session-specific)
+.agents/
 .claude/settings.local.json
 
 # Database
 data/
 *.db
-
-# Agent outputs (session-specific)
-.agents/outputs/
 issues/
