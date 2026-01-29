@@ -39,13 +39,13 @@ class TagResponse(BaseModel):
         from_attributes = True
 
 
-@router.get("/", response_model=list[TagResponse])
+@router.get("", response_model=list[TagResponse])
 async def list_tags(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """List all tags."""
     return db.query(Tag).all()
 
 
-@router.post("/", response_model=TagResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=TagResponse, status_code=status.HTTP_201_CREATED)
 async def create_tag(
     tag_data: TagCreate, current_user: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
