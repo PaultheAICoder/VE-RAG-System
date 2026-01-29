@@ -418,3 +418,123 @@ class GradioAPIClient:
             )
             response.raise_for_status()
             return response.json()
+
+    # --- Processing Options APIs (#12) ---
+
+    @staticmethod
+    def get_processing_options(token: str) -> dict[str, Any]:
+        """Get current document processing options.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Processing options dict with enable_ocr, force_full_page_ocr,
+            ocr_language, table_extraction_mode, include_image_descriptions.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get(
+                "/api/admin/processing-options",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def update_processing_options(token: str, options: dict[str, Any]) -> dict[str, Any]:
+        """Update document processing options.
+
+        Args:
+            token: JWT access token
+            options: Dict with processing options to update
+
+        Returns:
+            Updated processing options
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.patch(
+                "/api/admin/processing-options",
+                json=options,
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    # --- Knowledge Base APIs (#13) ---
+
+    @staticmethod
+    def get_kb_stats(token: str) -> dict[str, Any]:
+        """Get knowledge base statistics.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Stats dict with total_chunks, unique_files, files list.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get(
+                "/api/admin/knowledge-base/stats",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def clear_knowledge_base(token: str) -> dict[str, Any]:
+        """Clear all documents from knowledge base.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Result dict with message, deleted_chunks, deleted_files.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=60.0) as client:
+            response = client.delete(
+                "/api/admin/knowledge-base",
+                json={"confirm": True},
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    # --- Model Configuration APIs (#14) ---
+
+    @staticmethod
+    def get_available_models(token: str) -> dict[str, Any]:
+        """Get available Ollama models.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Dict with available_models list and current_chat_model.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get(
+                "/api/admin/models",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def change_chat_model(token: str, model_name: str) -> dict[str, Any]:
+        """Change the active chat model.
+
+        Args:
+            token: JWT access token
+            model_name: Name of the model to switch to
+
+        Returns:
+            Result dict with message and new model name.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.patch(
+                "/api/admin/models/chat",
+                json={"model_name": model_name},
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
