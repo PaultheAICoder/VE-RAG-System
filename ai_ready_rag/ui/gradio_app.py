@@ -259,6 +259,78 @@ def create_app() -> gr.Blocks:
                             ocr_tesseract = gr.Markdown("")
                             ocr_easyocr = gr.Markdown("")
 
+                        # Processing Options Section (#12)
+                        with gr.Accordion(
+                            "Processing Options",
+                            open=False,
+                        ):
+                            proc_refresh_btn = gr.Button("Load Settings", size="sm")
+                            proc_status = gr.Markdown("")
+
+                            proc_enable_ocr = gr.Checkbox(
+                                label="Enable OCR",
+                                value=True,
+                            )
+                            proc_force_ocr = gr.Checkbox(
+                                label="Force Full Page OCR",
+                                value=False,
+                            )
+                            proc_ocr_lang = gr.Dropdown(
+                                label="OCR Language",
+                                choices=["English", "Spanish", "French", "German", "Chinese"],
+                                value="English",
+                            )
+                            proc_table_mode = gr.Radio(
+                                label="Table Extraction Mode",
+                                choices=["accurate", "fast"],
+                                value="accurate",
+                            )
+                            proc_image_desc = gr.Checkbox(
+                                label="Include Image Descriptions",
+                                value=False,
+                            )
+                            proc_save_btn = gr.Button("Save Settings", variant="primary", size="sm")
+
+                        # Knowledge Base Statistics Section (#13)
+                        with gr.Accordion(
+                            "Knowledge Base Statistics",
+                            open=False,
+                        ):
+                            kb_refresh_btn = gr.Button("Refresh Stats", size="sm")
+                            kb_status = gr.Markdown("")
+
+                            kb_stats_display = gr.Markdown("Click 'Refresh Stats' to load.")
+
+                            with gr.Accordion("Indexed Files", open=False):
+                                kb_file_list = gr.Markdown("No files loaded.")
+
+                            kb_clear_btn = gr.Button(
+                                "Clear Knowledge Base",
+                                variant="stop",
+                                size="sm",
+                            )
+
+                        # Model Configuration Section (#14)
+                        with gr.Accordion(
+                            "Model Configuration",
+                            open=False,
+                        ):
+                            model_refresh_btn = gr.Button("Load Models", size="sm")
+                            model_status = gr.Markdown("")
+
+                            model_current = gr.Markdown("**Current Model**: Not loaded")
+
+                            model_dropdown = gr.Dropdown(
+                                label="Select Chat Model",
+                                choices=[],
+                                interactive=True,
+                            )
+                            model_apply_btn = gr.Button(
+                                "Apply Model Change",
+                                variant="primary",
+                                size="sm",
+                            )
+
                 # Chat area
                 with gr.Column(scale=3, elem_classes=["chat-area"]):
                     chat_display = gr.Chatbot(
@@ -1014,6 +1086,231 @@ def create_app() -> gr.Blocks:
                 ocr_tesseract,
                 ocr_easyocr,
             ],
+        )
+
+        # ========== PROCESSING OPTIONS EVENT HANDLERS (#12) ==========
+
+        def load_processing_options(auth: dict) -> tuple:
+            """Load processing options from API."""
+            token = auth.get("token")
+            if not token:
+                return ("Not authenticated.", False, False, "English", "accurate", False)
+
+            try:
+                data = GradioAPIClient.get_processing_options(token)
+                return (
+                    "Settings loaded.",
+                    data.get("enable_ocr", True),
+                    data.get("force_full_page_ocr", False),
+                    data.get("ocr_language", "English"),
+                    data.get("table_extraction_mode", "accurate"),
+                    data.get("include_image_descriptions", False),
+                )
+            except httpx.HTTPStatusError as e:
+                return (
+                    f"Failed to load (HTTP {e.response.status_code})",
+                    False,
+                    False,
+                    "English",
+                    "accurate",
+                    False,
+                )
+            except Exception as e:
+                return (f"Error: {e}", False, False, "English", "accurate", False)
+
+        def save_processing_options(
+            auth: dict,
+            enable_ocr: bool,
+            force_ocr: bool,
+            ocr_lang: str,
+            table_mode: str,
+            image_desc: bool,
+        ) -> str:
+            """Save processing options to API."""
+            token = auth.get("token")
+            if not token:
+                return "Not authenticated."
+
+            try:
+                options = {
+                    "enable_ocr": enable_ocr,
+                    "force_full_page_ocr": force_ocr,
+                    "ocr_language": ocr_lang,
+                    "table_extraction_mode": table_mode,
+                    "include_image_descriptions": image_desc,
+                }
+                GradioAPIClient.update_processing_options(token, options)
+                return "Settings saved successfully."
+            except httpx.HTTPStatusError as e:
+                return f"Failed to save (HTTP {e.response.status_code})"
+            except Exception as e:
+                return f"Error: {e}"
+
+        proc_refresh_btn.click(
+            fn=load_processing_options,
+            inputs=[auth_state],
+            outputs=[
+                proc_status,
+                proc_enable_ocr,
+                proc_force_ocr,
+                proc_ocr_lang,
+                proc_table_mode,
+                proc_image_desc,
+            ],
+        )
+
+        proc_save_btn.click(
+            fn=save_processing_options,
+            inputs=[
+                auth_state,
+                proc_enable_ocr,
+                proc_force_ocr,
+                proc_ocr_lang,
+                proc_table_mode,
+                proc_image_desc,
+            ],
+            outputs=[proc_status],
+        )
+
+        # ========== KNOWLEDGE BASE STATISTICS EVENT HANDLERS (#13) ==========
+
+        def load_kb_stats(auth: dict) -> tuple:
+            """Load knowledge base statistics from API."""
+            token = auth.get("token")
+            if not token:
+                return ("Not authenticated.", "No data.", "No files.")
+
+            try:
+                data = GradioAPIClient.get_kb_stats(token)
+                total_chunks = data.get("total_chunks", 0)
+                unique_files = data.get("unique_files", 0)
+                files = data.get("files", [])
+
+                stats_md = f"""
+**Total Chunks**: {total_chunks}
+**Unique Files**: {unique_files}
+"""
+
+                if files:
+                    # Show first 10 files, indicate if more
+                    file_list = files[:10]
+                    files_md = "\n".join(f"- {f}" for f in file_list)
+                    if len(files) > 10:
+                        files_md += f"\n\n*...and {len(files) - 10} more files*"
+                else:
+                    files_md = "*No files indexed.*"
+
+                return ("Stats loaded.", stats_md, files_md)
+            except httpx.HTTPStatusError as e:
+                return (
+                    f"Failed to load (HTTP {e.response.status_code})",
+                    "Error loading stats.",
+                    "Error loading files.",
+                )
+            except Exception as e:
+                return (f"Error: {e}", "Error loading stats.", "Error loading files.")
+
+        def clear_kb(auth: dict) -> tuple:
+            """Clear knowledge base after confirmation."""
+            token = auth.get("token")
+            if not token:
+                return ("Not authenticated.", "No data.", "No files.")
+
+            try:
+                result = GradioAPIClient.clear_knowledge_base(token)
+                deleted_chunks = result.get("deleted_chunks", 0)
+                deleted_files = result.get("deleted_files", 0)
+
+                status = f"Cleared {deleted_chunks} chunks from {deleted_files} files."
+                return (status, "**Total Chunks**: 0\n**Unique Files**: 0", "*No files indexed.*")
+            except httpx.HTTPStatusError as e:
+                return (f"Failed to clear (HTTP {e.response.status_code})", "Error.", "Error.")
+            except Exception as e:
+                return (f"Error: {e}", "Error.", "Error.")
+
+        kb_refresh_btn.click(
+            fn=load_kb_stats,
+            inputs=[auth_state],
+            outputs=[kb_status, kb_stats_display, kb_file_list],
+        )
+
+        kb_clear_btn.click(
+            fn=clear_kb,
+            inputs=[auth_state],
+            outputs=[kb_status, kb_stats_display, kb_file_list],
+        )
+
+        # ========== MODEL CONFIGURATION EVENT HANDLERS (#14) ==========
+
+        def load_models(auth: dict) -> tuple:
+            """Load available models from API."""
+            token = auth.get("token")
+            if not token:
+                return ("Not authenticated.", "**Current Model**: Unknown", gr.update(choices=[]))
+
+            try:
+                data = GradioAPIClient.get_available_models(token)
+                current_model = data.get("current_chat_model", "Unknown")
+                available = data.get("available_models", [])
+
+                # Format model choices
+                choices = [
+                    (m.get("display_name", m.get("name", "")), m.get("name", "")) for m in available
+                ]
+
+                current_md = f"**Current Model**: {current_model}"
+
+                return (
+                    "Models loaded.",
+                    current_md,
+                    gr.update(choices=choices, value=current_model),
+                )
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 503:
+                    return (
+                        "Ollama unavailable.",
+                        "**Current Model**: Ollama offline",
+                        gr.update(choices=[]),
+                    )
+                return (
+                    f"Failed to load (HTTP {e.response.status_code})",
+                    "**Current Model**: Error",
+                    gr.update(choices=[]),
+                )
+            except Exception as e:
+                return (f"Error: {e}", "**Current Model**: Error", gr.update(choices=[]))
+
+        def apply_model_change(auth: dict, selected_model: str) -> tuple:
+            """Apply the selected chat model."""
+            token = auth.get("token")
+            if not token:
+                return ("Not authenticated.", "**Current Model**: Unknown")
+
+            if not selected_model:
+                return ("No model selected.", "**Current Model**: Unknown")
+
+            try:
+                result = GradioAPIClient.change_chat_model(token, selected_model)
+                new_model = result.get("model", selected_model)
+                return (f"Model changed to {new_model}.", f"**Current Model**: {new_model}")
+            except httpx.HTTPStatusError as e:
+                return (
+                    f"Failed to change model (HTTP {e.response.status_code})",
+                    "**Current Model**: Error",
+                )
+            except Exception as e:
+                return (f"Error: {e}", "**Current Model**: Error")
+
+        model_refresh_btn.click(
+            fn=load_models,
+            inputs=[auth_state],
+            outputs=[model_status, model_current, model_dropdown],
+        )
+
+        model_apply_btn.click(
+            fn=apply_model_change,
+            inputs=[auth_state, model_dropdown],
+            outputs=[model_status, model_current],
         )
 
     return app
