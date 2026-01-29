@@ -487,6 +487,46 @@ class VectorService:
             logger.error(f"Failed to delete document {document_id}: {e}")
             return False
 
+    async def update_document_tags(self, document_id: str, tag_names: list[str]) -> int:
+        """Update tags payload for all vectors of a document.
+
+        Uses Qdrant's set_payload API for efficient payload-only updates
+        without re-embedding.
+
+        Args:
+            document_id: Document whose vectors to update.
+            tag_names: New list of tag names.
+
+        Returns:
+            Number of points updated (0 if document not found).
+
+        Raises:
+            Exception: If Qdrant operation fails.
+        """
+        try:
+            # Use set_payload with filter to update all points for this document
+            await self._qdrant.set_payload(
+                collection_name=self.collection_name,
+                payload={"tags": tag_names},
+                points=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="document_id",
+                                match=models.MatchValue(value=document_id),
+                            )
+                        ]
+                    )
+                ),
+            )
+            logger.info(f"Updated tags for document {document_id}: {tag_names}")
+            # set_payload doesn't return count, so we count separately
+            count = await self._count_document_chunks(document_id)
+            return count
+        except Exception as e:
+            logger.error(f"Failed to update tags for document {document_id}: {e}")
+            raise
+
     async def search(
         self,
         query: str,

@@ -202,3 +202,161 @@ class GradioAPIClient:
             )
             response.raise_for_status()
             return response.json()
+
+    # --- Document Management APIs ---
+
+    @staticmethod
+    def get_tags(token: str) -> list[dict[str, Any]]:
+        """Get all available tags.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            List of tag dicts with id, name, display_name
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get(
+                "/api/tags",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def list_documents(
+        token: str,
+        limit: int = 20,
+        offset: int = 0,
+        status_filter: str | None = None,
+        tag_id: str | None = None,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        """List documents with filtering.
+
+        Args:
+            token: JWT access token
+            limit: Max documents to return
+            offset: Pagination offset
+            status_filter: Filter by status (pending, processing, ready, failed)
+            tag_id: Filter by tag ID
+            search: Search term for filename/title
+
+        Returns:
+            dict with documents list, total, limit, offset
+        """
+        params = {"limit": limit, "offset": offset}
+        if status_filter:
+            params["status"] = status_filter
+        if tag_id:
+            params["tag_id"] = tag_id
+        if search:
+            params["search"] = search
+
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get(
+                "/api/documents",
+                params=params,
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def upload_document(
+        token: str,
+        file_path: str,
+        tag_ids: list[str],
+        title: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Upload a document.
+
+        Args:
+            token: JWT access token
+            file_path: Path to file to upload
+            tag_ids: List of tag IDs to assign
+            title: Optional title
+            description: Optional description
+
+        Returns:
+            Created document info
+        """
+        from pathlib import Path
+
+        with httpx.Client(base_url=BASE_URL, timeout=120.0) as client:
+            with open(file_path, "rb") as f:
+                files = {"file": (Path(file_path).name, f)}
+                data: dict[str, Any] = {"tag_ids": tag_ids}
+                if title:
+                    data["title"] = title
+                if description:
+                    data["description"] = description
+
+                response = client.post(
+                    "/api/documents/upload",
+                    files=files,
+                    data=data,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def delete_document(token: str, document_id: str) -> bool:
+        """Delete a document.
+
+        Args:
+            token: JWT access token
+            document_id: Document ID to delete
+
+        Returns:
+            True if deleted successfully
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=60.0) as client:
+            response = client.delete(
+                f"/api/documents/{document_id}",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return True
+
+    @staticmethod
+    def update_document_tags(token: str, document_id: str, tag_ids: list[str]) -> dict[str, Any]:
+        """Update document tags.
+
+        Args:
+            token: JWT access token
+            document_id: Document ID
+            tag_ids: New tag IDs
+
+        Returns:
+            Updated document info
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.patch(
+                f"/api/documents/{document_id}/tags",
+                json={"tag_ids": tag_ids},
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def reprocess_document(token: str, document_id: str) -> dict[str, Any]:
+        """Reprocess a document.
+
+        Args:
+            token: JWT access token
+            document_id: Document ID to reprocess
+
+        Returns:
+            Updated document info with pending status
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.post(
+                f"/api/documents/{document_id}/reprocess",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()

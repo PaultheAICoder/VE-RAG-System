@@ -98,6 +98,16 @@ class TagInfo(BaseModel):
         from_attributes = True
 
 
+class TagUpdateRequest(BaseModel):
+    tag_ids: list[str]
+
+
+class ReprocessRequest(BaseModel):
+    enable_ocr: bool = True
+    force_ocr: bool = False
+    ocr_language: str = "eng"
+
+
 class DocumentResponse(BaseModel):
     id: str
     original_filename: str
@@ -244,17 +254,180 @@ async def delete_document(
 ):
     """Delete a document (admin only).
 
-    Removes file from storage and database record.
+    Cascade delete: vectors from Qdrant, file from storage, record from database.
     """
+    from ai_ready_rag.services.vector_service import VectorService
+
     settings = get_settings()
     service = DocumentService(db, settings)
 
-    success = await service.delete_document(document_id)
-
-    if not success:
+    # Check document exists first
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Document not found",
         )
 
+    # Delete vectors from Qdrant first
+    try:
+        vector_service = VectorService(
+            qdrant_url=settings.qdrant_url,
+            ollama_url=settings.ollama_base_url,
+            collection_name=settings.qdrant_collection,
+            embedding_model=settings.embedding_model,
+            embedding_dimension=settings.embedding_dimension,
+        )
+        await vector_service.delete_document(document_id)
+        logger.info(f"Deleted vectors for document {document_id}")
+    except Exception as e:
+        logger.warning(f"Failed to delete vectors for document {document_id}: {e}")
+        # Continue with file/db deletion even if vector deletion fails
+
+    # Delete file and database record
+    await service.delete_document(document_id)
+    logger.info(f"Deleted document {document_id}")
+
     return None
+
+
+@router.patch("/{document_id}/tags", response_model=DocumentResponse)
+async def update_document_tags(
+    document_id: str,
+    request: TagUpdateRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Update document tags (admin only).
+
+    Updates tags in both SQLite and Qdrant (via set_payload, no re-embedding).
+    """
+    from ai_ready_rag.db.models import Tag
+    from ai_ready_rag.services.vector_service import VectorService
+
+    settings = get_settings()
+
+    # Validate at least one tag
+    if not request.tag_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one tag is required",
+        )
+
+    # Get document
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    # Validate tags exist
+    tags = db.query(Tag).filter(Tag.id.in_(request.tag_ids)).all()
+    if len(tags) != len(request.tag_ids):
+        found_ids = {t.id for t in tags}
+        missing = [tid for tid in request.tag_ids if tid not in found_ids]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid tag IDs: {missing}",
+        )
+
+    # Update SQLite
+    document.tags = tags
+
+    # Update Qdrant (only if document has been processed)
+    if document.status == "ready" and document.chunk_count and document.chunk_count > 0:
+        try:
+            vector_service = VectorService(
+                qdrant_url=settings.qdrant_url,
+                ollama_url=settings.ollama_base_url,
+                collection_name=settings.qdrant_collection,
+                embedding_model=settings.embedding_model,
+                embedding_dimension=settings.embedding_dimension,
+            )
+            tag_names = [t.name for t in tags]
+            await vector_service.update_document_tags(document_id, tag_names)
+            logger.info(f"Updated Qdrant tags for document {document_id}")
+        except Exception as e:
+            logger.error(f"Failed to update Qdrant tags for document {document_id}: {e}")
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update vector tags: {e}",
+            ) from e
+
+    db.commit()
+    db.refresh(document)
+    logger.info(f"Updated tags for document {document_id}: {[t.name for t in tags]}")
+
+    return document
+
+
+@router.post(
+    "/{document_id}/reprocess",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def reprocess_document(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    request: ReprocessRequest | None = None,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Reprocess a document (admin only).
+
+    Deletes existing vectors, resets status to pending, and queues for reprocessing.
+    Only allowed for documents in 'ready' or 'failed' status.
+    """
+    from ai_ready_rag.services.vector_service import VectorService
+
+    settings = get_settings()
+
+    # Get document
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    # Validate status - can only reprocess ready or failed documents
+    if document.status not in ("ready", "failed"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot reprocess document in '{document.status}' status. "
+            "Only 'ready' or 'failed' documents can be reprocessed.",
+        )
+
+    # Delete existing vectors first (if any)
+    if document.chunk_count and document.chunk_count > 0:
+        try:
+            vector_service = VectorService(
+                qdrant_url=settings.qdrant_url,
+                ollama_url=settings.ollama_base_url,
+                collection_name=settings.qdrant_collection,
+                embedding_model=settings.embedding_model,
+                embedding_dimension=settings.embedding_dimension,
+            )
+            await vector_service.delete_document(document_id)
+            logger.info(f"Deleted existing vectors for document {document_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete vectors for document {document_id}: {e}")
+            # Continue anyway - vectors may not exist or Qdrant may be down
+
+    # Reset document state
+    document.status = "pending"
+    document.chunk_count = None
+    document.processed_at = None
+    document.error_message = None
+    document.processing_time_ms = None
+
+    db.commit()
+    db.refresh(document)
+
+    # Queue for background processing
+    background_tasks.add_task(process_document_task, document.id)
+    logger.info(f"Queued document {document_id} for reprocessing")
+
+    return document

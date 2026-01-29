@@ -7,6 +7,13 @@ import httpx
 
 from ai_ready_rag.ui.api_client import GradioAPIClient, handle_api_error
 from ai_ready_rag.ui.components import parse_assistant_response
+from ai_ready_rag.ui.document_components import (
+    handle_delete,
+    handle_reprocess,
+    handle_upload,
+    load_documents,
+    load_tags,
+)
 from ai_ready_rag.ui.theme import custom_css, theme
 
 
@@ -141,9 +148,50 @@ def create_app() -> gr.Blocks:
                         visible=False,
                     )
 
+                    # Admin Document Management Section
                     gr.Markdown("---")
-                    gr.Markdown("### Documents")
-                    gr.Markdown("_Coming in Phase 2_", elem_classes=["phase2-disabled"])
+                    with gr.Accordion(
+                        "Document Management",
+                        open=False,
+                        visible=False,
+                    ) as doc_mgmt_accordion:
+                        # Upload section
+                        doc_file_input = gr.File(
+                            label="Select File",
+                            file_types=[".pdf", ".docx", ".txt", ".md"],
+                        )
+                        doc_tag_dropdown = gr.Dropdown(
+                            label="Tags (required)",
+                            multiselect=True,
+                            choices=[],
+                        )
+                        doc_title_input = gr.Textbox(
+                            label="Title (optional)",
+                            placeholder="Document title...",
+                        )
+                        doc_upload_btn = gr.Button("Upload", variant="primary", size="sm")
+                        doc_upload_status = gr.Markdown("")
+
+                        gr.Markdown("---")
+
+                        # Document list controls
+                        doc_refresh_btn = gr.Button("Refresh List", size="sm")
+                        doc_table = gr.Dataframe(
+                            headers=["ID", "Filename", "Status"],
+                            datatype=["str", "str", "str"],
+                            interactive=False,
+                            max_rows=5,
+                        )
+
+                        # Action section
+                        doc_selected_id = gr.Textbox(
+                            label="Document ID (enter full ID for actions)",
+                            placeholder="Enter document ID...",
+                        )
+                        with gr.Row():
+                            doc_delete_btn = gr.Button("Delete", variant="stop", size="sm")
+                            doc_reprocess_btn = gr.Button("Reprocess", size="sm")
+                        doc_action_status = gr.Markdown("")
 
                 # Chat area
                 with gr.Column(scale=3, elem_classes=["chat-area"]):
@@ -190,6 +238,8 @@ def create_app() -> gr.Blocks:
                     "",  # user_display
                     gr.update(value=[]),  # sessions_list
                     gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # doc_mgmt_accordion
+                    gr.update(choices=[]),  # doc_tag_dropdown
                 )
 
             try:
@@ -221,6 +271,14 @@ def create_app() -> gr.Blocks:
                 user_name = user.get("display_name", email)
                 sessions_display = _format_sessions_for_display(sessions)
 
+                # Check if admin for document management visibility
+                is_admin = user.get("role") == "admin"
+
+                # Load tags for admin document dropdown
+                tag_choices = []
+                if is_admin:
+                    tag_choices = load_tags(new_auth)
+
                 return (
                     new_auth,
                     new_sess,
@@ -230,6 +288,8 @@ def create_app() -> gr.Blocks:
                     f"**{user_name}**",  # user_display
                     gr.update(value=sessions_display),  # sessions_list
                     gr.update(visible=has_more),  # load_more_btn
+                    gr.update(visible=is_admin),  # doc_mgmt_accordion
+                    gr.update(choices=tag_choices),  # doc_tag_dropdown
                 )
             except httpx.HTTPStatusError as e:
                 # For login, 401 means invalid credentials, not session expired
@@ -247,6 +307,8 @@ def create_app() -> gr.Blocks:
                     "",  # user_display
                     gr.update(value=[]),  # sessions_list
                     gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # doc_mgmt_accordion
+                    gr.update(choices=[]),  # doc_tag_dropdown
                 )
             except Exception as e:
                 return (
@@ -258,6 +320,8 @@ def create_app() -> gr.Blocks:
                     "",  # user_display
                     gr.update(value=[]),  # sessions_list
                     gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # doc_mgmt_accordion
+                    gr.update(choices=[]),  # doc_tag_dropdown
                 )
 
         def handle_logout(auth: dict, sess: dict) -> tuple:
@@ -548,6 +612,8 @@ def create_app() -> gr.Blocks:
                 user_display,
                 sessions_list,
                 load_more_btn,
+                doc_mgmt_accordion,
+                doc_tag_dropdown,
             ],
         )
 
@@ -563,6 +629,8 @@ def create_app() -> gr.Blocks:
                 user_display,
                 sessions_list,
                 load_more_btn,
+                doc_mgmt_accordion,
+                doc_tag_dropdown,
             ],
         )
 
@@ -621,6 +689,64 @@ def create_app() -> gr.Blocks:
             fn=send_message,
             inputs=[msg_input, chat_display, auth_state, session_state],
             outputs=[msg_input, chat_display, loading_indicator, chat_error, session_state],
+        )
+
+        # ========== DOCUMENT MANAGEMENT EVENT HANDLERS ==========
+
+        def refresh_doc_list(auth: dict) -> list:
+            """Refresh document list."""
+            return load_documents(auth)
+
+        def do_upload(auth: dict, file, tag_ids: list, title: str) -> tuple:
+            """Handle document upload."""
+            status = handle_upload(auth, file, tag_ids, title, "")
+            docs = load_documents(auth)
+            return status, docs, None, [], ""  # Clear form after upload
+
+        def do_delete(auth: dict, doc_id: str) -> tuple:
+            """Handle document deletion."""
+            status = handle_delete(auth, doc_id)
+            docs = load_documents(auth)
+            return status, docs
+
+        def do_reprocess(auth: dict, doc_id: str) -> tuple:
+            """Handle document reprocessing."""
+            status = handle_reprocess(auth, doc_id)
+            docs = load_documents(auth)
+            return status, docs
+
+        # Document refresh
+        doc_refresh_btn.click(
+            fn=refresh_doc_list,
+            inputs=[auth_state],
+            outputs=[doc_table],
+        )
+
+        # Document upload
+        doc_upload_btn.click(
+            fn=do_upload,
+            inputs=[auth_state, doc_file_input, doc_tag_dropdown, doc_title_input],
+            outputs=[
+                doc_upload_status,
+                doc_table,
+                doc_file_input,
+                doc_tag_dropdown,
+                doc_title_input,
+            ],
+        )
+
+        # Document delete
+        doc_delete_btn.click(
+            fn=do_delete,
+            inputs=[auth_state, doc_selected_id],
+            outputs=[doc_action_status, doc_table],
+        )
+
+        # Document reprocess
+        doc_reprocess_btn.click(
+            fn=do_reprocess,
+            inputs=[auth_state, doc_selected_id],
+            outputs=[doc_action_status, doc_table],
         )
 
     return app
