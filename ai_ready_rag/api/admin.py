@@ -1,6 +1,9 @@
 """Admin endpoints for system management."""
 
 import logging
+import shutil
+import subprocess
+import time
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -13,6 +16,7 @@ from ai_ready_rag.core.dependencies import require_admin
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import User
 from ai_ready_rag.services.document_service import DocumentService
+from ai_ready_rag.services.model_service import ModelService, OllamaUnavailableError
 from ai_ready_rag.services.settings_service import SettingsService
 from ai_ready_rag.services.vector_service import VectorService
 
@@ -59,6 +63,150 @@ class ClearKnowledgeBaseResponse(BaseModel):
     deleted_chunks: int
     deleted_files: int
     success: bool
+
+
+# Architecture Info Response Models
+class TesseractStatus(BaseModel):
+    """Tesseract OCR availability status."""
+
+    available: bool
+    version: str | None = None
+    languages: list[str] | None = None
+
+
+class EasyOCRStatus(BaseModel):
+    """EasyOCR availability status."""
+
+    available: bool
+    version: str | None = None
+
+
+class OCRStatus(BaseModel):
+    """Combined OCR status."""
+
+    tesseract: TesseractStatus
+    easyocr: EasyOCRStatus
+
+
+class DocumentParsingInfo(BaseModel):
+    """Document parsing engine information."""
+
+    engine: str = "Docling"
+    version: str
+    type: str = "local ML"
+    capabilities: list[str]
+
+
+class EmbeddingsInfo(BaseModel):
+    """Embeddings configuration."""
+
+    model: str
+    dimensions: int
+    vector_store: str
+    vector_store_url: str
+
+
+class ChatModelInfo(BaseModel):
+    """Chat model configuration."""
+
+    name: str
+    provider: str = "Ollama"
+    capabilities: list[str]
+
+
+class InfrastructureStatus(BaseModel):
+    """Infrastructure health status."""
+
+    ollama_url: str
+    ollama_status: str  # "healthy" | "unhealthy"
+    vector_db_status: str  # "healthy" | "unhealthy"
+
+
+class ArchitectureInfoResponse(BaseModel):
+    """Complete architecture information response."""
+
+    document_parsing: DocumentParsingInfo
+    embeddings: EmbeddingsInfo
+    chat_model: ChatModelInfo
+    infrastructure: InfrastructureStatus
+    ocr_status: OCRStatus
+    profile: str
+
+
+# Architecture info caching
+_architecture_cache: dict = {}
+_cache_ttl_seconds: int = 60
+
+
+def _get_tesseract_status() -> TesseractStatus:
+    """Detect Tesseract availability and get version/languages."""
+    tesseract_path = shutil.which("tesseract")
+    if not tesseract_path:
+        return TesseractStatus(available=False)
+
+    version = None
+    languages = None
+
+    try:
+        # Get version
+        result = subprocess.run(
+            ["tesseract", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            # Parse first line: "tesseract X.X.X"
+            first_line = result.stdout.split("\n")[0]
+            if "tesseract" in first_line.lower():
+                parts = first_line.split()
+                if len(parts) >= 2:
+                    version = parts[1]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    try:
+        # Get languages
+        result = subprocess.run(
+            ["tesseract", "--list-langs"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            # Skip header line, get language codes
+            lines = result.stdout.strip().split("\n")
+            if len(lines) > 1:
+                languages = [lang.strip() for lang in lines[1:] if lang.strip()]
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    return TesseractStatus(
+        available=True,
+        version=version,
+        languages=languages,
+    )
+
+
+def _get_easyocr_status() -> EasyOCRStatus:
+    """Detect EasyOCR availability and version."""
+    try:
+        import easyocr  # noqa: F401
+
+        version = getattr(easyocr, "__version__", None)
+        return EasyOCRStatus(available=True, version=version)
+    except ImportError:
+        return EasyOCRStatus(available=False)
+
+
+def _get_docling_version() -> str:
+    """Get Docling version if installed."""
+    try:
+        import docling
+
+        return getattr(docling, "__version__", "unknown")
+    except ImportError:
+        return "not installed"
 
 
 @router.post("/documents/recover-stuck", response_model=RecoverResponse)
@@ -335,4 +483,245 @@ async def update_processing_options(
             "include_image_descriptions",
             PROCESSING_DEFAULTS["include_image_descriptions"],
         ),
+    )
+
+
+@router.get("/architecture", response_model=ArchitectureInfoResponse)
+async def get_architecture_info(
+    current_user: User = Depends(require_admin),
+):
+    """Get comprehensive system architecture information.
+
+    Returns system configuration, component health status, and OCR availability.
+    Results are cached for 60 seconds to avoid repeated health checks.
+    Admin only.
+    """
+    global _architecture_cache
+
+    # Check cache validity
+    cache_timestamp = _architecture_cache.get("timestamp", 0)
+    if time.time() - cache_timestamp < _cache_ttl_seconds:
+        cached_response = _architecture_cache.get("response")
+        if cached_response:
+            return cached_response
+
+    # Get settings
+    settings = get_settings()
+
+    # Check infrastructure health
+    vector_service = VectorService(
+        qdrant_url=settings.qdrant_url,
+        ollama_url=settings.ollama_base_url,
+        collection_name=settings.qdrant_collection,
+        embedding_model=settings.embedding_model,
+    )
+
+    try:
+        health = await vector_service.health_check()
+        ollama_status = "healthy" if health.ollama_healthy else "unhealthy"
+        vector_db_status = "healthy" if health.qdrant_healthy else "unhealthy"
+    except Exception as e:
+        logger.warning(f"Health check failed: {e}")
+        ollama_status = "unhealthy"
+        vector_db_status = "unhealthy"
+
+    # Get OCR status
+    tesseract_status = _get_tesseract_status()
+    easyocr_status = _get_easyocr_status()
+
+    # Get Docling version
+    docling_version = _get_docling_version()
+
+    # Build response
+    response = ArchitectureInfoResponse(
+        document_parsing=DocumentParsingInfo(
+            engine="Docling",
+            version=docling_version,
+            type="local ML",
+            capabilities=[
+                "PDF extraction",
+                "Table detection",
+                "OCR integration",
+                "Semantic chunking",
+            ],
+        ),
+        embeddings=EmbeddingsInfo(
+            model=settings.embedding_model,
+            dimensions=settings.embedding_dimension,
+            vector_store=settings.vector_backend,
+            vector_store_url=settings.qdrant_url,
+        ),
+        chat_model=ChatModelInfo(
+            name=settings.chat_model,
+            provider="Ollama",
+            capabilities=[
+                "Text generation",
+                "RAG context processing",
+                "Citation generation",
+            ],
+        ),
+        infrastructure=InfrastructureStatus(
+            ollama_url=settings.ollama_base_url,
+            ollama_status=ollama_status,
+            vector_db_status=vector_db_status,
+        ),
+        ocr_status=OCRStatus(
+            tesseract=tesseract_status,
+            easyocr=easyocr_status,
+        ),
+        profile=settings.env_profile,
+    )
+
+    # Cache the response
+    _architecture_cache = {
+        "timestamp": time.time(),
+        "response": response,
+    }
+
+    return response
+
+
+# Model Configuration Models and Endpoints
+CHAT_MODEL_KEY = "chat_model"
+
+
+class ModelInfo(BaseModel):
+    """Information about an available model."""
+
+    name: str
+    display_name: str
+    size_gb: float
+    parameters: str | None = None
+    quantization: str | None = None
+    recommended: bool = False
+
+
+class ModelsResponse(BaseModel):
+    """Response containing available models and current selection."""
+
+    available_models: list[ModelInfo]
+    current_chat_model: str
+    current_embedding_model: str
+
+
+class ChangeModelRequest(BaseModel):
+    """Request to change the active chat model."""
+
+    model_name: str
+
+
+class ChangeModelResponse(BaseModel):
+    """Response after changing the chat model."""
+
+    previous_model: str
+    current_model: str
+    success: bool
+    message: str
+
+
+@router.get("/models", response_model=ModelsResponse)
+async def get_models(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Get available Ollama models and current selection.
+
+    Returns list of available models from Ollama and the currently
+    active chat and embedding models.
+
+    Admin only.
+    """
+    settings = get_settings()
+    model_service = ModelService(settings.ollama_base_url)
+    settings_service = SettingsService(db)
+
+    try:
+        models = await model_service.list_models()
+    except OllamaUnavailableError as e:
+        logger.error(f"Failed to list models: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        ) from e
+
+    # Get current chat model from settings, fallback to config
+    current_chat = settings_service.get(CHAT_MODEL_KEY)
+    if current_chat is None:
+        current_chat = settings.chat_model
+
+    # Convert to ModelInfo response models
+    available_models = [
+        ModelInfo(
+            name=m["name"],
+            display_name=m["display_name"],
+            size_gb=m["size_gb"],
+            parameters=m["parameters"],
+            quantization=m["quantization"],
+            recommended=m["recommended"],
+        )
+        for m in models
+    ]
+
+    return ModelsResponse(
+        available_models=available_models,
+        current_chat_model=current_chat,
+        current_embedding_model=settings.embedding_model,
+    )
+
+
+@router.patch("/models/chat", response_model=ChangeModelResponse)
+async def change_chat_model(
+    request: ChangeModelRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Change the active chat model.
+
+    Validates that the requested model exists in Ollama before
+    accepting the change. Model selection persists to database.
+
+    Note: First request after switch may be slow due to model loading.
+
+    Admin only.
+    """
+    settings = get_settings()
+    model_service = ModelService(settings.ollama_base_url)
+    settings_service = SettingsService(db)
+
+    # Validate model exists in Ollama
+    try:
+        model_exists = await model_service.validate_model(request.model_name)
+    except OllamaUnavailableError as e:
+        logger.error(f"Cannot validate model - Ollama unavailable: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        ) from e
+
+    if not model_exists:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Model '{request.model_name}' not found in Ollama. "
+            "Please ensure the model is pulled before selecting it.",
+        )
+
+    # Get previous model
+    previous_model = settings_service.get(CHAT_MODEL_KEY)
+    if previous_model is None:
+        previous_model = settings.chat_model
+
+    # Save new model
+    settings_service.set(CHAT_MODEL_KEY, request.model_name, updated_by=current_user.id)
+
+    # Audit log
+    logger.info(
+        f"Admin {current_user.email} changed chat model: {previous_model} -> {request.model_name}"
+    )
+
+    return ChangeModelResponse(
+        previous_model=previous_model,
+        current_model=request.model_name,
+        success=True,
+        message=f"Chat model changed to {request.model_name}. "
+        "First request may be slow while the model loads.",
     )

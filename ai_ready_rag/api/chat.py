@@ -26,7 +26,11 @@ from ai_ready_rag.services.rag_service import (
     RAGRequest,
     RAGService,
 )
+from ai_ready_rag.services.settings_service import SettingsService
 from ai_ready_rag.services.vector_service import VectorService
+
+# Settings key for runtime chat model override
+CHAT_MODEL_KEY = "chat_model"
 
 router = APIRouter()
 
@@ -560,7 +564,11 @@ async def send_message(
         )
         await vector_service.initialize()
 
-        rag_service = RAGService(settings, vector_service)
+        # Check for runtime model override from admin settings
+        settings_service = SettingsService(db)
+        chat_model = settings_service.get(CHAT_MODEL_KEY) or settings.chat_model
+
+        rag_service = RAGService(settings, vector_service, default_model=chat_model)
         response = await rag_service.generate(rag_request, db)
 
     except ModelNotAllowedError as e:
