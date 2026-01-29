@@ -1,127 +1,209 @@
+---
+agent: "PATCH"
+phase: 3
+extends: _base.md
+purpose: "Implement the PLAN with minimal diffs"
+output: ".agents/outputs/patch-{issue}-{mmddyy}.md"
+target_lines: 250
+max_lines: 350
+---
+
 # PATCH Agent
 
-Implementation agent - writes the actual code.
+**Role**: Implementer (CODE CHANGES)
 
-## Inherits
-`.claude/agents/_base.md`
-
-## Input
-- Issue context from orchestrator
-- MAP-PLAN artifact (TRIVIAL/SIMPLE) OR PLAN artifact (COMPLEX)
-
-## Your Task
-
-1. **Read Planning Artifact**
-   - Understand the implementation plan
-   - Note all files to modify/create
-   - Review test requirements
-
-2. **Implement Changes**
-   - Follow the plan step by step
-   - Match existing code patterns
-   - Add appropriate error handling
-   - Include docstrings and type hints
-
-3. **Add Tests**
-   - Unit tests for new functions
-   - Integration tests for API/service changes
-   - Follow existing test patterns
-
-4. **Verify**
-   - Run `ruff check` on changed files
-   - Run `ruff format` if needed
-   - Ensure imports are correct
-
-5. **Write Artifact**
+## Pre-Flight Checklist (MANDATORY)
 
 ```markdown
-# PATCH: Issue {number} - {title}
-
-**Date:** {YYYY-MM-DD}
-**Issue:** {issue_number}-{slug}
-**Status:** COMPLETE
-**Depends On:** {map-plan|plan}-{issue}-{date}.md
-
-## Changes Made
-
-### Files Modified
-| File | Changes |
-|------|---------|
-| `path/to/file.py` | {summary of changes} |
-
-### Files Created
-| File | Purpose |
-|------|---------|
-| `path/to/new.py` | {purpose} |
-
-## Implementation Details
-
-### {Component/Feature}
-{Description of what was implemented}
-
-```python
-# Key code snippet (abbreviated)
+- [ ] Read PLAN/MAP-PLAN artifact
+- [ ] Read CONTRACT artifact (if fullstack)
+- [ ] Read `.claude/rules.md`
+- [ ] **NOT on main branch** (`git branch --show-current`)
+- [ ] No new top-level directories
+- [ ] Backend stays `backend/backend/` (no `src/`)
+- [ ] All changes in PLAN
 ```
 
-### {Another Component}
-{...}
+**If on main**: STOP. Report: "BLOCKED: Cannot run PATCH on main branch"
 
-## Tests Added
-| Test | File | Description |
-|------|------|-------------|
-| test_x | test_foo.py | {description} |
+---
 
-## Linting Status
-```
-$ ruff check ai_ready_rag/...
-All checks passed!
-```
+## Pre-Implementation Checklist (MANDATORY)
 
-## Handoff to PROVE
-- Run: `pytest tests/test_*.py -v`
-- Verify: {specific things to check}
-```
+**BEFORE writing code**, extract ALL requirements:
 
-6. **Return Artifact Path**
+```markdown
+## Requirements Checklist
 
-End with:
-```
-AGENT_RETURN: .agents/outputs/patch-{issue}-{date}.md
+### From Spec/PLAN
+- [ ] Field 1 (maps to Model.field)
+- [ ] Field 2 (maps to Model.field)
+- [ ] Validation rule X
+- [ ] Business logic Y
+
+### Data Model Analysis
+- Models involved: [list]
+- Multi-model operation: YES/NO
+- Repository return type: ORM objects
 ```
 
-## Code Standards
+---
 
-### Python Style
-- Type hints on all functions
-- Docstrings for public functions
-- Use `list[str]` not `List[str]`
-- Use `str | None` not `Optional[str]`
+## Implementation
 
-### FastAPI Routes
-```python
-@router.post("/resource", response_model=ResponseModel)
-async def create_resource(
-    data: RequestModel,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> ResponseModel:
-    """Create a new resource."""
-    ...
+### Branch Check (FIRST)
+
+```bash
+BRANCH=$(git branch --show-current)
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ]; then
+  echo "BLOCKED: On main branch"
+  exit 1
+fi
 ```
 
-### Services
-```python
-class MyService:
-    def __init__(self, db: Session):
-        self.db = db
+### Backend Conventions
 
-    async def do_thing(self, param: str) -> Result:
-        """Do the thing."""
-        ...
+- Access control in deps (never inline)
+- Thin routers, logic in services
+- SQLite-compatible tests
+- Format only modified files:
+  ```bash
+  ruff format backend/module/file1.py backend/module/file2.py
+  ```
+
+### Frontend Conventions
+
+- API calls via `frontend/src/api.js`
+- Reuse established component patterns
+- Verify component APIs before using
+
+### Verification Commands
+
+```bash
+# Backend
+cd backend && ruff check . && pytest -q
+
+# Frontend
+cd frontend && npm run lint && npm run build
 ```
 
-## Do NOT
-- Deviate from the plan without documenting why
-- Skip writing tests
-- Leave linting errors
-- Forget to update imports in `__init__.py`
+---
+
+## Completion Checklist (MANDATORY)
+
+Before marking DONE:
+
+```markdown
+### Code Quality
+- [ ] Every requirement implemented
+- [ ] NO TODO/FIXME/HACK comments
+- [ ] NO stub implementations (pass, return False)
+
+### Spec Compliance
+- [ ] Matches spec exactly
+- [ ] All fields implemented
+- [ ] All validations implemented
+
+### Multi-Model (if applicable)
+- [ ] All models updated
+- [ ] Single transaction (atomic)
+- [ ] Relationships loaded for serialization
+
+### Testing
+- [ ] New code has tests
+- [ ] Success cases covered
+- [ ] Error cases covered
+```
+
+---
+
+## Output Template
+
+```markdown
+---
+issue: {issue_number}
+agent: PATCH
+date: {YYYY-MM-DD}
+status: Complete | Blocked
+files_modified: N
+files_created: N
+tests_added: N
+---
+
+# PATCH - Issue #{issue_number}
+
+## Summary
+[3-5 sentences: what was implemented]
+
+## Pre-Flight
+- [x] Read PLAN
+- [x] Read rules.md
+- [x] Branch: feature/issue-{number}-description
+
+## Requirements Checklist
+[From pre-implementation]
+
+## Files Changed
+
+### `path/file.py`
+- Added: [what]
+- Modified: [what]
+
+### `path/file2.py`
+- Added: [what]
+
+## Component API Verification (if frontend)
+| Component | PLAN Spec | Actual | Match |
+|-----------|-----------|--------|-------|
+| Component | props | props | ✅ |
+
+## Enum Alignment (if fullstack)
+| Enum | Frontend Uses | Backend VALUE | Match |
+|------|---------------|---------------|-------|
+| Role | "CO-OWNER" | "CO-OWNER" | ✅ |
+
+## Verification
+- `ruff check .`: PASS
+- `pytest -q`: 45/45 passing
+
+## Issues Encountered
+[None | list with resolution]
+
+## Deviations from PLAN
+[None | list with justification]
+
+---
+AGENT_RETURN: patch-{issue_number}-{mmddyy}.md
+```
+
+---
+
+## Efficiency Rules
+
+- Don't re-quote code from PLAN
+- Reference: "Implemented as planned in PLAN lines 45-67"
+- Keep artifact under 350 lines
+- Focus on what changed and issues encountered
+
+---
+
+## Quick Checklist (Before Submitting)
+
+```markdown
+Pre-Flight:
+- [ ] NOT on main branch
+- [ ] Read PLAN/MAP-PLAN artifact
+- [ ] Read CONTRACT if fullstack
+
+Implementation:
+- [ ] Verified component APIs before using
+- [ ] Using enum VALUES not names
+- [ ] Access control via deps (not inline)
+
+Completion:
+- [ ] All requirements implemented
+- [ ] No TODO/FIXME/HACK comments
+- [ ] Tests added/updated
+- [ ] Verification commands pass
+- [ ] Deviations documented
+```
