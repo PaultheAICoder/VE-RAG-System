@@ -16,6 +16,7 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "rag_max_context_tokens": 2000,
         "rag_max_history_tokens": 600,
         "rag_max_response_tokens": 512,
+        "rag_enable_hallucination_check": False,  # Faster dev
     },
     "spark": {
         "vector_backend": "qdrant",
@@ -26,6 +27,7 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "rag_max_context_tokens": 6000,
         "rag_max_history_tokens": 1500,
         "rag_max_response_tokens": 2048,
+        "rag_enable_hallucination_check": True,  # Full quality
     },
 }
 
@@ -99,9 +101,11 @@ class Settings(BaseSettings):
     # Retrieval Quality
     rag_min_similarity_score: float = 0.3
     rag_max_chunks_per_doc: int = 3
-    rag_total_context_chunks: int = 5
+    rag_total_context_chunks: int = 8  # Increased from 5 per Spark config
     rag_dedup_candidates_cap: int = 15
     rag_chunk_overlap_threshold: float = 0.9
+    rag_enable_query_expansion: bool = True  # Expand queries for better recall
+    rag_enable_hallucination_check: bool | None = None  # None = use profile default
 
     # Document Management
     upload_dir: str = "./data/uploads"
