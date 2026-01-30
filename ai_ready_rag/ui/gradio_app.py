@@ -151,8 +151,9 @@ def create_app() -> gr.Blocks:
                         ):
                             # Upload section
                             doc_file_input = gr.File(
-                                label="Select File",
+                                label="Select Files",
                                 file_types=[".pdf", ".docx", ".txt", ".md"],
+                                file_count="multiple",
                             )
                             doc_tag_dropdown = gr.Dropdown(
                                 label="Tags (required)",
@@ -855,13 +856,71 @@ def create_app() -> gr.Blocks:
             choices = get_document_choices(auth)
             return docs, gr.update(choices=choices, value=[])
 
-        def do_upload(auth: dict, file, tag_ids: list, title: str) -> tuple:
-            """Handle document upload."""
-            status = handle_upload(auth, file, tag_ids, title, "")
+        def do_upload(auth: dict, files, tag_ids: list, title: str) -> tuple:
+            """Handle document upload for single or multiple files."""
+            # Handle None or empty
+            if files is None:
+                docs = load_documents(auth)
+                choices = get_document_choices(auth)
+                return (
+                    "No files selected.",
+                    docs,
+                    None,
+                    gr.update(value=[]),
+                    "",
+                    gr.update(choices=choices, value=[]),
+                )
+
+            # Normalize to list (gr.File with file_count="multiple" returns list)
+            if not isinstance(files, list):
+                files = [files]
+
+            if len(files) == 0:
+                docs = load_documents(auth)
+                choices = get_document_choices(auth)
+                return (
+                    "No files selected.",
+                    docs,
+                    None,
+                    gr.update(value=[]),
+                    "",
+                    gr.update(choices=choices, value=[]),
+                )
+
+            # Process each file and collect results
+            results = []
+            success_count = 0
+            fail_count = 0
+
+            for file in files:
+                status = handle_upload(auth, file, tag_ids, title, "")
+                results.append(status)
+                # Check if upload succeeded
+                if "Uploaded:" in status or "Ready" in status or "Processing" in status:
+                    success_count += 1
+                else:
+                    fail_count += 1
+
+            # Build summary status
+            if len(files) == 1:
+                final_status = results[0]
+            else:
+                summary = (
+                    f"**Batch Upload Complete**: {success_count} succeeded, {fail_count} failed\n\n"
+                )
+                final_status = summary + "\n".join(f"- {r}" for r in results)
+
             docs = load_documents(auth)
             choices = get_document_choices(auth)
             # Clear file, tags, title and update checkbox choices
-            return status, docs, None, gr.update(value=[]), "", gr.update(choices=choices, value=[])
+            return (
+                final_status,
+                docs,
+                None,
+                gr.update(value=[]),
+                "",
+                gr.update(choices=choices, value=[]),
+            )
 
         def do_delete(auth: dict, doc_id: str) -> tuple:
             """Handle document deletion."""
