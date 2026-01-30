@@ -364,6 +364,7 @@ class ProcessingOptionsRequest(BaseModel):
     ocr_language: str | None = None
     table_extraction_mode: Literal["accurate", "fast"] | None = None
     include_image_descriptions: bool | None = None
+    query_routing_mode: Literal["retrieve_only", "retrieve_and_direct"] | None = None
 
 
 class ProcessingOptionsResponse(BaseModel):
@@ -374,6 +375,7 @@ class ProcessingOptionsResponse(BaseModel):
     ocr_language: str
     table_extraction_mode: str
     include_image_descriptions: bool
+    query_routing_mode: str
 
 
 # Default values for processing options
@@ -383,6 +385,7 @@ PROCESSING_DEFAULTS = {
     "ocr_language": "eng",
     "table_extraction_mode": "accurate",
     "include_image_descriptions": True,
+    "query_routing_mode": "retrieve_only",  # Default: always search documents
 }
 
 
@@ -422,6 +425,11 @@ async def get_processing_options(
             "include_image_descriptions",
             PROCESSING_DEFAULTS["include_image_descriptions"],
         ),
+        query_routing_mode=_get_setting_value(
+            service,
+            "query_routing_mode",
+            PROCESSING_DEFAULTS["query_routing_mode"],
+        ),
     )
 
 
@@ -458,6 +466,12 @@ async def update_processing_options(
             options.include_image_descriptions,
             updated_by=current_user.id,
         )
+    if options.query_routing_mode is not None:
+        service.set(
+            "query_routing_mode",
+            options.query_routing_mode,
+            updated_by=current_user.id,
+        )
 
     logger.info(
         f"Admin {current_user.email} updated processing options: "
@@ -482,6 +496,11 @@ async def update_processing_options(
             service,
             "include_image_descriptions",
             PROCESSING_DEFAULTS["include_image_descriptions"],
+        ),
+        query_routing_mode=_get_setting_value(
+            service,
+            "query_routing_mode",
+            PROCESSING_DEFAULTS["query_routing_mode"],
         ),
     )
 

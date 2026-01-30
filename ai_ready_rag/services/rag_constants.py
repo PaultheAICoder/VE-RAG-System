@@ -124,3 +124,20 @@ STOPWORDS: frozenset[str] = frozenset(
         "them",
     }
 )
+
+# Query routing constants
+ROUTING_DIRECT = "DIRECT"
+ROUTING_RETRIEVE = "RETRIEVE"
+
+# Router prompt for classifying queries (ported from Spark app.py)
+ROUTER_PROMPT = """You are a routing agent. Analyze the user's question and decide if it requires retrieving information from documents.
+
+Respond with ONLY one of these two words:
+- RETRIEVE: if the question asks about company data, business information, customers, employees, financials, products, policies, procedures, or anything that would be in business documents. Questions containing "our", "we", "company" almost always need RETRIEVE.
+- DIRECT: ONLY for general knowledge questions completely unrelated to the business (like "what is the capital of France")
+
+When in doubt, choose RETRIEVE.
+
+Question: {question}
+
+Your routing decision (RETRIEVE or DIRECT):"""
