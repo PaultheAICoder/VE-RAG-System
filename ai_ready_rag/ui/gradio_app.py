@@ -128,14 +128,6 @@ def create_app() -> gr.Blocks:
                 with gr.Column(scale=1, min_width=250, elem_classes=["sidebar"]):
                     new_chat_btn = gr.Button("+ New Chat", variant="primary")
 
-                    # Upload button (Phase 2 - disabled)
-                    gr.Button(
-                        "Upload Document",
-                        variant="secondary",
-                        interactive=False,
-                        elem_classes=["phase2-disabled"],
-                    )
-
                     gr.Markdown("### Recent Chats")
                     sessions_list = gr.Dataframe(
                         headers=["Title", "Updated"],
