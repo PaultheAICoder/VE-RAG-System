@@ -126,7 +126,7 @@ def create_app() -> gr.Blocks:
             with gr.Row():
                 # Sidebar
                 with gr.Column(scale=1, min_width=250, elem_classes=["sidebar"]):
-                    new_chat_btn = gr.Button("+ New Chat", variant="primary")
+                    start_new_btn = gr.Button("New", variant="secondary", size="sm")
 
                     gr.Markdown("### Recent Chats")
                     sessions_list = gr.Dataframe(
@@ -513,54 +513,17 @@ def create_app() -> gr.Blocks:
                 gr.update(choices=[]),  # doc_tag_dropdown
             )
 
-        def handle_new_chat(auth: dict, sess: dict) -> tuple:
-            """Create a new chat session."""
-            token = auth.get("token")
-            if not token:
-                return (
-                    sess,
-                    gr.update(),  # sessions_list unchanged
-                    [],  # chat_display cleared
-                    gr.update(visible=False),  # chat_error
-                )
+        def handle_start_new(auth: dict, sess: dict) -> tuple:
+            """Clear active session to allow starting fresh conversation."""
+            if not auth.get("token"):
+                return sess, [], gr.update(visible=False)
 
-            try:
-                # Create new session
-                new_session = GradioAPIClient.create_session(token)
-
-                # Prepend to sessions list
-                sessions = [new_session] + sess.get("sessions", [])
-
-                new_sess = {
-                    **sess,
-                    "sessions": sessions,
-                    "active_session_id": new_session.get("id"),
-                    "messages": [],
-                }
-
-                sessions_display = _format_sessions_for_display(sessions)
-
-                return (
-                    new_sess,
-                    gr.update(value=sessions_display),  # sessions_list
-                    [],  # chat_display cleared
-                    gr.update(visible=False),  # chat_error
-                )
-            except httpx.HTTPStatusError as e:
-                error_info = handle_api_error(e)
-                return (
-                    sess,
-                    gr.update(),  # sessions_list unchanged
-                    [],  # chat_display
-                    gr.update(visible=True, value=f"**Error:** {error_info['message']}"),
-                )
-            except Exception as e:
-                return (
-                    sess,
-                    gr.update(),
-                    [],
-                    gr.update(visible=True, value=f"**Error:** {e!s}"),
-                )
+            new_sess = {
+                **sess,
+                "active_session_id": None,
+                "messages": [],
+            }
+            return new_sess, [], gr.update(visible=False)
 
         def handle_load_more(auth: dict, sess: dict) -> tuple:
             """Load more sessions (pagination)."""
@@ -642,6 +605,7 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),
                     gr.update(visible=False),
                     sess,
+                    gr.update(),  # sessions_list unchanged
                 )
 
             token = auth.get("token")
@@ -655,21 +619,45 @@ def create_app() -> gr.Blocks:
                         value="**Session expired.** Please log out and log in again.",
                     ),
                     sess,
+                    gr.update(),  # sessions_list unchanged
                 )
 
-            # Check for active session
+            # Check for active session - auto-create if none
             session_id = sess.get("active_session_id")
+            sessions_update = gr.update()  # Default: no change to sessions list
+
             if not session_id:
-                return (
-                    message,
-                    history,
-                    gr.update(visible=False),
-                    gr.update(
-                        visible=True,
-                        value="Please select or create a chat session first.",
-                    ),
-                    sess,
-                )
+                # Auto-create session with first message as title (truncated)
+                try:
+                    title = message[:30] + "..." if len(message) > 30 else message
+                    new_session = GradioAPIClient.create_session(token, title=title)
+                    session_id = new_session.get("id")
+                    sessions = [new_session] + sess.get("sessions", [])
+                    sess = {
+                        **sess,
+                        "sessions": sessions,
+                        "active_session_id": session_id,
+                    }
+                    sessions_update = gr.update(value=_format_sessions_for_display(sessions))
+                except httpx.HTTPStatusError as e:
+                    error_info = handle_api_error(e)
+                    return (
+                        message,
+                        history,
+                        gr.update(visible=False),
+                        gr.update(visible=True, value=f"**Error:** {error_info['message']}"),
+                        sess,
+                        gr.update(),  # sessions_list unchanged
+                    )
+                except Exception as e:
+                    return (
+                        message,
+                        history,
+                        gr.update(visible=False),
+                        gr.update(visible=True, value=f"**Error creating session:** {e!s}"),
+                        sess,
+                        gr.update(),  # sessions_list unchanged
+                    )
 
             # Add user message to history immediately
             history = history or []
@@ -702,6 +690,7 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),  # Hide loading
                     gr.update(visible=False),  # Hide error
                     new_sess,
+                    sessions_update,  # Update sessions list if created
                 )
             except httpx.HTTPStatusError as e:
                 error_info = handle_api_error(e)
@@ -721,6 +710,7 @@ def create_app() -> gr.Blocks:
                             value="**Session expired.** Please log out and log in again.",
                         ),
                         sess,
+                        gr.update(),  # sessions_list unchanged
                     )
 
                 return (
@@ -729,6 +719,7 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),
                     gr.update(visible=True, value=f"**Error:** {error_info['message']}"),
                     sess,
+                    gr.update(),  # sessions_list unchanged
                 )
             except Exception as e:
                 # Remove the pending user message on error
@@ -741,6 +732,7 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),
                     gr.update(visible=True, value=f"**Error:** {e!s}"),
                     sess,
+                    gr.update(),  # sessions_list unchanged
                 )
 
         def show_loading() -> gr.update:
@@ -807,11 +799,11 @@ def create_app() -> gr.Blocks:
             ],
         )
 
-        # New Chat
-        new_chat_btn.click(
-            fn=handle_new_chat,
+        # Start New (deselects current session)
+        start_new_btn.click(
+            fn=handle_start_new,
             inputs=[auth_state, session_state],
-            outputs=[session_state, sessions_list, chat_display, chat_error],
+            outputs=[session_state, chat_display, chat_error],
         )
 
         # Load More Sessions
@@ -835,7 +827,14 @@ def create_app() -> gr.Blocks:
         ).then(
             fn=send_message,
             inputs=[msg_input, chat_display, auth_state, session_state],
-            outputs=[msg_input, chat_display, loading_indicator, chat_error, session_state],
+            outputs=[
+                msg_input,
+                chat_display,
+                loading_indicator,
+                chat_error,
+                session_state,
+                sessions_list,
+            ],
         )
 
         msg_input.submit(
@@ -844,7 +843,14 @@ def create_app() -> gr.Blocks:
         ).then(
             fn=send_message,
             inputs=[msg_input, chat_display, auth_state, session_state],
-            outputs=[msg_input, chat_display, loading_indicator, chat_error, session_state],
+            outputs=[
+                msg_input,
+                chat_display,
+                loading_indicator,
+                chat_error,
+                session_state,
+                sessions_list,
+            ],
         )
 
         # ========== DOCUMENT MANAGEMENT EVENT HANDLERS ==========
