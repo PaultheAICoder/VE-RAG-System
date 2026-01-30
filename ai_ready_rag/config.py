@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     enable_rag: bool = True  # Enabled for RAG functionality
     enable_gradio: bool = True
 
+    # Setup Wizard
+    skip_setup_wizard: bool = False  # Set to True to bypass setup check for automated deployments
+
     # Profile Selection
     env_profile: Literal["laptop", "spark"] = "laptop"
 

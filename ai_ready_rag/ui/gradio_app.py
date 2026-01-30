@@ -113,6 +113,40 @@ def create_app() -> gr.Blocks:
                 login_btn = gr.Button("Login", variant="primary")
                 login_error = gr.Markdown(visible=False, elem_classes=["error-banner"])
 
+        # ========== SETUP WIZARD CONTAINER ==========
+        with gr.Column(visible=False, elem_classes=["setup-container"]) as setup_container:
+            gr.Markdown("# First-Time Setup")
+            gr.Markdown(
+                "Welcome! For security, you must change the default administrator "
+                "password before using the system."
+            )
+
+            with gr.Column():
+                setup_current_pw = gr.Textbox(
+                    label="Current Password",
+                    placeholder="Enter current password",
+                    type="password",
+                )
+                setup_new_pw = gr.Textbox(
+                    label="New Password",
+                    placeholder="Enter new password (min 12 characters)",
+                    type="password",
+                )
+                setup_confirm_pw = gr.Textbox(
+                    label="Confirm New Password",
+                    placeholder="Confirm new password",
+                    type="password",
+                )
+                gr.Markdown(
+                    "**Password Requirements:**\n"
+                    "- Minimum 12 characters\n"
+                    "- Must be different from current password",
+                    elem_classes=["setup-requirements"],
+                )
+                setup_btn = gr.Button("Complete Setup", variant="primary")
+                setup_error = gr.Markdown(visible=False, elem_classes=["error-banner"])
+                setup_success = gr.Markdown(visible=False, elem_classes=["success-banner"])
+
         # ========== MAIN APP CONTAINER ==========
         with gr.Column(visible=False) as main_container:
             # Header bar
@@ -405,13 +439,17 @@ def create_app() -> gr.Blocks:
         # ========== EVENT HANDLERS ==========
 
         def handle_login(email: str, password: str, auth: dict, sess: dict) -> tuple:
-            """Handle login form submission and load sessions."""
+            """Handle login form submission and load sessions.
+
+            If setup is required (first-run), redirects admin to setup wizard.
+            """
             if not email or not password:
                 return (
                     auth,
                     sess,
                     gr.update(visible=True, value="Please enter email and password."),
                     gr.update(visible=True),  # login_container
+                    gr.update(visible=False),  # setup_container
                     gr.update(visible=False),  # main_container
                     "",  # user_display
                     gr.update(value=[]),  # sessions_list
@@ -425,12 +463,29 @@ def create_app() -> gr.Blocks:
                 result = GradioAPIClient.login(email, password)
                 token = result.get("access_token")
                 user = result.get("user", {})
+                setup_required = result.get("setup_required", False)
 
                 new_auth = {
                     "token": token,
                     "user": user,
                     "is_authenticated": True,
                 }
+
+                # If setup is required, show setup wizard instead of main app
+                if setup_required:
+                    return (
+                        new_auth,
+                        sess,
+                        gr.update(visible=False),  # login_error
+                        gr.update(visible=False),  # login_container
+                        gr.update(visible=True),  # setup_container
+                        gr.update(visible=False),  # main_container
+                        "",  # user_display
+                        gr.update(value=[]),  # sessions_list
+                        gr.update(visible=False),  # load_more_btn
+                        gr.update(visible=False),  # admin_sections
+                        gr.update(choices=[]),  # doc_tag_dropdown
+                    )
 
                 # Load initial sessions
                 sessions_response = GradioAPIClient.get_sessions(token, limit=20, offset=0)
@@ -462,6 +517,7 @@ def create_app() -> gr.Blocks:
                     new_sess,
                     gr.update(visible=False),  # login_error
                     gr.update(visible=False),  # login_container
+                    gr.update(visible=False),  # setup_container
                     gr.update(visible=True),  # main_container
                     f"**{user_name}**",  # user_display
                     gr.update(value=sessions_display),  # sessions_list
@@ -481,6 +537,7 @@ def create_app() -> gr.Blocks:
                     sess,
                     gr.update(visible=True, value=f"**Error:** {error_msg}"),
                     gr.update(visible=True),  # login_container
+                    gr.update(visible=False),  # setup_container
                     gr.update(visible=False),  # main_container
                     "",  # user_display
                     gr.update(value=[]),  # sessions_list
@@ -494,6 +551,7 @@ def create_app() -> gr.Blocks:
                     sess,
                     gr.update(visible=True, value=f"**Error:** {e!s}"),
                     gr.update(visible=True),  # login_container
+                    gr.update(visible=False),  # setup_container
                     gr.update(visible=False),  # main_container
                     "",  # user_display
                     gr.update(value=[]),  # sessions_list
@@ -529,6 +587,7 @@ def create_app() -> gr.Blocks:
                 new_auth,
                 new_sess,
                 gr.update(visible=True),  # login_container
+                gr.update(visible=False),  # setup_container
                 gr.update(visible=False),  # main_container
                 "",  # user_display
                 gr.update(visible=False),  # login_error
@@ -538,6 +597,156 @@ def create_app() -> gr.Blocks:
                 gr.update(visible=False),  # admin_sections
                 gr.update(choices=[]),  # doc_tag_dropdown
             )
+
+        def handle_setup_complete(
+            auth: dict,
+            sess: dict,
+            current_pw: str,
+            new_pw: str,
+            confirm_pw: str,
+        ) -> tuple:
+            """Handle setup wizard completion - change admin password."""
+            token = auth.get("token")
+            if not token:
+                return (
+                    auth,
+                    sess,
+                    gr.update(visible=True, value="**Error:** Not authenticated."),
+                    gr.update(visible=False),  # setup_success
+                    gr.update(visible=False),  # login_container
+                    gr.update(visible=True),  # setup_container
+                    gr.update(visible=False),  # main_container
+                    "",  # user_display
+                    gr.update(value=[]),  # sessions_list
+                    gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # admin_sections
+                    gr.update(choices=[]),  # doc_tag_dropdown
+                )
+
+            # Client-side validation
+            if not current_pw or not new_pw or not confirm_pw:
+                return (
+                    auth,
+                    sess,
+                    gr.update(visible=True, value="**Error:** All fields are required."),
+                    gr.update(visible=False),  # setup_success
+                    gr.update(visible=False),  # login_container
+                    gr.update(visible=True),  # setup_container
+                    gr.update(visible=False),  # main_container
+                    "",  # user_display
+                    gr.update(value=[]),  # sessions_list
+                    gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # admin_sections
+                    gr.update(choices=[]),  # doc_tag_dropdown
+                )
+
+            if len(new_pw) < 12:
+                return (
+                    auth,
+                    sess,
+                    gr.update(
+                        visible=True, value="**Error:** Password must be at least 12 characters."
+                    ),
+                    gr.update(visible=False),  # setup_success
+                    gr.update(visible=False),  # login_container
+                    gr.update(visible=True),  # setup_container
+                    gr.update(visible=False),  # main_container
+                    "",  # user_display
+                    gr.update(value=[]),  # sessions_list
+                    gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # admin_sections
+                    gr.update(choices=[]),  # doc_tag_dropdown
+                )
+
+            if new_pw != confirm_pw:
+                return (
+                    auth,
+                    sess,
+                    gr.update(visible=True, value="**Error:** Passwords do not match."),
+                    gr.update(visible=False),  # setup_success
+                    gr.update(visible=False),  # login_container
+                    gr.update(visible=True),  # setup_container
+                    gr.update(visible=False),  # main_container
+                    "",  # user_display
+                    gr.update(value=[]),  # sessions_list
+                    gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # admin_sections
+                    gr.update(choices=[]),  # doc_tag_dropdown
+                )
+
+            try:
+                # Call setup complete API
+                GradioAPIClient.complete_setup(token, current_pw, new_pw, confirm_pw)
+
+                # Load sessions for main app
+                sessions_response = GradioAPIClient.get_sessions(token, limit=20, offset=0)
+                sessions = sessions_response.get("sessions", [])
+                total = sessions_response.get("total", 0)
+                has_more = len(sessions) < total
+
+                new_sess = {
+                    "sessions": sessions,
+                    "active_session_id": None,
+                    "has_more_sessions": has_more,
+                    "sessions_offset": 20,
+                    "messages": [],
+                }
+
+                user = auth.get("user", {})
+                user_name = user.get("display_name", "Admin")
+                sessions_display = _format_sessions_for_display(sessions)
+
+                # Load tags for admin document dropdown
+                tag_choices = load_tags(auth)
+
+                return (
+                    auth,
+                    new_sess,
+                    gr.update(visible=False),  # setup_error
+                    gr.update(visible=False),  # setup_success (we're redirecting)
+                    gr.update(visible=False),  # login_container
+                    gr.update(visible=False),  # setup_container
+                    gr.update(visible=True),  # main_container
+                    f"**{user_name}**",  # user_display
+                    gr.update(value=sessions_display),  # sessions_list
+                    gr.update(visible=has_more),  # load_more_btn
+                    gr.update(visible=True),  # admin_sections (admin user)
+                    gr.update(choices=tag_choices),  # doc_tag_dropdown
+                )
+            except httpx.HTTPStatusError as e:
+                try:
+                    error_detail = e.response.json().get("detail", "Unknown error")
+                except Exception:
+                    error_detail = f"HTTP {e.response.status_code}"
+                return (
+                    auth,
+                    sess,
+                    gr.update(visible=True, value=f"**Error:** {error_detail}"),
+                    gr.update(visible=False),  # setup_success
+                    gr.update(visible=False),  # login_container
+                    gr.update(visible=True),  # setup_container
+                    gr.update(visible=False),  # main_container
+                    "",  # user_display
+                    gr.update(value=[]),  # sessions_list
+                    gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # admin_sections
+                    gr.update(choices=[]),  # doc_tag_dropdown
+                )
+            except Exception as e:
+                return (
+                    auth,
+                    sess,
+                    gr.update(visible=True, value=f"**Error:** {e!s}"),
+                    gr.update(visible=False),  # setup_success
+                    gr.update(visible=False),  # login_container
+                    gr.update(visible=True),  # setup_container
+                    gr.update(visible=False),  # main_container
+                    "",  # user_display
+                    gr.update(value=[]),  # sessions_list
+                    gr.update(visible=False),  # load_more_btn
+                    gr.update(visible=False),  # admin_sections
+                    gr.update(choices=[]),  # doc_tag_dropdown
+                )
 
         def handle_start_new(auth: dict, sess: dict) -> tuple:
             """Clear active session to allow starting fresh conversation."""
@@ -783,6 +992,7 @@ def create_app() -> gr.Blocks:
                 session_state,
                 login_error,
                 login_container,
+                setup_container,
                 main_container,
                 user_display,
                 sessions_list,
@@ -800,6 +1010,33 @@ def create_app() -> gr.Blocks:
                 session_state,
                 login_error,
                 login_container,
+                setup_container,
+                main_container,
+                user_display,
+                sessions_list,
+                load_more_btn,
+                admin_sections,
+                doc_tag_dropdown,
+            ],
+        )
+
+        # Setup wizard
+        setup_btn.click(
+            fn=handle_setup_complete,
+            inputs=[
+                auth_state,
+                session_state,
+                setup_current_pw,
+                setup_new_pw,
+                setup_confirm_pw,
+            ],
+            outputs=[
+                auth_state,
+                session_state,
+                setup_error,
+                setup_success,
+                login_container,
+                setup_container,
                 main_container,
                 user_display,
                 sessions_list,
@@ -817,6 +1054,7 @@ def create_app() -> gr.Blocks:
                 auth_state,
                 session_state,
                 login_container,
+                setup_container,
                 main_container,
                 user_display,
                 login_error,

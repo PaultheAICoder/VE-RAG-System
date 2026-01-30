@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from ai_ready_rag.api import admin, auth, chat, documents, health, tags, users
+from ai_ready_rag.api import admin, auth, chat, documents, health, setup, tags, users
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import Document
@@ -73,6 +73,7 @@ app.add_middleware(
 
 # API Routes
 app.include_router(health.router, prefix="/api", tags=["Health"])
+app.include_router(setup.router, prefix="/api/setup", tags=["Setup"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(tags.router, prefix="/api/tags", tags=["Tags"])

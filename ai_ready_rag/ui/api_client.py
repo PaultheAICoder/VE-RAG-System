@@ -564,3 +564,47 @@ class GradioAPIClient:
             )
             response.raise_for_status()
             return response.json()
+
+    # --- Setup Wizard APIs (#37) ---
+
+    @staticmethod
+    def get_setup_status() -> dict[str, Any]:
+        """Check if system setup is required.
+
+        This endpoint is PUBLIC - no authentication required.
+
+        Returns:
+            Dict with setup_complete and setup_required flags.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get("/api/setup/status")
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def complete_setup(
+        token: str, current_password: str, new_password: str, confirm_password: str
+    ) -> dict[str, Any]:
+        """Complete system setup by changing admin password.
+
+        Args:
+            token: JWT access token (must be admin)
+            current_password: Current admin password
+            new_password: New password (min 12 chars)
+            confirm_password: Confirm new password (must match)
+
+        Returns:
+            Dict with success and message.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.post(
+                "/api/setup/complete",
+                json={
+                    "current_password": current_password,
+                    "new_password": new_password,
+                    "confirm_password": confirm_password,
+                },
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()

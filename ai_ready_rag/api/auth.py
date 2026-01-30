@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
+from ai_ready_rag.api.setup import is_setup_required
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.dependencies import get_current_user
 from ai_ready_rag.core.security import create_access_token, hash_password, verify_password
@@ -37,6 +38,7 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: UserResponse
+    setup_required: bool = False  # True if admin needs to complete first-run setup
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -75,7 +77,18 @@ async def login(
         max_age=expires_in,
     )
 
-    return {"access_token": token, "token_type": "bearer", "expires_in": expires_in, "user": user}
+    # Check if setup is required (only for admin users)
+    setup_required_flag = False
+    if user.role == "admin":
+        setup_required_flag = is_setup_required(db)
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": expires_in,
+        "user": user,
+        "setup_required": setup_required_flag,
+    }
 
 
 @router.post("/logout")
