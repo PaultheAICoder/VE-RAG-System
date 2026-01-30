@@ -126,7 +126,7 @@ def create_app() -> gr.Blocks:
             with gr.Row():
                 # Sidebar
                 with gr.Column(scale=1, min_width=250, elem_classes=["sidebar"]):
-                    new_chat_btn = gr.Button("+ New Chat", variant="primary")
+                    start_new_btn = gr.Button("New", variant="secondary", size="sm")
 
                     gr.Markdown("### Recent Chats")
                     sessions_list = gr.Dataframe(
@@ -151,8 +151,9 @@ def create_app() -> gr.Blocks:
                         ):
                             # Upload section
                             doc_file_input = gr.File(
-                                label="Select File",
+                                label="Select Files",
                                 file_types=[".pdf", ".docx", ".txt", ".md"],
+                                file_count="multiple",
                             )
                             doc_tag_dropdown = gr.Dropdown(
                                 label="Tags (required)",
@@ -280,6 +281,12 @@ def create_app() -> gr.Blocks:
                             proc_image_desc = gr.Checkbox(
                                 label="Include Image Descriptions",
                                 value=False,
+                            )
+                            proc_query_routing = gr.Radio(
+                                label="Query Routing Mode",
+                                choices=["retrieve_only", "retrieve_and_direct"],
+                                value="retrieve_only",
+                                info="retrieve_only: Always search documents. retrieve_and_direct: Allow direct LLM responses for general questions.",
                             )
                             proc_save_btn = gr.Button("Save Settings", variant="primary", size="sm")
 
@@ -513,54 +520,17 @@ def create_app() -> gr.Blocks:
                 gr.update(choices=[]),  # doc_tag_dropdown
             )
 
-        def handle_new_chat(auth: dict, sess: dict) -> tuple:
-            """Create a new chat session."""
-            token = auth.get("token")
-            if not token:
-                return (
-                    sess,
-                    gr.update(),  # sessions_list unchanged
-                    [],  # chat_display cleared
-                    gr.update(visible=False),  # chat_error
-                )
+        def handle_start_new(auth: dict, sess: dict) -> tuple:
+            """Clear active session to allow starting fresh conversation."""
+            if not auth.get("token"):
+                return sess, [], gr.update(visible=False)
 
-            try:
-                # Create new session
-                new_session = GradioAPIClient.create_session(token)
-
-                # Prepend to sessions list
-                sessions = [new_session] + sess.get("sessions", [])
-
-                new_sess = {
-                    **sess,
-                    "sessions": sessions,
-                    "active_session_id": new_session.get("id"),
-                    "messages": [],
-                }
-
-                sessions_display = _format_sessions_for_display(sessions)
-
-                return (
-                    new_sess,
-                    gr.update(value=sessions_display),  # sessions_list
-                    [],  # chat_display cleared
-                    gr.update(visible=False),  # chat_error
-                )
-            except httpx.HTTPStatusError as e:
-                error_info = handle_api_error(e)
-                return (
-                    sess,
-                    gr.update(),  # sessions_list unchanged
-                    [],  # chat_display
-                    gr.update(visible=True, value=f"**Error:** {error_info['message']}"),
-                )
-            except Exception as e:
-                return (
-                    sess,
-                    gr.update(),
-                    [],
-                    gr.update(visible=True, value=f"**Error:** {e!s}"),
-                )
+            new_sess = {
+                **sess,
+                "active_session_id": None,
+                "messages": [],
+            }
+            return new_sess, [], gr.update(visible=False)
 
         def handle_load_more(auth: dict, sess: dict) -> tuple:
             """Load more sessions (pagination)."""
@@ -634,7 +604,10 @@ def create_app() -> gr.Blocks:
                 return sess, [], gr.update(visible=True, value=f"**Error:** {e!s}")
 
         def send_message(message: str, history: list, auth: dict, sess: dict) -> tuple:
-            """Send message to RAG and get response."""
+            """Send message to RAG and get response.
+
+            Auto-creates a session when sending the first message with no active session.
+            """
             if not message or not message.strip():
                 return (
                     "",
@@ -642,6 +615,7 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),
                     gr.update(visible=False),
                     sess,
+                    gr.update(),  # sessions_list unchanged
                 )
 
             token = auth.get("token")
@@ -655,21 +629,45 @@ def create_app() -> gr.Blocks:
                         value="**Session expired.** Please log out and log in again.",
                     ),
                     sess,
+                    gr.update(),  # sessions_list unchanged
                 )
 
-            # Check for active session
+            # Get or auto-create session
             session_id = sess.get("active_session_id")
+            sessions_update = gr.update()  # Default: no change
+
             if not session_id:
-                return (
-                    message,
-                    history,
-                    gr.update(visible=False),
-                    gr.update(
-                        visible=True,
-                        value="Please select or create a chat session first.",
-                    ),
-                    sess,
-                )
+                # Auto-create session with first message as title (truncated)
+                try:
+                    title = message[:30] + "..." if len(message) > 30 else message
+                    new_session = GradioAPIClient.create_session(token, title=title)
+                    session_id = new_session.get("id")
+                    sessions = [new_session] + sess.get("sessions", [])
+                    sess = {
+                        **sess,
+                        "sessions": sessions,
+                        "active_session_id": session_id,
+                    }
+                    sessions_update = gr.update(value=_format_sessions_for_display(sessions))
+                except httpx.HTTPStatusError as e:
+                    error_info = handle_api_error(e)
+                    return (
+                        message,
+                        history,
+                        gr.update(visible=False),
+                        gr.update(visible=True, value=f"**Error:** {error_info['message']}"),
+                        sess,
+                        gr.update(),  # sessions_list unchanged
+                    )
+                except Exception as e:
+                    return (
+                        message,
+                        history,
+                        gr.update(visible=False),
+                        gr.update(visible=True, value=f"**Error creating session:** {e!s}"),
+                        sess,
+                        gr.update(),  # sessions_list unchanged
+                    )
 
             # Add user message to history immediately
             history = history or []
@@ -702,6 +700,7 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),  # Hide loading
                     gr.update(visible=False),  # Hide error
                     new_sess,
+                    sessions_update,  # Update sessions list if created
                 )
             except httpx.HTTPStatusError as e:
                 error_info = handle_api_error(e)
@@ -721,6 +720,7 @@ def create_app() -> gr.Blocks:
                             value="**Session expired.** Please log out and log in again.",
                         ),
                         sess,
+                        sessions_update,  # Preserve any session created before error
                     )
 
                 return (
@@ -729,6 +729,7 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),
                     gr.update(visible=True, value=f"**Error:** {error_info['message']}"),
                     sess,
+                    sessions_update,  # Preserve any session created before error
                 )
             except Exception as e:
                 # Remove the pending user message on error
@@ -741,6 +742,7 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),
                     gr.update(visible=True, value=f"**Error:** {e!s}"),
                     sess,
+                    sessions_update,  # Preserve any session created before error
                 )
 
         def show_loading() -> gr.update:
@@ -808,10 +810,10 @@ def create_app() -> gr.Blocks:
         )
 
         # New Chat
-        new_chat_btn.click(
-            fn=handle_new_chat,
+        start_new_btn.click(
+            fn=handle_start_new,
             inputs=[auth_state, session_state],
-            outputs=[session_state, sessions_list, chat_display, chat_error],
+            outputs=[session_state, chat_display, chat_error],
         )
 
         # Load More Sessions
@@ -835,7 +837,14 @@ def create_app() -> gr.Blocks:
         ).then(
             fn=send_message,
             inputs=[msg_input, chat_display, auth_state, session_state],
-            outputs=[msg_input, chat_display, loading_indicator, chat_error, session_state],
+            outputs=[
+                msg_input,
+                chat_display,
+                loading_indicator,
+                chat_error,
+                session_state,
+                sessions_list,
+            ],
         )
 
         msg_input.submit(
@@ -844,7 +853,14 @@ def create_app() -> gr.Blocks:
         ).then(
             fn=send_message,
             inputs=[msg_input, chat_display, auth_state, session_state],
-            outputs=[msg_input, chat_display, loading_indicator, chat_error, session_state],
+            outputs=[
+                msg_input,
+                chat_display,
+                loading_indicator,
+                chat_error,
+                session_state,
+                sessions_list,
+            ],
         )
 
         # ========== DOCUMENT MANAGEMENT EVENT HANDLERS ==========
@@ -855,13 +871,70 @@ def create_app() -> gr.Blocks:
             choices = get_document_choices(auth)
             return docs, gr.update(choices=choices, value=[])
 
-        def do_upload(auth: dict, file, tag_ids: list, title: str) -> tuple:
-            """Handle document upload."""
-            status = handle_upload(auth, file, tag_ids, title, "")
+        def do_upload(auth: dict, files, tag_ids: list, title: str) -> tuple:
+            """Handle document upload for single or multiple files."""
+            # Handle None or empty
+            if files is None:
+                docs = load_documents(auth)
+                choices = get_document_choices(auth)
+                return (
+                    "No files selected.",
+                    docs,
+                    None,
+                    gr.update(value=[]),
+                    "",
+                    gr.update(choices=choices, value=[]),
+                )
+
+            # Normalize to list (gr.File with file_count="multiple" returns list)
+            if not isinstance(files, list):
+                files = [files]
+
+            if len(files) == 0:
+                docs = load_documents(auth)
+                choices = get_document_choices(auth)
+                return (
+                    "No files selected.",
+                    docs,
+                    None,
+                    gr.update(value=[]),
+                    "",
+                    gr.update(choices=choices, value=[]),
+                )
+
+            # Process each file and collect results
+            results = []
+            success_count = 0
+            fail_count = 0
+
+            for file in files:
+                status = handle_upload(auth, file, tag_ids, title, "")
+                results.append(status)
+                # Check if upload succeeded (status contains "Uploaded:" or "Ready")
+                if "Uploaded:" in status or "Ready" in status:
+                    success_count += 1
+                else:
+                    fail_count += 1
+
+            # Build summary status
+            if len(files) == 1:
+                final_status = results[0]
+            else:
+                summary = (
+                    f"**Batch Upload Complete**: {success_count} succeeded, {fail_count} failed\n\n"
+                )
+                final_status = summary + "\n".join(f"- {r}" for r in results)
+
             docs = load_documents(auth)
             choices = get_document_choices(auth)
-            # Clear file, tags, title and update checkbox choices
-            return status, docs, None, gr.update(value=[]), "", gr.update(choices=choices, value=[])
+            return (
+                final_status,
+                docs,
+                None,
+                gr.update(value=[]),
+                "",
+                gr.update(choices=choices, value=[]),
+            )
 
         def do_delete(auth: dict, doc_id: str) -> tuple:
             """Handle document deletion."""
@@ -1108,7 +1181,15 @@ def create_app() -> gr.Blocks:
             """Load processing options from API."""
             token = auth.get("token")
             if not token:
-                return ("Not authenticated.", False, False, "English", "accurate", False)
+                return (
+                    "Not authenticated.",
+                    False,
+                    False,
+                    "English",
+                    "accurate",
+                    False,
+                    "retrieve_only",
+                )
 
             try:
                 data = GradioAPIClient.get_processing_options(token)
@@ -1119,6 +1200,7 @@ def create_app() -> gr.Blocks:
                     data.get("ocr_language", "English"),
                     data.get("table_extraction_mode", "accurate"),
                     data.get("include_image_descriptions", False),
+                    data.get("query_routing_mode", "retrieve_only"),
                 )
             except httpx.HTTPStatusError as e:
                 return (
@@ -1128,9 +1210,10 @@ def create_app() -> gr.Blocks:
                     "English",
                     "accurate",
                     False,
+                    "retrieve_only",
                 )
             except Exception as e:
-                return (f"Error: {e}", False, False, "English", "accurate", False)
+                return (f"Error: {e}", False, False, "English", "accurate", False, "retrieve_only")
 
         def save_processing_options(
             auth: dict,
@@ -1139,6 +1222,7 @@ def create_app() -> gr.Blocks:
             ocr_lang: str,
             table_mode: str,
             image_desc: bool,
+            query_routing: str,
         ) -> str:
             """Save processing options to API."""
             token = auth.get("token")
@@ -1152,6 +1236,7 @@ def create_app() -> gr.Blocks:
                     "ocr_language": ocr_lang,
                     "table_extraction_mode": table_mode,
                     "include_image_descriptions": image_desc,
+                    "query_routing_mode": query_routing,
                 }
                 GradioAPIClient.update_processing_options(token, options)
                 return "Settings saved successfully."
@@ -1170,6 +1255,7 @@ def create_app() -> gr.Blocks:
                 proc_ocr_lang,
                 proc_table_mode,
                 proc_image_desc,
+                proc_query_routing,
             ],
         )
 
@@ -1182,6 +1268,7 @@ def create_app() -> gr.Blocks:
                 proc_ocr_lang,
                 proc_table_mode,
                 proc_image_desc,
+                proc_query_routing,
             ],
             outputs=[proc_status],
         )

@@ -143,6 +143,7 @@ class SendMessageResponse(BaseModel):
     user_message: MessageResponse
     assistant_message: MessageResponse
     generation_time_ms: float
+    routing_decision: str | None = None  # "RETRIEVE" | "DIRECT" | None
 
 
 class MessageListResponse(BaseModel):
@@ -658,4 +659,5 @@ async def send_message(
             assistant_msg, is_assistant=True, rag_response=response
         ),
         generation_time_ms=response.generation_time_ms,
+        routing_decision=response.routing_decision,
     )

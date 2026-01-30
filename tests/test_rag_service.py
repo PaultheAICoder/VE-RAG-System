@@ -16,7 +16,12 @@ from ai_ready_rag.core.exceptions import (
     ModelNotAllowedError,
     TokenBudgetExceededError,
 )
-from ai_ready_rag.services.rag_constants import MODEL_LIMITS
+from ai_ready_rag.services.rag_constants import (
+    MODEL_LIMITS,
+    ROUTER_PROMPT,
+    ROUTING_DIRECT,
+    ROUTING_RETRIEVE,
+)
 from ai_ready_rag.services.rag_service import (
     SOURCEID_PATTERN,
     ChatMessage,
@@ -673,6 +678,104 @@ class TestSourceIdPattern:
         text = "[SourceId: 550e8400-e29b-41d4-a716-446655440000:0] and [SourceId: 660e8400-e29b-41d4-a716-446655440001:1]"
         matches = re.findall(SOURCEID_PATTERN, text)
         assert len(matches) == 2
+
+
+class TestRouterConstants:
+    """Test router constants and prompt (Issue #23)."""
+
+    def test_routing_constants_defined(self):
+        """Routing constants are defined."""
+        assert ROUTING_DIRECT == "DIRECT"
+        assert ROUTING_RETRIEVE == "RETRIEVE"
+
+    def test_router_prompt_format(self):
+        """Router prompt contains placeholder."""
+        assert "{question}" in ROUTER_PROMPT
+        assert "RETRIEVE" in ROUTER_PROMPT
+        assert "DIRECT" in ROUTER_PROMPT
+
+
+class TestQueryRouting:
+    """Test query routing logic (Issue #23)."""
+
+    @pytest.mark.asyncio
+    async def test_run_router_returns_retrieve(self, mock_settings):
+        """Router returns RETRIEVE for business queries."""
+        service = RAGService(vector_service=AsyncMock(), settings=mock_settings)
+
+        # Mock LLM response
+        with patch("ai_ready_rag.services.rag_service.ChatOllama") as mock_llm_class:
+            mock_llm = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.content = "RETRIEVE"
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_llm_class.return_value = mock_llm
+
+            result = await service.run_router("What is our company vacation policy?", "llama3.2")
+            assert result == ROUTING_RETRIEVE
+
+    @pytest.mark.asyncio
+    async def test_run_router_returns_direct(self, mock_settings):
+        """Router returns DIRECT for general knowledge queries."""
+        service = RAGService(vector_service=AsyncMock(), settings=mock_settings)
+
+        # Mock LLM response
+        with patch("ai_ready_rag.services.rag_service.ChatOllama") as mock_llm_class:
+            mock_llm = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.content = "DIRECT"
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_llm_class.return_value = mock_llm
+
+            result = await service.run_router("What is the capital of France?", "llama3.2")
+            assert result == ROUTING_DIRECT
+
+    @pytest.mark.asyncio
+    async def test_run_router_defaults_to_retrieve_on_error(self, mock_settings):
+        """Router defaults to RETRIEVE on failure."""
+        service = RAGService(vector_service=AsyncMock(), settings=mock_settings)
+
+        # Mock LLM failure
+        with patch("ai_ready_rag.services.rag_service.ChatOllama") as mock_llm_class:
+            mock_llm = AsyncMock()
+            mock_llm.ainvoke = AsyncMock(side_effect=Exception("LLM error"))
+            mock_llm_class.return_value = mock_llm
+
+            result = await service.run_router("Any question", "llama3.2")
+            assert result == ROUTING_RETRIEVE
+
+    def test_direct_response_has_no_citations(self, mock_settings):
+        """Direct response has grounded=False and empty citations."""
+        service = RAGService(vector_service=AsyncMock(), settings=mock_settings)
+
+        response = service._generate_direct_response(
+            answer="Paris is the capital of France.",
+            model="llama3.2",
+            elapsed_ms=100.0,
+        )
+
+        assert response.grounded is False
+        assert len(response.citations) == 0
+        assert response.routing_decision == ROUTING_DIRECT
+        assert response.context_chunks_used == 0
+
+    def test_rag_response_includes_routing_decision(self, mock_settings):
+        """RAGResponse dataclass includes routing_decision field."""
+        response = RAGResponse(
+            answer="Test answer",
+            confidence=MagicMock(),
+            citations=[],
+            action="CITE",
+            route_to=None,
+            model_used="llama3.2",
+            context_chunks_used=0,
+            context_tokens_used=0,
+            generation_time_ms=100.0,
+            grounded=False,
+            routing_decision=ROUTING_RETRIEVE,
+        )
+
+        assert response.routing_decision == ROUTING_RETRIEVE
 
 
 # =============================================================================

@@ -25,7 +25,13 @@ from ai_ready_rag.core.exceptions import (
     TokenBudgetExceededError,
 )
 from ai_ready_rag.services.factory import get_vector_service
-from ai_ready_rag.services.rag_constants import MODEL_LIMITS, STOPWORDS
+from ai_ready_rag.services.rag_constants import (
+    MODEL_LIMITS,
+    ROUTER_PROMPT,
+    ROUTING_DIRECT,
+    ROUTING_RETRIEVE,
+    STOPWORDS,
+)
 from ai_ready_rag.services.vector_service import SearchResult
 
 logger = logging.getLogger(__name__)
@@ -150,6 +156,7 @@ class RAGResponse:
     context_tokens_used: int
     generation_time_ms: float
     grounded: bool  # True iff len(citations) > 0
+    routing_decision: Literal["RETRIEVE", "DIRECT"] | None = None  # Query routing result
 
 
 # -----------------------------------------------------------------------------
@@ -871,16 +878,88 @@ class RAGService:
             fallback=False,
         )
 
+    async def run_router(self, query: str, model: str) -> str:
+        """Classify query as RETRIEVE or DIRECT using LLM.
+
+        Args:
+            query: User's question
+            model: Model to use for classification
+
+        Returns:
+            ROUTING_RETRIEVE or ROUTING_DIRECT
+        """
+        try:
+            llm = ChatOllama(
+                base_url=self.ollama_url,
+                model=model,
+                temperature=0.0,  # Deterministic for routing
+                timeout=10,  # Short timeout for routing
+            )
+
+            prompt = ROUTER_PROMPT.format(question=query)
+            response = await llm.ainvoke([("human", prompt)])
+            decision = response.content.strip().upper()
+
+            # Parse response - look for DIRECT or RETRIEVE
+            if ROUTING_DIRECT in decision:
+                logger.info(f"Router: DIRECT for query: {query[:50]}...")
+                return ROUTING_DIRECT
+            else:
+                # Default to RETRIEVE when in doubt
+                logger.info(f"Router: RETRIEVE for query: {query[:50]}...")
+                return ROUTING_RETRIEVE
+
+        except Exception as e:
+            logger.warning(f"Router failed, defaulting to RETRIEVE: {e}")
+            return ROUTING_RETRIEVE
+
+    def _generate_direct_response(
+        self,
+        answer: str,
+        model: str,
+        elapsed_ms: float,
+    ) -> RAGResponse:
+        """Create response for DIRECT routing (no retrieval).
+
+        Args:
+            answer: LLM-generated answer
+            model: Model name for response metadata
+            elapsed_ms: Elapsed time in milliseconds
+
+        Returns:
+            RAGResponse with no citations and grounded=False
+        """
+        return RAGResponse(
+            answer=answer,
+            confidence=ConfidenceScore(
+                overall=50,  # Neutral confidence for direct responses
+                retrieval_score=0.0,
+                coverage_score=0.0,
+                llm_score=50,
+            ),
+            citations=[],
+            action="CITE",  # CITE action but with no citations
+            route_to=None,
+            model_used=model,
+            context_chunks_used=0,
+            context_tokens_used=0,
+            generation_time_ms=elapsed_ms,
+            grounded=False,
+            routing_decision=ROUTING_DIRECT,
+        )
+
     def _insufficient_context_response(
         self,
         model: str,
         elapsed_ms: float,
+        routing_decision: str | None = None,
     ) -> RAGResponse:
         """Create response for zero-context case.
 
         Args:
             model: Model name for response metadata
             elapsed_ms: Elapsed time in milliseconds
+            routing_decision: Query routing decision if applicable
 
         Returns:
             RAGResponse with zero confidence and admin routing
@@ -907,6 +986,7 @@ class RAGService:
             context_tokens_used=0,
             generation_time_ms=elapsed_ms,
             grounded=False,
+            routing_decision=routing_decision,
         )
 
     async def generate(self, request: RAGRequest, db: Session) -> RAGResponse:
@@ -939,10 +1019,39 @@ class RAGService:
             RAGServiceError: Other generation errors
         """
         start_time = time.perf_counter()
+        from ai_ready_rag.services.settings_service import SettingsService
 
         # 1. Validate model
         model = request.model or self.default_model
         await self.validate_model(model)
+
+        # 1.5 Run query router (if retrieve_and_direct mode enabled)
+        routing_decision: str | None = None
+        settings_service = SettingsService(db)
+        query_routing_mode = settings_service.get("query_routing_mode") or "retrieve_only"
+
+        if query_routing_mode == "retrieve_and_direct":
+            routing_decision = await self.run_router(request.query, model)
+            if routing_decision == ROUTING_DIRECT:
+                # Skip retrieval, generate direct response
+                try:
+                    llm = ChatOllama(
+                        base_url=self.ollama_url,
+                        model=model,
+                        temperature=self.settings.rag_temperature,
+                        timeout=self.settings.rag_timeout_seconds,
+                    )
+                    response = await llm.ainvoke([("human", request.query)])
+                    answer = response.content
+                    elapsed_ms = (time.perf_counter() - start_time) * 1000
+                    return self._generate_direct_response(answer, model, elapsed_ms)
+                except Exception as e:
+                    if "timeout" in str(e).lower():
+                        raise LLMTimeoutError(f"LLM response timed out: {e}") from e
+                    raise RAGServiceError(f"LLM generation failed: {e}") from e
+        else:
+            # Default mode: always retrieve (routing_decision stays None)
+            routing_decision = ROUTING_RETRIEVE
 
         # 2. Retrieve quality context
         context_chunks = await self.get_quality_context(
@@ -956,7 +1065,7 @@ class RAGService:
 
         # Early exit: no context (zero-context short-circuit)
         if not context_chunks:
-            return self._insufficient_context_response(model, elapsed_ms)
+            return self._insufficient_context_response(model, elapsed_ms, routing_decision)
 
         # 3. Apply token budget
         chat_history = request.chat_history or []
@@ -1056,6 +1165,7 @@ class RAGService:
             context_tokens_used=context_tokens_used,
             generation_time_ms=elapsed_ms,
             grounded=grounded,
+            routing_decision=routing_decision,
         )
 
     async def health_check(self) -> dict:

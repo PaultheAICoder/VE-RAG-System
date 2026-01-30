@@ -99,3 +99,68 @@ class TestUpdateProcessingOptions:
             json={"table_extraction_mode": "invalid"},
         )
         assert response.status_code == 422  # Validation error
+
+
+class TestQueryRoutingMode:
+    """Tests for query_routing_mode setting (Issue #23)."""
+
+    def test_get_returns_default_retrieve_only(self, client, admin_headers):
+        """GET returns default query_routing_mode as 'retrieve_only'."""
+        response = client.get("/api/admin/processing-options", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["query_routing_mode"] == "retrieve_only"
+
+    def test_update_to_retrieve_and_direct(self, client, admin_headers):
+        """PATCH updates query_routing_mode to 'retrieve_and_direct'."""
+        response = client.patch(
+            "/api/admin/processing-options",
+            headers=admin_headers,
+            json={"query_routing_mode": "retrieve_and_direct"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["query_routing_mode"] == "retrieve_and_direct"
+
+    def test_update_persists(self, client, admin_headers):
+        """PATCH value persists across requests."""
+        # Update
+        client.patch(
+            "/api/admin/processing-options",
+            headers=admin_headers,
+            json={"query_routing_mode": "retrieve_and_direct"},
+        )
+
+        # Verify with GET
+        response = client.get("/api/admin/processing-options", headers=admin_headers)
+        assert response.json()["query_routing_mode"] == "retrieve_and_direct"
+
+    def test_update_validates_invalid_mode(self, client, admin_headers):
+        """PATCH validates query_routing_mode enum."""
+        response = client.patch(
+            "/api/admin/processing-options",
+            headers=admin_headers,
+            json={"query_routing_mode": "invalid_mode"},
+        )
+        assert response.status_code == 422  # Validation error
+
+    def test_update_back_to_retrieve_only(self, client, admin_headers):
+        """Can update back to 'retrieve_only' after changing."""
+        # First set to retrieve_and_direct
+        client.patch(
+            "/api/admin/processing-options",
+            headers=admin_headers,
+            json={"query_routing_mode": "retrieve_and_direct"},
+        )
+
+        # Then change back to retrieve_only
+        response = client.patch(
+            "/api/admin/processing-options",
+            headers=admin_headers,
+            json={"query_routing_mode": "retrieve_only"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["query_routing_mode"] == "retrieve_only"
