@@ -1,0 +1,54 @@
+# AI Ready RAG - DGX Spark Production Dependencies
+# Use: pip install -r requirements-spark.txt
+# Profile: spark (env_profile=spark)
+#
+# System dependencies (install before pip install):
+#   Ubuntu/Debian: apt-get install tesseract-ocr libtesseract-dev
+#   RHEL/CentOS: yum install tesseract tesseract-devel
+#
+# NOTE: This file does NOT include chromadb (incompatible with DGX onnxruntime)
+
+# ============== Core API ==============
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-multipart>=0.0.9
+sqlalchemy>=2.0.0
+
+# ============== Authentication ==============
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# ============== Vector Store ==============
+# Qdrant for Spark deployment (NOT chromadb - incompatible with DGX onnxruntime)
+qdrant-client>=1.13.0
+
+# ============== Document Processing (Full Docling) ==============
+# Required for spark profile chunker_backend=docling
+docling>=2.0.0
+docling-core
+transformers>=4.35.0  # Required for HybridChunker tokenizer (nomic-ai/nomic-embed-text-v1)
+
+# ============== LLM ==============
+langchain>=0.3.0
+langchain-ollama>=0.2.0
+langchain-text-splitters>=0.3.0  # Required for fallback simple chunking
+httpx>=0.27.0
+
+# ============== File Extraction ==============
+# Used by SimpleChunker fallback and for metadata extraction
+pypdf>=3.0.0
+python-docx>=1.0.0
+openpyxl>=3.1.0
+python-pptx>=1.0.0
+beautifulsoup4>=4.12.0
+python-magic>=0.4.27
+markdown>=3.5.0
+
+# ============== UI ==============
+gradio>=5.0.0
+
+# ============== Testing ==============
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

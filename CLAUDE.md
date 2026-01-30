@@ -16,7 +16,8 @@ AI Ready RAG is an enterprise RAG (Retrieval-Augmented Generation) system for NV
 |------|---------|-------------|
 | `requirements-wsl.txt` | WSL2/Linux development with Ollama + Qdrant | **Always use this for development** |
 | `requirements-api.txt` | API-only testing (auth, users, tags) | Minimal testing without RAG |
-| `requirements.txt` | Legacy/DGX Spark (references chromadb) | Production on DGX only |
+| `requirements-spark.txt` | DGX Spark production with Docling + Qdrant | **Production on DGX Spark** |
+| `requirements.txt` | Legacy (references chromadb) | Deprecated - use requirements-spark.txt |
 
 ```bash
 # Correct way to install dependencies
