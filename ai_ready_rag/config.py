@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     vector_backend: Literal["chroma", "qdrant"] | None = None
     chunker_backend: Literal["simple", "docling"] | None = None
 
+    # API
+    api_base_url: str = "http://localhost:8000"
+
     # Vector Service
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "documents"
