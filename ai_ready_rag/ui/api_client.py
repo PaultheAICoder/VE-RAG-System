@@ -4,6 +4,11 @@ import os
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
+
+# Load .env file before reading environment variables
+# This is required for API_BASE_URL to be read from .env on remote deployments
+load_dotenv()
 
 # Default base URL - can be overridden via API_BASE_URL environment variable
 BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
