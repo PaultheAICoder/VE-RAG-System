@@ -39,8 +39,8 @@ async def process_document_task(
         document_id: Document ID to process.
         processing_options_dict: Optional dict of per-upload processing options.
     """
+    from ai_ready_rag.services.factory import get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingOptions, ProcessingService
-    from ai_ready_rag.services.vector_service import VectorService
 
     settings = get_settings()
     db = SessionLocal()
@@ -57,14 +57,8 @@ async def process_document_task(
             logger.error(f"Document {document_id} not found for processing")
             return
 
-        # Create services
-        vector_service = VectorService(
-            qdrant_url=settings.qdrant_url,
-            ollama_url=settings.ollama_base_url,
-            collection_name=settings.qdrant_collection,
-            embedding_model=settings.embedding_model,
-            embedding_dimension=settings.embedding_dimension,
-        )
+        # Create services using factory (respects vector_backend setting)
+        vector_service = get_vector_service(settings)
         await vector_service.initialize()
 
         processing_service = ProcessingService(
@@ -311,9 +305,9 @@ async def delete_document(
 ):
     """Delete a document (admin only).
 
-    Cascade delete: vectors from Qdrant, file from storage, record from database.
+    Cascade delete: vectors from vector store, file from storage, record from database.
     """
-    from ai_ready_rag.services.vector_service import VectorService
+    from ai_ready_rag.services.factory import get_vector_service
 
     settings = get_settings()
     service = DocumentService(db, settings)
@@ -326,15 +320,9 @@ async def delete_document(
             detail="Document not found",
         )
 
-    # Delete vectors from Qdrant first
+    # Delete vectors from vector store first
     try:
-        vector_service = VectorService(
-            qdrant_url=settings.qdrant_url,
-            ollama_url=settings.ollama_base_url,
-            collection_name=settings.qdrant_collection,
-            embedding_model=settings.embedding_model,
-            embedding_dimension=settings.embedding_dimension,
-        )
+        vector_service = get_vector_service(settings)
         await vector_service.delete_document(document_id)
         logger.info(f"Deleted vectors for document {document_id}")
     except Exception as e:
@@ -381,7 +369,7 @@ async def bulk_delete_documents(
     Partial success allowed - some documents may fail while others succeed.
     Returns detailed results for each document.
     """
-    from ai_ready_rag.services.vector_service import VectorService
+    from ai_ready_rag.services.factory import get_vector_service
 
     settings = get_settings()
     service = DocumentService(db, settings)
@@ -401,15 +389,9 @@ async def bulk_delete_documents(
                 failed_count += 1
                 continue
 
-            # Delete vectors from Qdrant
+            # Delete vectors from vector store
             try:
-                vector_service = VectorService(
-                    qdrant_url=settings.qdrant_url,
-                    ollama_url=settings.ollama_base_url,
-                    collection_name=settings.qdrant_collection,
-                    embedding_model=settings.embedding_model,
-                    embedding_dimension=settings.embedding_dimension,
-                )
+                vector_service = get_vector_service(settings)
                 await vector_service.delete_document(doc_id)
             except Exception as e:
                 logger.warning(f"Failed to delete vectors for document {doc_id}: {e}")
@@ -443,10 +425,10 @@ async def update_document_tags(
 ):
     """Update document tags (admin only).
 
-    Updates tags in both SQLite and Qdrant (via set_payload, no re-embedding).
+    Updates tags in both SQLite and vector store (via set_payload, no re-embedding).
     """
     from ai_ready_rag.db.models import Tag
-    from ai_ready_rag.services.vector_service import VectorService
+    from ai_ready_rag.services.factory import get_vector_service
 
     settings = get_settings()
 
@@ -478,21 +460,15 @@ async def update_document_tags(
     # Update SQLite
     document.tags = tags
 
-    # Update Qdrant (only if document has been processed)
+    # Update vector store (only if document has been processed)
     if document.status == "ready" and document.chunk_count and document.chunk_count > 0:
         try:
-            vector_service = VectorService(
-                qdrant_url=settings.qdrant_url,
-                ollama_url=settings.ollama_base_url,
-                collection_name=settings.qdrant_collection,
-                embedding_model=settings.embedding_model,
-                embedding_dimension=settings.embedding_dimension,
-            )
+            vector_service = get_vector_service(settings)
             tag_names = [t.name for t in tags]
             await vector_service.update_document_tags(document_id, tag_names)
-            logger.info(f"Updated Qdrant tags for document {document_id}")
+            logger.info(f"Updated vector store tags for document {document_id}")
         except Exception as e:
-            logger.error(f"Failed to update Qdrant tags for document {document_id}: {e}")
+            logger.error(f"Failed to update vector store tags for document {document_id}: {e}")
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -523,7 +499,7 @@ async def reprocess_document(
     Deletes existing vectors, resets status to pending, and queues for reprocessing.
     Only allowed for documents in 'ready' or 'failed' status.
     """
-    from ai_ready_rag.services.vector_service import VectorService
+    from ai_ready_rag.services.factory import get_vector_service
 
     settings = get_settings()
 
@@ -546,13 +522,7 @@ async def reprocess_document(
     # Delete existing vectors first (if any)
     if document.chunk_count and document.chunk_count > 0:
         try:
-            vector_service = VectorService(
-                qdrant_url=settings.qdrant_url,
-                ollama_url=settings.ollama_base_url,
-                collection_name=settings.qdrant_collection,
-                embedding_model=settings.embedding_model,
-                embedding_dimension=settings.embedding_dimension,
-            )
+            vector_service = get_vector_service(settings)
             await vector_service.delete_document(document_id)
             logger.info(f"Deleted existing vectors for document {document_id}")
         except Exception as e:

@@ -426,15 +426,15 @@ class TestDocumentTagUpdate:
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
-    @patch("ai_ready_rag.services.vector_service.VectorService")
+    @patch("ai_ready_rag.services.factory.get_vector_service")
     def test_tag_update_success(
-        self, mock_vector_class, client, admin_headers, test_document, second_tag, db
+        self, mock_factory, client, admin_headers, test_document, second_tag, db
     ):
         """Test successful tag update."""
-        # Mock VectorService
+        # Mock the factory to return a mock vector service
         mock_instance = AsyncMock()
         mock_instance.update_document_tags = AsyncMock(return_value=5)
-        mock_vector_class.return_value = mock_instance
+        mock_factory.return_value = mock_instance
 
         response = client.patch(
             f"/api/documents/{test_document.id}/tags",
