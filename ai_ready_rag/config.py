@@ -111,7 +111,17 @@ class Settings(BaseSettings):
     upload_dir: str = "./data/uploads"
     max_upload_size_mb: int = 100
     max_storage_gb: int = 10
-    allowed_extensions: list[str] = ["pdf", "docx", "xlsx", "pptx", "txt", "md", "html", "csv"]
+    allowed_extensions: list[str] = [
+        "pdf",
+        "docx",
+        "xlsx",
+        "pptx",
+        "txt",
+        "md",
+        "html",
+        "htm",
+        "csv",
+    ]
 
     # Document Processing
     enable_ocr: bool | None = None  # None = use profile default
