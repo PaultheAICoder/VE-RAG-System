@@ -120,7 +120,7 @@ return gr.update(choices=[("Display", "value"), ...])
 ```python
 file_input = gr.File(
     label="Select File",
-    file_types=[".pdf", ".docx", ".txt", ".md"],
+    file_types=[".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".html", ".csv"],
 )
 
 # In handler, file.name gives the path

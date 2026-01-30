@@ -104,7 +104,7 @@ class SimpleChunker:
             return self._extract_text_file(path)
         elif ext == ".csv":
             return self._extract_csv(path)
-        elif ext == ".html":
+        elif ext in (".html", ".htm"):
             return self._extract_html(path)
         elif ext == ".xlsx":
             return self._extract_xlsx(path)

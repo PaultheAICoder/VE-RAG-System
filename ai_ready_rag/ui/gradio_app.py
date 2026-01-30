@@ -152,7 +152,17 @@ def create_app() -> gr.Blocks:
                             # Upload section
                             doc_file_input = gr.File(
                                 label="Select Files",
-                                file_types=[".pdf", ".docx", ".txt", ".md"],
+                                file_types=[
+                                    ".pdf",
+                                    ".docx",
+                                    ".txt",
+                                    ".md",
+                                    ".csv",
+                                    ".xlsx",
+                                    ".pptx",
+                                    ".html",
+                                    ".htm",
+                                ],
                                 file_count="multiple",
                             )
                             doc_tag_dropdown = gr.Dropdown(

@@ -325,7 +325,7 @@ def handle_upload(
         elif e.response.status_code == 413:
             return "**File too large.** Please upload a smaller file."
         elif e.response.status_code == 415:
-            return "**Unsupported file type.** Allowed types: PDF, DOCX, TXT, MD."
+            return "**Unsupported file type.** Allowed types: PDF, DOCX, XLSX, PPTX, TXT, MD, HTML, CSV."
         elif e.response.status_code == 401:
             return "**Session expired.** Please log in again."
         elif e.response.status_code == 403:
