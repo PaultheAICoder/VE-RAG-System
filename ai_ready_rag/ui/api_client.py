@@ -1,11 +1,12 @@
 """Stateless API client for Gradio UI - uses Bearer tokens from gr.State."""
 
+import os
 from typing import Any
 
 import httpx
 
-# Default base URL - can be overridden via environment
-BASE_URL = "http://localhost:8000"
+# Default base URL - can be overridden via API_BASE_URL environment variable
+BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
 
 ERROR_RESPONSES: dict[int, dict[str, str]] = {
