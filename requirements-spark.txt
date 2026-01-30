@@ -52,3 +52,8 @@ gradio>=5.0.0
 # ============== Testing ==============
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+pytest-cov>=4.0.0
+
+# ============== Development Tools ==============
+ruff>=0.14.0
+pre-commit>=4.0.0
