@@ -1,5 +1,6 @@
 """Document management UI components for Gradio."""
 
+from collections.abc import Callable
 from typing import Any
 
 import gradio as gr
@@ -224,8 +225,17 @@ def handle_upload(
     tag_ids: list[str],
     title: str,
     description: str,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> str:
-    """Handle document upload.
+    """Handle document upload with optional progress callback.
+
+    Args:
+        auth_state: Authentication state dict
+        file: Gradio file object
+        tag_ids: List of tag IDs to assign
+        title: Optional document title
+        description: Optional document description
+        progress_callback: Optional callback(progress, message) for UI progress updates
 
     Returns:
         Status message.
@@ -245,6 +255,15 @@ def handle_upload(
 
         # file is a Gradio file object with .name attribute
         file_path = file.name if hasattr(file, "name") else str(file)
+        filename = file_path.split("/")[-1] if "/" in file_path else file_path
+
+        # Progress: Loading file (10%)
+        if progress_callback:
+            progress_callback(0.1, f"Loading {filename}...")
+
+        # Progress: Uploading (30%)
+        if progress_callback:
+            progress_callback(0.3, f"Uploading {filename}...")
 
         result = GradioAPIClient.upload_document(
             token=token,
@@ -254,13 +273,22 @@ def handle_upload(
             description=description if description else None,
         )
 
+        # Progress: Processing (50%)
+        if progress_callback:
+            progress_callback(0.5, f"Processing {filename}...")
+
         # Poll for final status (PDFs can take longer)
         doc_id = result.get("id")
         final_status = result.get("status", "pending")
-        filename = result.get("original_filename", "document")
+        filename = result.get("original_filename", filename)
 
         if doc_id and final_status in ("pending", "processing"):
-            for _ in range(30):  # Max 15 seconds (30 * 0.5s)
+            for i in range(30):  # Max 15 seconds (30 * 0.5s)
+                # Progress: Polling (60% to 90%)
+                if progress_callback:
+                    poll_progress = 0.5 + (i / 30) * 0.4  # 0.5 to 0.9
+                    progress_callback(poll_progress, f"Waiting for {filename}... ({final_status})")
+
                 time.sleep(0.5)
                 try:
                     doc = GradioAPIClient.get_document(token, doc_id)
@@ -269,6 +297,10 @@ def handle_upload(
                         break
                 except Exception:
                     break
+
+        # Progress: Complete (100%)
+        if progress_callback:
+            progress_callback(1.0, f"Completed {filename}")
 
         if final_status == "ready":
             return f"Uploaded: {filename} - Ready"
