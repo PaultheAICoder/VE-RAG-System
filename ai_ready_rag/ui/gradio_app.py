@@ -270,8 +270,17 @@ def create_app() -> gr.Blocks:
                             )
                             proc_ocr_lang = gr.Dropdown(
                                 label="OCR Language",
-                                choices=["English", "Spanish", "French", "German", "Chinese"],
-                                value="English",
+                                choices=[
+                                    ("English", "eng"),
+                                    ("Spanish", "spa"),
+                                    ("French", "fra"),
+                                    ("German", "deu"),
+                                    ("Italian", "ita"),
+                                    ("Portuguese", "por"),
+                                    ("Chinese Simplified", "chi_sim"),
+                                    ("Japanese", "jpn"),
+                                ],
+                                value="eng",
                             )
                             proc_table_mode = gr.Radio(
                                 label="Table Extraction Mode",
@@ -1185,7 +1194,7 @@ def create_app() -> gr.Blocks:
                     "Not authenticated.",
                     False,
                     False,
-                    "English",
+                    "eng",
                     "accurate",
                     False,
                     "retrieve_only",
@@ -1207,13 +1216,13 @@ def create_app() -> gr.Blocks:
                     f"Failed to load (HTTP {e.response.status_code})",
                     False,
                     False,
-                    "English",
+                    "eng",
                     "accurate",
                     False,
                     "retrieve_only",
                 )
             except Exception as e:
-                return (f"Error: {e}", False, False, "English", "accurate", False, "retrieve_only")
+                return (f"Error: {e}", False, False, "eng", "accurate", False, "retrieve_only")
 
         def save_processing_options(
             auth: dict,
