@@ -11,6 +11,7 @@
 | **Access control bypass** | Adding vector search | ALWAYS filter by user tags BEFORE search |
 | **Hardcoded secrets** | Adding config values | Use environment variables, never commit secrets |
 | **Wrong requirements** | Adding dependencies | Use `requirements-wsl.txt` for dev, NOT `requirements.txt` |
+| **Parallel branch collision** | Parallel PATCH agents on same file | Check file overlap first; run sequentially if same files; use git worktrees |
 
 ### Quick Reference
 
