@@ -310,7 +310,7 @@ def create_app() -> gr.Blocks:
                                 size="sm",
                             )
 
-                        # Model Configuration Section (#14)
+                        # Model Configuration Section (#14, #21)
                         with gr.Accordion(
                             "Model Configuration",
                             open=False,
@@ -318,15 +318,37 @@ def create_app() -> gr.Blocks:
                             model_refresh_btn = gr.Button("Load Models", size="sm")
                             model_status = gr.Markdown("")
 
-                            model_current = gr.Markdown("**Current Model**: Not loaded")
+                            # Embedding Model Section
+                            gr.Markdown("### Embedding Model (Vectorization)")
+                            embed_current = gr.Markdown("**Current**: Not loaded")
+                            embed_dropdown = gr.Dropdown(
+                                label="Select Embedding Model",
+                                choices=[],
+                                interactive=True,
+                            )
+                            embed_warning = gr.Markdown(
+                                "⚠️ **Warning**: Changing the embedding model invalidates all existing vectors. "
+                                "Documents must be re-indexed.",
+                                visible=False,
+                            )
+                            embed_apply_btn = gr.Button(
+                                "Apply Embedding Change",
+                                variant="stop",
+                                size="sm",
+                            )
 
+                            gr.Markdown("---")
+
+                            # Chat Model Section
+                            gr.Markdown("### Chat Model (RAG)")
+                            model_current = gr.Markdown("**Current**: Not loaded")
                             model_dropdown = gr.Dropdown(
                                 label="Select Chat Model",
                                 choices=[],
                                 interactive=True,
                             )
                             model_apply_btn = gr.Button(
-                                "Apply Model Change",
+                                "Apply Chat Model Change",
                                 variant="primary",
                                 size="sm",
                             )
@@ -1241,75 +1263,148 @@ def create_app() -> gr.Blocks:
             outputs=[kb_status, kb_stats_display, kb_file_list],
         )
 
-        # ========== MODEL CONFIGURATION EVENT HANDLERS (#14) ==========
+        # ========== MODEL CONFIGURATION EVENT HANDLERS (#14, #21) ==========
 
         def load_models(auth: dict) -> tuple:
-            """Load available models from API."""
+            """Load available models from API (both embedding and chat)."""
             token = auth.get("token")
             if not token:
-                return ("Not authenticated.", "**Current Model**: Unknown", gr.update(choices=[]))
+                return (
+                    "Not authenticated.",
+                    "**Current**: Unknown",
+                    gr.update(choices=[]),
+                    gr.update(visible=False),
+                    "**Current**: Unknown",
+                    gr.update(choices=[]),
+                )
 
             try:
                 data = GradioAPIClient.get_available_models(token)
-                current_model = data.get("current_chat_model", "Unknown")
-                available = data.get("available_models", [])
+                current_chat = data.get("current_chat_model", "Unknown")
+                current_embed = data.get("current_embedding_model", "Unknown")
 
-                # Format model choices
-                choices = [
-                    (m.get("display_name", m.get("name", "")), m.get("name", "")) for m in available
+                # Get filtered model lists
+                embedding_models = data.get("embedding_models", [])
+                chat_models = data.get("chat_models", [])
+
+                # Format embedding model choices
+                embed_choices = [
+                    (m.get("display_name", m.get("name", "")), m.get("name", ""))
+                    for m in embedding_models
                 ]
 
-                current_md = f"**Current Model**: {current_model}"
+                # Format chat model choices
+                chat_choices = [
+                    (m.get("display_name", m.get("name", "")), m.get("name", ""))
+                    for m in chat_models
+                ]
 
                 return (
                     "Models loaded.",
-                    current_md,
-                    gr.update(choices=choices, value=current_model),
+                    f"**Current**: {current_embed}",
+                    gr.update(choices=embed_choices, value=current_embed),
+                    gr.update(visible=True),  # Show warning
+                    f"**Current**: {current_chat}",
+                    gr.update(choices=chat_choices, value=current_chat),
                 )
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 503:
                     return (
                         "Ollama unavailable.",
-                        "**Current Model**: Ollama offline",
+                        "**Current**: Ollama offline",
+                        gr.update(choices=[]),
+                        gr.update(visible=False),
+                        "**Current**: Ollama offline",
                         gr.update(choices=[]),
                     )
                 return (
                     f"Failed to load (HTTP {e.response.status_code})",
-                    "**Current Model**: Error",
+                    "**Current**: Error",
+                    gr.update(choices=[]),
+                    gr.update(visible=False),
+                    "**Current**: Error",
                     gr.update(choices=[]),
                 )
             except Exception as e:
-                return (f"Error: {e}", "**Current Model**: Error", gr.update(choices=[]))
+                return (
+                    f"Error: {e}",
+                    "**Current**: Error",
+                    gr.update(choices=[]),
+                    gr.update(visible=False),
+                    "**Current**: Error",
+                    gr.update(choices=[]),
+                )
 
-        def apply_model_change(auth: dict, selected_model: str) -> tuple:
-            """Apply the selected chat model."""
+        def apply_embedding_change(auth: dict, selected_model: str) -> tuple:
+            """Apply the selected embedding model (with re-indexing warning)."""
             token = auth.get("token")
             if not token:
-                return ("Not authenticated.", "**Current Model**: Unknown")
+                return ("Not authenticated.", "**Current**: Unknown")
 
             if not selected_model:
-                return ("No model selected.", "**Current Model**: Unknown")
+                return ("No model selected.", "**Current**: Unknown")
 
             try:
-                result = GradioAPIClient.change_chat_model(token, selected_model)
-                new_model = result.get("model", selected_model)
-                return (f"Model changed to {new_model}.", f"**Current Model**: {new_model}")
+                result = GradioAPIClient.change_embedding_model(
+                    token, selected_model, confirm_reindex=True
+                )
+                new_model = result.get("current_model", selected_model)
+                docs_affected = result.get("documents_affected", 0)
+                return (
+                    f"Embedding model changed to {new_model}. "
+                    f"⚠️ {docs_affected} documents need re-indexing!",
+                    f"**Current**: {new_model}",
+                )
             except httpx.HTTPStatusError as e:
                 return (
                     f"Failed to change model (HTTP {e.response.status_code})",
-                    "**Current Model**: Error",
+                    "**Current**: Error",
                 )
             except Exception as e:
-                return (f"Error: {e}", "**Current Model**: Error")
+                return (f"Error: {e}", "**Current**: Error")
+
+        def apply_chat_model_change(auth: dict, selected_model: str) -> tuple:
+            """Apply the selected chat model."""
+            token = auth.get("token")
+            if not token:
+                return ("Not authenticated.", "**Current**: Unknown")
+
+            if not selected_model:
+                return ("No model selected.", "**Current**: Unknown")
+
+            try:
+                result = GradioAPIClient.change_chat_model(token, selected_model)
+                new_model = result.get("current_model", selected_model)
+                return (f"Chat model changed to {new_model}.", f"**Current**: {new_model}")
+            except httpx.HTTPStatusError as e:
+                return (
+                    f"Failed to change model (HTTP {e.response.status_code})",
+                    "**Current**: Error",
+                )
+            except Exception as e:
+                return (f"Error: {e}", "**Current**: Error")
 
         model_refresh_btn.click(
             fn=load_models,
             inputs=[auth_state],
-            outputs=[model_status, model_current, model_dropdown],
+            outputs=[
+                model_status,
+                embed_current,
+                embed_dropdown,
+                embed_warning,
+                model_current,
+                model_dropdown,
+            ],
+        )
+
+        embed_apply_btn.click(
+            fn=apply_embedding_change,
+            inputs=[auth_state, embed_dropdown],
+            outputs=[model_status, embed_current],
         )
 
         model_apply_btn.click(
-            fn=apply_model_change,
+            fn=apply_chat_model_change,
             inputs=[auth_state, model_dropdown],
             outputs=[model_status, model_current],
         )
