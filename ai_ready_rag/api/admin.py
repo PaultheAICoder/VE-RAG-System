@@ -597,6 +597,7 @@ async def get_architecture_info(
 
 # Model Configuration Models and Endpoints
 CHAT_MODEL_KEY = "chat_model"
+EMBEDDING_MODEL_KEY = "embedding_model"
 
 
 class ModelInfo(BaseModel):
@@ -614,6 +615,8 @@ class ModelsResponse(BaseModel):
     """Response containing available models and current selection."""
 
     available_models: list[ModelInfo]
+    embedding_models: list[ModelInfo]
+    chat_models: list[ModelInfo]
     current_chat_model: str
     current_embedding_model: str
 
@@ -631,6 +634,24 @@ class ChangeModelResponse(BaseModel):
     current_model: str
     success: bool
     message: str
+
+
+class ChangeEmbeddingRequest(BaseModel):
+    """Request to change the embedding model."""
+
+    model_name: str
+    confirm_reindex: bool = False  # Must be True to proceed
+
+
+class ChangeEmbeddingResponse(BaseModel):
+    """Response after changing the embedding model."""
+
+    previous_model: str
+    current_model: str
+    success: bool
+    message: str
+    reindex_required: bool = True
+    documents_affected: int = 0
 
 
 @router.get("/models", response_model=ModelsResponse)
@@ -663,6 +684,11 @@ async def get_models(
     if current_chat is None:
         current_chat = settings.chat_model
 
+    # Get current embedding model from settings, fallback to config
+    current_embedding = settings_service.get(EMBEDDING_MODEL_KEY)
+    if current_embedding is None:
+        current_embedding = settings.embedding_model
+
     # Convert to ModelInfo response models
     available_models = [
         ModelInfo(
@@ -676,10 +702,16 @@ async def get_models(
         for m in models
     ]
 
+    # Filter into embedding and chat models
+    embedding_models = [m for m in available_models if ModelService.is_embedding_model(m.name)]
+    chat_models = [m for m in available_models if not ModelService.is_embedding_model(m.name)]
+
     return ModelsResponse(
         available_models=available_models,
+        embedding_models=embedding_models,
+        chat_models=chat_models,
         current_chat_model=current_chat,
-        current_embedding_model=settings.embedding_model,
+        current_embedding_model=current_embedding,
     )
 
 
@@ -738,4 +770,87 @@ async def change_chat_model(
         success=True,
         message=f"Chat model changed to {request.model_name}. "
         "First request may be slow while the model loads.",
+    )
+
+
+@router.patch("/models/embedding", response_model=ChangeEmbeddingResponse)
+async def change_embedding_model(
+    request: ChangeEmbeddingRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Change the embedding model used for vectorization.
+
+    WARNING: Changing the embedding model invalidates all existing vectors.
+    Documents must be re-indexed for search to work correctly.
+
+    Requires confirm_reindex=true to acknowledge the re-indexing impact.
+
+    Admin only.
+    """
+    # Require explicit confirmation
+    if not request.confirm_reindex:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Changing the embedding model requires re-indexing all documents. "
+            "Set confirm_reindex=true to acknowledge this.",
+        )
+
+    settings = get_settings()
+    model_service = ModelService(settings.ollama_base_url)
+    settings_service = SettingsService(db)
+
+    # Validate model exists in Ollama
+    try:
+        model_exists = await model_service.validate_model(request.model_name)
+    except OllamaUnavailableError as e:
+        logger.error(f"Cannot validate model - Ollama unavailable: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        ) from e
+
+    if not model_exists:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Model '{request.model_name}' not found in Ollama. "
+            "Please ensure the model is pulled before selecting it.",
+        )
+
+    # Validate it's an embedding model
+    if not ModelService.is_embedding_model(request.model_name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Model '{request.model_name}' does not appear to be an embedding model. "
+            "Embedding models typically have 'embed' in their name.",
+        )
+
+    # Get previous model
+    previous_model = settings_service.get(EMBEDDING_MODEL_KEY)
+    if previous_model is None:
+        previous_model = settings.embedding_model
+
+    # Get document count for warning
+    from ai_ready_rag.db.models import Document
+
+    documents_affected = db.query(Document).count()
+
+    # Save new model
+    settings_service.set(EMBEDDING_MODEL_KEY, request.model_name, updated_by=current_user.id)
+
+    # Audit log
+    logger.warning(
+        f"Admin {current_user.email} changed embedding model: {previous_model} -> {request.model_name}. "
+        f"{documents_affected} documents need re-indexing."
+    )
+
+    return ChangeEmbeddingResponse(
+        previous_model=previous_model,
+        current_model=request.model_name,
+        success=True,
+        message=f"Embedding model changed to {request.model_name}. "
+        f"WARNING: {documents_affected} documents need to be re-indexed. "
+        "Clear the knowledge base and re-upload documents, or reprocess all documents.",
+        reindex_required=True,
+        documents_affected=documents_affected,
     )

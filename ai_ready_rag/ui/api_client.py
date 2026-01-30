@@ -538,3 +538,28 @@ class GradioAPIClient:
             )
             response.raise_for_status()
             return response.json()
+
+    @staticmethod
+    def change_embedding_model(
+        token: str, model_name: str, confirm_reindex: bool = True
+    ) -> dict[str, Any]:
+        """Change the embedding model used for vectorization.
+
+        WARNING: This invalidates all existing vectors. Documents must be re-indexed.
+
+        Args:
+            token: JWT access token
+            model_name: Name of the embedding model to switch to
+            confirm_reindex: Must be True to acknowledge re-indexing impact
+
+        Returns:
+            Result dict with message, reindex_required, and documents_affected.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.patch(
+                "/api/admin/models/embedding",
+                json={"model_name": model_name, "confirm_reindex": confirm_reindex},
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()

@@ -150,3 +150,39 @@ class ModelService:
         if match:
             return f"{match.group(1)}B"
         return None
+
+    @staticmethod
+    def is_embedding_model(model_name: str) -> bool:
+        """Check if model name indicates an embedding model.
+
+        Args:
+            model_name: Name of the model to check
+
+        Returns:
+            True if model is an embedding model (contains 'embed' in name)
+        """
+        return "embed" in model_name.lower()
+
+    async def list_embedding_models(self) -> list[dict]:
+        """Query Ollama for available embedding models only.
+
+        Returns:
+            List of embedding model info dicts (models with 'embed' in name)
+
+        Raises:
+            OllamaUnavailableError: If Ollama is not reachable
+        """
+        models = await self.list_models()
+        return [m for m in models if self.is_embedding_model(m["name"])]
+
+    async def list_chat_models(self) -> list[dict]:
+        """Query Ollama for available chat/LLM models only.
+
+        Returns:
+            List of chat model info dicts (excludes embedding models)
+
+        Raises:
+            OllamaUnavailableError: If Ollama is not reachable
+        """
+        models = await self.list_models()
+        return [m for m in models if not self.is_embedding_model(m["name"])]
