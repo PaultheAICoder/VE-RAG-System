@@ -871,8 +871,10 @@ def create_app() -> gr.Blocks:
             choices = get_document_choices(auth)
             return docs, gr.update(choices=choices, value=[])
 
-        def do_upload(auth: dict, files, tag_ids: list, title: str) -> tuple:
-            """Handle document upload for single or multiple files."""
+        def do_upload(
+            auth: dict, files, tag_ids: list, title: str, progress=gr.Progress()
+        ) -> tuple:
+            """Handle document upload for single or multiple files with progress tracking."""
             # Handle None or empty
             if files is None:
                 docs = load_documents(auth)
@@ -906,15 +908,32 @@ def create_app() -> gr.Blocks:
             results = []
             success_count = 0
             fail_count = 0
+            total_files = len(files)
 
-            for file in files:
-                status = handle_upload(auth, file, tag_ids, title, "")
+            progress(0.1, desc="Starting upload...")
+
+            # Define progress callback factory outside loop
+            def make_progress_callback(file_idx: int, total: int):
+                def callback(pct: float, msg: str) -> None:
+                    overall = (file_idx + pct) / total
+                    progress(overall, desc=msg)
+
+                return callback
+
+            for idx, file in enumerate(files):
+                file_progress = make_progress_callback(idx, total_files)
+                file_progress(0.1, f"Loading file {idx + 1} of {total_files}...")
+                status = handle_upload(
+                    auth, file, tag_ids, title, "", progress_callback=file_progress
+                )
                 results.append(status)
                 # Check if upload succeeded (status contains "Uploaded:" or "Ready")
                 if "Uploaded:" in status or "Ready" in status:
                     success_count += 1
                 else:
                     fail_count += 1
+
+            progress(1.0, desc=f"Completed processing {total_files} file(s)")
 
             # Build summary status
             if len(files) == 1:
