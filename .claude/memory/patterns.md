@@ -1,8 +1,9 @@
 # Learned Patterns
 
 **Last updated**: 2026-01-30
-**Total issues analyzed**: 3 (#23, #24, #25)
-**Success rate**: 100% (features shipped, workflow disruption)
+**Total issues analyzed**: 9 (#2-7, #23-25)
+**Success rate**: 100% (9/9 issues shipped)
+**Workflow incidents**: 1 (branch collision, no feature impact)
 
 ---
 
@@ -21,56 +22,130 @@ See `.claude/memory/patterns-critical.md` for the essential patterns:
 
 ### 1. PARALLEL_BRANCH_COLLISION — Git branches share working directory
 
-**Frequency**: 1 occurrence (2026-01-30)
-**Trigger**: Running parallel PATCH agents that modify the same file
-**Prevention**: Check file overlap in MAP-PLAN; run sequentially if overlap; use git worktrees
+**Frequency**: 1 occurrence (11% of orchestrated batches)
+**Severity**: WORKFLOW_DISRUPTION (features still shipped)
+**Phase**: PATCH
 
-**Root Cause**: Git branches share the same working directory. When multiple agents checkout different branches and modify the same file, all changes exist in the working directory simultaneously. The first commit captures ALL changes.
+**Pattern**: When multiple PATCH agents run in parallel and modify the same file, Git's shared working directory causes all changes to accumulate. The first branch to commit captures ALL changes, leaving other branches empty.
 
-**Checklist**:
-- [ ] [Orchestrator]: Before parallel PATCH, compare `files_identified` across MAP-PLANs
+**Trigger conditions**:
+- Parallel PATCH execution (`--parallel` flag or multiple Task calls)
+- Multiple issues modifying same file (e.g., `gradio_app.py`)
+- Agents don't commit before orchestrator continues
+
+**Common files affected**:
+- `ai_ready_rag/ui/gradio_app.py` (UI changes often overlap)
+- Any shared service file
+
+**Prevention checklist**:
+- [ ] [Orchestrator]: Before parallel PATCH, extract `files_identified` from each MAP-PLAN
 - [ ] [Orchestrator]: If ANY file appears in multiple issues → run PATCH sequentially
-- [ ] [PATCH Agent]: MUST commit changes before returning
-- [ ] [Orchestrator]: Verify `git log main..{branch}` shows commits after each PATCH
+- [ ] [PATCH Agent]: MUST `git add && git commit` before returning
+- [ ] [Orchestrator]: After each PATCH, verify: `git log main..{branch} --oneline` shows commits
+- [ ] [Alternative]: Use `git worktree` for true parallel isolation
+
+**Responsible agents**: Orchestrator (file overlap check), PATCH (must commit)
 
 **Postmortem**: `.claude/memory/postmortems/parallel-patch-branch-collision-013026.md`
 
-### Recording Outcomes
+---
 
-After each issue, PROVE agent records:
-- **Success**: `metrics.jsonl` with PASS status
-- **Failure**: `failures.jsonl` with root cause + details
+## Success Patterns
 
-### Extracting Patterns
+### Backend-Only Issues
+- **Success rate**: 100% (6/6)
+- **Complexity**: SIMPLE to COMPLEX
+- **Observation**: Single-stack issues have cleaner execution
 
-Run `/learn` weekly to:
-1. Cluster failures by root cause
-2. Calculate success rate trends
-3. Extract new patterns
-4. Update this file
+### Fullstack Issues
+- **Success rate**: 100% (3/3) - but with workflow incident
+- **Complexity**: SIMPLE
+- **Observation**: Same-file modifications need sequential execution
 
 ---
 
-## Pattern Template
+## Metrics Summary
 
-When patterns are extracted, they follow this format:
+| Dimension | Count | Pass | Rate |
+|-----------|-------|------|------|
+| **Total** | 9 | 9 | 100% |
+| Backend | 6 | 6 | 100% |
+| Frontend/Fullstack | 3 | 3 | 100% |
+| SIMPLE | 8 | 8 | 100% |
+| COMPLEX | 1 | 1 | 100% |
+
+| Week | Issues | Pass | Rate | Trend |
+|------|--------|------|------|-------|
+| 2026-01-29 | 6 | 6 | 100% | — |
+| 2026-01-30 | 3 | 3 | 100% | → Stable |
+
+---
+
+## Suggested Agent Updates
+
+### 1. Orchestrate Skill — Add File Overlap Check
+
+**Reason**: PARALLEL_BRANCH_COLLISION occurred when parallel PATCH modified same file
+
+**Suggested addition** to `.claude/skills/orchestrate/SKILL.md`:
 
 ```markdown
-### N. PATTERN_NAME — Description
+## Parallel Safety Check (Before PATCH Phase)
 
-**Frequency**: X% of failures (N occurrences)
-**Trigger**: [What triggers this failure]
-**Prevention**: [How to prevent it]
+If running multiple issues in parallel:
 
-**Checklist**:
-- [ ] [Agent]: [Verification step]
+1. Extract files from each MAP-PLAN:
+   ```bash
+   grep -A20 "### Affected Files" .agents/outputs/map-plan-{issue}-*.md
+   ```
+
+2. Check for overlap:
+   - If ANY file appears in multiple MAP-PLANs → Run PATCH sequentially
+   - If no overlap → Can run PATCH in parallel
+
+3. After each PATCH returns, verify commit exists:
+   ```bash
+   git log main..feat/issue-{N}-* --oneline | head -1
+   ```
+   If empty → PATCH failed to commit, investigate.
 ```
+
+**Impact**: Would have prevented 1 workflow disruption
+
+### 2. PATCH Agent — Mandatory Commit Before Return
+
+**Reason**: Agents made changes but didn't commit, causing cross-contamination
+
+**Suggested addition** to `.claude/agents/patch.md`:
+
+```markdown
+## Commit Requirement (MANDATORY)
+
+Before returning, PATCH agent MUST:
+
+1. Stage changes: `git add <specific files>`
+2. Commit with message: `git commit -m "feat: <description> (#<issue>)"`
+3. Verify commit: `git log -1 --oneline`
+
+If commit fails (e.g., pre-commit hook), fix and retry.
+NEVER return without a commit on the feature branch.
+```
+
+**Impact**: Would ensure branch isolation for parallel work
 
 ---
 
 ## Next Steps
 
-1. Complete issues using `/orchestrate <issue>`
-2. PROVE agent records outcomes automatically
-3. Run `/learn` after 5-10 issues
-4. Patterns appear here automatically
+1. Review suggested agent updates above
+2. Run `/agent-update` to apply changes
+3. Continue using `/orchestrate` to gather more data
+4. Re-run `/learn` after 10 more issues
+
+---
+
+## Data Sources
+
+- **Metrics**: `.claude/memory/metrics.jsonl` (6 records)
+- **Failures**: `.claude/memory/failures.jsonl` (1 record)
+- **Postmortems**: `.claude/memory/postmortems/` (1 file)
