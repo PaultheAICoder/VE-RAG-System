@@ -153,3 +153,16 @@ class AdminSetting(Base):
     value = Column(Text, nullable=False)  # JSON encoded
     updated_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SystemSetup(Base):
+    """Tracks system setup state for first-run wizard."""
+
+    __tablename__ = "system_setup"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    setup_complete = Column(Boolean, default=False)
+    admin_password_changed = Column(Boolean, default=False)
+    setup_completed_at = Column(DateTime, nullable=True)
+    setup_completed_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
