@@ -7,3 +7,4 @@ export { Select } from './Select';
 export { Modal } from './Modal';
 export { Checkbox } from './Checkbox';
 export { Pagination } from './Pagination';
+export { KeyboardShortcutsModal } from './KeyboardShortcutsModal';

@@ -14,6 +14,24 @@
   --color-primary-light: #4ECDC4;
 }
 
+/* Smooth dark mode transition */
+html {
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+html *,
+html *::before,
+html *::after {
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+/* Disable transitions during page load to prevent flash */
+html.no-transitions *,
+html.no-transitions *::before,
+html.no-transitions *::after {
+  transition: none !important;
+}
+
 body {
   font-family: 'Inter', system-ui, sans-serif;
 }
