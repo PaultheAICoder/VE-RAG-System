@@ -10,6 +10,24 @@ from ai_ready_rag.db.models import User
 
 security = HTTPBearer(auto_error=False)
 
+# Role constants
+ROLE_SYSTEM_ADMIN = "system_admin"
+ROLE_CUSTOMER_ADMIN = "customer_admin"
+ROLE_USER = "user"
+
+# Valid roles for validation
+VALID_ROLES = {ROLE_SYSTEM_ADMIN, ROLE_CUSTOMER_ADMIN, ROLE_USER, "admin"}
+
+
+def normalize_role(role: str) -> str:
+    """Normalize role for backward compatibility.
+
+    Maps legacy "admin" role to "system_admin".
+    """
+    if role == "admin":
+        return ROLE_SYSTEM_ADMIN
+    return role
+
 
 async def get_current_user(
     request: Request,
@@ -52,7 +70,25 @@ async def get_current_user(
 
 
 async def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    """Require admin role."""
-    if current_user.role != "admin":
+    """Require admin role (system_admin or customer_admin).
+
+    Both system_admin and customer_admin can manage users, documents, and tags.
+    """
+    role = normalize_role(current_user.role)
+    if role not in (ROLE_SYSTEM_ADMIN, ROLE_CUSTOMER_ADMIN):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return current_user
+
+
+async def require_system_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Require system_admin role only.
+
+    Only system_admin can access system settings, architecture info,
+    model configuration, and knowledge base management.
+    """
+    role = normalize_role(current_user.role)
+    if role != ROLE_SYSTEM_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="System admin access required"
+        )
     return current_user
