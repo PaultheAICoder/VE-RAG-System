@@ -1,14 +1,27 @@
 #!/bin/bash
-cd /srv/VE-RAG-System
+# Start AI Ready RAG - works on both laptop and Spark
+
+# Change to script directory (works regardless of where script is located)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Activate virtual environment
 source .venv/bin/activate
 
-# Export env vars from .env
-export $(grep -v "^#" .env | xargs)
+# Export env vars from .env (skip comments and empty lines)
+if [ -f ".env" ]; then
+    export $(grep -v "^#" .env | grep -v "^$" | xargs)
+else
+    echo "Warning: No .env file found. Using defaults."
+fi
 
 echo "=== AI Ready RAG Startup ==="
+echo "Directory: $SCRIPT_DIR"
+echo "Profile:   ${ENV_PROFILE:-not set}"
 
 # Check/create admin user and tags via Python (more reliable than API)
 python << "PYTHON"
+import os
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import User, Tag
 from ai_ready_rag.core.security import hash_password
@@ -18,20 +31,24 @@ init_db()
 db = SessionLocal()
 try:
     # Create admin user
-    admin = db.query(User).filter(User.email == "admin@test.com").first()
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@test.com")
+    admin_password = os.environ.get("ADMIN_PASSWORD", "npassword")
+    admin_name = os.environ.get("ADMIN_DISPLAY_NAME", "Administrator")
+
+    admin = db.query(User).filter(User.email == admin_email).first()
     if not admin:
         admin = User(
-            email="admin@test.com",
-            display_name="Administrator",
-            password_hash=hash_password("npassword"),
+            email=admin_email,
+            display_name=admin_name,
+            password_hash=hash_password(admin_password),
             role="admin",
             is_active=True,
         )
         db.add(admin)
         db.commit()
-        print("Admin user created: admin@test.com")
+        print(f"Admin user created: {admin_email}")
     else:
-        print("Admin user exists: admin@test.com")
+        print(f"Admin user exists: {admin_email}")
 
     # Create default tags
     default_tags = [
