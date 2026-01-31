@@ -614,3 +614,156 @@ class GradioAPIClient:
             )
             response.raise_for_status()
             return response.json()
+
+    # --- Reindex APIs (#72) ---
+
+    @staticmethod
+    def get_reindex_status(token: str) -> dict[str, Any] | None:
+        """Get current reindex job status.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Reindex job dict or None if no active job.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get(
+                "/api/admin/reindex/status",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result if result else None
+
+    @staticmethod
+    def get_reindex_history(token: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Get reindex job history.
+
+        Args:
+            token: JWT access token
+            limit: Max jobs to return
+
+        Returns:
+            List of reindex job dicts.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get(
+                "/api/admin/reindex/history",
+                params={"limit": limit},
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def start_reindex(token: str) -> dict[str, Any]:
+        """Start a new reindex operation.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Created reindex job info.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.post(
+                "/api/admin/reindex/start",
+                json={"confirm": True},
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def pause_reindex(token: str) -> dict[str, Any]:
+        """Pause a running reindex job.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Updated reindex job info.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.post(
+                "/api/admin/reindex/pause",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def resume_reindex(token: str, action: str) -> dict[str, Any]:
+        """Resume a paused reindex job.
+
+        Args:
+            token: JWT access token
+            action: Resume action - 'skip', 'retry', or 'skip_all'
+
+        Returns:
+            Updated reindex job info.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.post(
+                "/api/admin/reindex/resume",
+                json={"action": action},
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def abort_reindex(token: str) -> dict[str, Any]:
+        """Abort a running or paused reindex job.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Updated reindex job info with aborted status.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.post(
+                "/api/admin/reindex/abort",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def get_reindex_failures(token: str) -> dict[str, Any]:
+        """Get failure details for current reindex job.
+
+        Args:
+            token: JWT access token
+
+        Returns:
+            Dict with job_id, failures list, and total_failures.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.get(
+                "/api/admin/reindex/failures",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
+
+    @staticmethod
+    def retry_reindex_document(token: str, document_id: str) -> dict[str, Any]:
+        """Retry a specific failed document during reindex.
+
+        Args:
+            token: JWT access token
+            document_id: Document ID to retry
+
+        Returns:
+            Updated reindex job info.
+        """
+        with httpx.Client(base_url=BASE_URL, timeout=30.0) as client:
+            response = client.post(
+                f"/api/admin/reindex/retry/{document_id}",
+                headers=GradioAPIClient._headers(token),
+            )
+            response.raise_for_status()
+            return response.json()
