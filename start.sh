@@ -53,5 +53,5 @@ finally:
     db.close()
 PYTHON
 
-echo "=== Starting server on port 8000 ==="
-exec python -m uvicorn ai_ready_rag.main:app --host 0.0.0.0 --port 8000
+echo "=== Starting server on port 8502 ==="
+exec python -m uvicorn ai_ready_rag.main:app --host 0.0.0.0 --port 8502
