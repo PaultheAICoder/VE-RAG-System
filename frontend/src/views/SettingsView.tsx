@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Save, AlertTriangle, RefreshCw } from 'lucide-react';
-import { Button, Alert, Card, Select, Checkbox } from '../components/ui';
+import { Button, Alert, Card, Select, Checkbox, Slider } from '../components/ui';
 import { ConfirmModal } from '../components/features/admin';
 import {
   getProcessingOptions,
@@ -8,8 +8,12 @@ import {
   getModels,
   changeChatModel,
   changeEmbeddingModel,
+  getRetrievalSettings,
+  updateRetrievalSettings,
+  getLLMSettings,
+  updateLLMSettings,
 } from '../api/admin';
-import type { ProcessingOptions, ModelsResponse } from '../types';
+import type { ProcessingOptions, ModelsResponse, RetrievalSettings, LLMSettings } from '../types';
 
 const OCR_LANGUAGE_OPTIONS = [
   { value: 'eng', label: 'English' },
@@ -35,6 +39,8 @@ export function SettingsView() {
   // Data state
   const [options, setOptions] = useState<ProcessingOptions | null>(null);
   const [models, setModels] = useState<ModelsResponse | null>(null);
+  const [retrievalSettings, setRetrievalSettings] = useState<RetrievalSettings | null>(null);
+  const [llmSettings, setLlmSettings] = useState<LLMSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -43,6 +49,10 @@ export function SettingsView() {
   const [formOptions, setFormOptions] = useState<ProcessingOptions | null>(null);
   const [selectedChatModel, setSelectedChatModel] = useState('');
   const [selectedEmbeddingModel, setSelectedEmbeddingModel] = useState('');
+  const [formRetrievalSettings, setFormRetrievalSettings] = useState<RetrievalSettings | null>(
+    null
+  );
+  const [formLlmSettings, setFormLlmSettings] = useState<LLMSettings | null>(null);
   const [isDirty, setIsDirty] = useState(false);
 
   // Modal state
@@ -55,12 +65,21 @@ export function SettingsView() {
     setLoading(true);
     setError(null);
     try {
-      const [optionsData, modelsData] = await Promise.all([getProcessingOptions(), getModels()]);
+      const [optionsData, modelsData, retrievalData, llmData] = await Promise.all([
+        getProcessingOptions(),
+        getModels(),
+        getRetrievalSettings(),
+        getLLMSettings(),
+      ]);
       setOptions(optionsData);
       setFormOptions(optionsData);
       setModels(modelsData);
       setSelectedChatModel(modelsData.current_chat_model);
       setSelectedEmbeddingModel(modelsData.current_embedding_model);
+      setRetrievalSettings(retrievalData);
+      setFormRetrievalSettings(retrievalData);
+      setLlmSettings(llmData);
+      setFormLlmSettings(llmData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
@@ -88,8 +107,33 @@ export function SettingsView() {
       selectedChatModel !== models.current_chat_model ||
       selectedEmbeddingModel !== models.current_embedding_model;
 
-    setIsDirty(optionsDirty || modelsDirty);
-  }, [formOptions, options, selectedChatModel, selectedEmbeddingModel, models]);
+    const retrievalDirty =
+      formRetrievalSettings &&
+      retrievalSettings &&
+      (formRetrievalSettings.retrieval_top_k !== retrievalSettings.retrieval_top_k ||
+        formRetrievalSettings.retrieval_min_score !== retrievalSettings.retrieval_min_score ||
+        formRetrievalSettings.retrieval_enable_expansion !==
+          retrievalSettings.retrieval_enable_expansion);
+
+    const llmDirty =
+      formLlmSettings &&
+      llmSettings &&
+      (formLlmSettings.llm_temperature !== llmSettings.llm_temperature ||
+        formLlmSettings.llm_max_response_tokens !== llmSettings.llm_max_response_tokens ||
+        formLlmSettings.llm_confidence_threshold !== llmSettings.llm_confidence_threshold);
+
+    setIsDirty(optionsDirty || modelsDirty || !!retrievalDirty || !!llmDirty);
+  }, [
+    formOptions,
+    options,
+    selectedChatModel,
+    selectedEmbeddingModel,
+    models,
+    formRetrievalSettings,
+    retrievalSettings,
+    formLlmSettings,
+    llmSettings,
+  ]);
 
   // Handle form changes
   const handleOptionChange = (key: keyof ProcessingOptions, value: boolean | string) => {
@@ -144,6 +188,29 @@ export function SettingsView() {
         await changeEmbeddingModel(selectedEmbeddingModel, true);
       }
 
+      // Save retrieval settings if changed
+      if (
+        formRetrievalSettings &&
+        retrievalSettings &&
+        (formRetrievalSettings.retrieval_top_k !== retrievalSettings.retrieval_top_k ||
+          formRetrievalSettings.retrieval_min_score !== retrievalSettings.retrieval_min_score ||
+          formRetrievalSettings.retrieval_enable_expansion !==
+            retrievalSettings.retrieval_enable_expansion)
+      ) {
+        await updateRetrievalSettings(formRetrievalSettings);
+      }
+
+      // Save LLM settings if changed
+      if (
+        formLlmSettings &&
+        llmSettings &&
+        (formLlmSettings.llm_temperature !== llmSettings.llm_temperature ||
+          formLlmSettings.llm_max_response_tokens !== llmSettings.llm_max_response_tokens ||
+          formLlmSettings.llm_confidence_threshold !== llmSettings.llm_confidence_threshold)
+      ) {
+        await updateLLMSettings(formLlmSettings);
+      }
+
       setSuccess('Settings saved successfully');
       await fetchData(); // Refresh to get updated state
     } catch (err) {
@@ -160,6 +227,8 @@ export function SettingsView() {
       setSelectedChatModel(models.current_chat_model);
       setSelectedEmbeddingModel(models.current_embedding_model);
     }
+    if (retrievalSettings) setFormRetrievalSettings(retrievalSettings);
+    if (llmSettings) setFormLlmSettings(llmSettings);
     setIsDirty(false);
   };
 
@@ -171,7 +240,7 @@ export function SettingsView() {
     );
   }
 
-  if (!formOptions || !models) {
+  if (!formOptions || !models || !formRetrievalSettings || !formLlmSettings) {
     return (
       <div className="p-6">
         <Alert variant="danger">Failed to load settings. Please try again.</Alert>
@@ -325,6 +394,116 @@ export function SettingsView() {
               </p>
             </div>
           </label>
+        </div>
+      </Card>
+
+      {/* Retrieval Settings Section */}
+      <Card>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+          Retrieval Settings
+        </h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+          Control how documents are retrieved and ranked for context.
+        </p>
+        <div className="space-y-6">
+          <Slider
+            label="Results to Retrieve (top-k)"
+            description="Number of document chunks to retrieve for each query"
+            value={formRetrievalSettings.retrieval_top_k}
+            min={3}
+            max={20}
+            step={1}
+            onChange={(e) =>
+              setFormRetrievalSettings({
+                ...formRetrievalSettings,
+                retrieval_top_k: parseInt(e.target.value, 10),
+              })
+            }
+          />
+          <Slider
+            label="Minimum Similarity Score"
+            description="Filter out chunks below this relevance threshold"
+            value={formRetrievalSettings.retrieval_min_score}
+            min={0.1}
+            max={0.9}
+            step={0.05}
+            valueFormatter={(v) => v.toFixed(2)}
+            onChange={(e) =>
+              setFormRetrievalSettings({
+                ...formRetrievalSettings,
+                retrieval_min_score: parseFloat(e.target.value),
+              })
+            }
+          />
+          <Checkbox
+            label="Enable Query Expansion"
+            checked={formRetrievalSettings.retrieval_enable_expansion}
+            onChange={(e) =>
+              setFormRetrievalSettings({
+                ...formRetrievalSettings,
+                retrieval_enable_expansion: e.target.checked,
+              })
+            }
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2 ml-6">
+            Automatically rephrase queries to improve retrieval quality
+          </p>
+        </div>
+      </Card>
+
+      {/* LLM Response Settings Section */}
+      <Card>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+          LLM Response Settings
+        </h2>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+          Configure how the language model generates responses.
+        </p>
+        <div className="space-y-6">
+          <Slider
+            label="Temperature"
+            description="Higher values make output more random, lower values more deterministic"
+            value={formLlmSettings.llm_temperature}
+            min={0.0}
+            max={1.0}
+            step={0.1}
+            valueFormatter={(v) => v.toFixed(1)}
+            onChange={(e) =>
+              setFormLlmSettings({
+                ...formLlmSettings,
+                llm_temperature: parseFloat(e.target.value),
+              })
+            }
+          />
+          <Slider
+            label="Max Response Tokens"
+            description="Maximum length of generated responses"
+            value={formLlmSettings.llm_max_response_tokens}
+            min={256}
+            max={4096}
+            step={256}
+            onChange={(e) =>
+              setFormLlmSettings({
+                ...formLlmSettings,
+                llm_max_response_tokens: parseInt(e.target.value, 10),
+              })
+            }
+          />
+          <Slider
+            label="Confidence Threshold"
+            description="Below this threshold, responses will suggest consulting a human expert"
+            value={formLlmSettings.llm_confidence_threshold}
+            min={0}
+            max={100}
+            step={5}
+            valueFormatter={(v) => `${v}%`}
+            onChange={(e) =>
+              setFormLlmSettings({
+                ...formLlmSettings,
+                llm_confidence_threshold: parseInt(e.target.value, 10),
+              })
+            }
+          />
         </div>
       </Card>
 

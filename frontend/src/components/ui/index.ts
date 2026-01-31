@@ -8,3 +8,4 @@ export { Modal } from './Modal';
 export { Checkbox } from './Checkbox';
 export { Pagination } from './Pagination';
 export { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
+export { Slider } from './Slider';

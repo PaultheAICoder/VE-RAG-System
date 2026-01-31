@@ -4,6 +4,9 @@ import type {
   ModelsResponse,
   ArchitectureInfo,
   KnowledgeBaseStats,
+  RetrievalSettings,
+  LLMSettings,
+  SettingsAuditResponse,
 } from '../types';
 
 /**
@@ -111,4 +114,56 @@ export async function clearKnowledgeBase(
     confirm: true,
     delete_source_files: deleteSourceFiles,
   });
+}
+
+// =============================================================================
+// RAG Tuning Settings
+// =============================================================================
+
+/**
+ * Get current retrieval settings (system admin only).
+ */
+export async function getRetrievalSettings(): Promise<RetrievalSettings> {
+  return apiClient.get<RetrievalSettings>('/api/admin/settings/retrieval');
+}
+
+/**
+ * Update retrieval settings (system admin only).
+ */
+export async function updateRetrievalSettings(
+  settings: Partial<RetrievalSettings>
+): Promise<RetrievalSettings> {
+  return apiClient.put<RetrievalSettings>('/api/admin/settings/retrieval', settings);
+}
+
+/**
+ * Get current LLM response settings (system admin only).
+ */
+export async function getLLMSettings(): Promise<LLMSettings> {
+  return apiClient.get<LLMSettings>('/api/admin/settings/llm');
+}
+
+/**
+ * Update LLM response settings (system admin only).
+ */
+export async function updateLLMSettings(settings: Partial<LLMSettings>): Promise<LLMSettings> {
+  return apiClient.put<LLMSettings>('/api/admin/settings/llm', settings);
+}
+
+/**
+ * Get settings change audit history (system admin only).
+ */
+export async function getSettingsAudit(params?: {
+  key?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<SettingsAuditResponse> {
+  const searchParams = new URLSearchParams();
+  if (params?.key) searchParams.set('key', params.key);
+  if (params?.limit) searchParams.set('limit', params.limit.toString());
+  if (params?.offset) searchParams.set('offset', params.offset.toString());
+
+  const queryString = searchParams.toString();
+  const url = queryString ? `/api/admin/settings/audit?${queryString}` : '/api/admin/settings/audit';
+  return apiClient.get<SettingsAuditResponse>(url);
 }
