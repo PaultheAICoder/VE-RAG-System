@@ -2,6 +2,7 @@ import React from 'react';
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore } from './stores/authStore';
 import { Layout } from './components/layout';
+import { ChatView } from './views/ChatView';
 
 // Placeholder views - will be implemented in separate issues
 const PlaceholderView = ({ name }: { name: string }) => (
@@ -76,7 +77,7 @@ function App() {
             <Layout>
               <Routes>
                 <Route path="/" element={<Navigate to="/chat" replace />} />
-                <Route path="/chat" element={<PlaceholderView name="Chat" />} />
+                <Route path="/chat" element={<ChatView />} />
                 <Route path="/documents" element={<PlaceholderView name="Documents" />} />
                 <Route path="/tags" element={<PlaceholderView name="Tags" />} />
                 <Route path="/users" element={<PlaceholderView name="Users" />} />
