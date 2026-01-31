@@ -387,6 +387,13 @@ export interface ReindexJob {
   completed_at: string | null;
   created_at: string;
   settings_changed: Record<string, unknown> | null;
+  // Phase 3: Failure handling fields
+  last_error: string | null;
+  retry_count: number;
+  max_retries: number;
+  paused_at: string | null;
+  paused_reason: string | null;
+  auto_skip_failures: boolean;
 }
 
 export interface ReindexEstimate {
@@ -394,4 +401,20 @@ export interface ReindexEstimate {
   avg_processing_time_ms: number;
   estimated_total_seconds: number;
   estimated_time_str: string;
+}
+
+// Phase 3: Failure handling
+export type ResumeAction = 'skip' | 'retry' | 'skip_all';
+
+export interface ReindexFailureInfo {
+  document_id: string;
+  filename: string;
+  status: string;
+  error_message: string | null;
+}
+
+export interface ReindexFailuresResponse {
+  job_id: string;
+  failures: ReindexFailureInfo[];
+  total_failures: number;
 }

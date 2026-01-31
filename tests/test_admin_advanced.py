@@ -232,3 +232,314 @@ class TestReindexHistory:
         """GET requires admin role."""
         response = client.get("/api/admin/reindex/history", headers=user_headers)
         assert response.status_code == 403
+
+
+# =============================================================================
+# Phase 3: Reindex Failure Handling Tests
+# =============================================================================
+
+
+class TestPauseReindex:
+    """Tests for POST /api/admin/reindex/pause."""
+
+    def test_returns_404_when_no_job(self, client, admin_headers):
+        """POST returns 404 when no job to pause."""
+        response = client.post("/api/admin/reindex/pause", headers=admin_headers)
+        assert response.status_code == 404
+
+    def test_pauses_running_job(self, client, admin_headers, db):
+        """POST pauses a running job."""
+        from ai_ready_rag.db.models import ReindexJob
+
+        # Create a running job directly in DB
+        job = ReindexJob(
+            status="running",
+            total_documents=10,
+            processed_documents=5,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        response = client.post("/api/admin/reindex/pause", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "paused"
+        assert data["paused_reason"] == "user_request"
+
+    def test_requires_admin(self, client, user_headers):
+        """POST requires admin role."""
+        response = client.post("/api/admin/reindex/pause", headers=user_headers)
+        assert response.status_code == 403
+
+
+class TestResumeReindex:
+    """Tests for POST /api/admin/reindex/resume."""
+
+    def test_returns_404_when_no_job(self, client, admin_headers):
+        """POST returns 404 when no job to resume."""
+        response = client.post(
+            "/api/admin/reindex/resume",
+            headers=admin_headers,
+            json={"action": "skip"},
+        )
+        assert response.status_code == 404
+
+    def test_resumes_paused_job_with_skip(self, client, admin_headers, db):
+        """POST resumes paused job with skip action."""
+        from datetime import UTC, datetime
+
+        from ai_ready_rag.db.models import ReindexJob
+
+        # Create a paused job
+        job = ReindexJob(
+            status="paused",
+            total_documents=10,
+            processed_documents=5,
+            current_document_id="doc-123",
+            paused_at=datetime.now(UTC),
+            paused_reason="failure",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        response = client.post(
+            "/api/admin/reindex/resume",
+            headers=admin_headers,
+            json={"action": "skip"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "running"
+        assert data["paused_at"] is None
+
+    def test_resumes_paused_job_with_retry(self, client, admin_headers, db):
+        """POST resumes paused job with retry action."""
+        from datetime import UTC, datetime
+
+        from ai_ready_rag.db.models import ReindexJob
+
+        job = ReindexJob(
+            status="paused",
+            total_documents=10,
+            processed_documents=5,
+            current_document_id="doc-123",
+            paused_at=datetime.now(UTC),
+            paused_reason="failure",
+            retry_count=0,
+            max_retries=3,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        response = client.post(
+            "/api/admin/reindex/resume",
+            headers=admin_headers,
+            json={"action": "retry"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "running"
+
+    def test_resumes_paused_job_with_skip_all(self, client, admin_headers, db):
+        """POST resumes paused job with skip_all action."""
+        from datetime import UTC, datetime
+
+        from ai_ready_rag.db.models import ReindexJob
+
+        job = ReindexJob(
+            status="paused",
+            total_documents=10,
+            processed_documents=5,
+            paused_at=datetime.now(UTC),
+            paused_reason="failure",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        response = client.post(
+            "/api/admin/reindex/resume",
+            headers=admin_headers,
+            json={"action": "skip_all"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "running"
+        assert data["auto_skip_failures"] is True
+
+    def test_requires_admin(self, client, user_headers):
+        """POST requires admin role."""
+        response = client.post(
+            "/api/admin/reindex/resume",
+            headers=user_headers,
+            json={"action": "skip"},
+        )
+        assert response.status_code == 403
+
+
+class TestGetReindexFailures:
+    """Tests for GET /api/admin/reindex/failures."""
+
+    def test_returns_404_when_no_job(self, client, admin_headers):
+        """GET returns 404 when no job found."""
+        response = client.get("/api/admin/reindex/failures", headers=admin_headers)
+        assert response.status_code == 404
+
+    def test_returns_empty_failures_for_job_without_failures(self, client, admin_headers, db):
+        """GET returns empty list when job has no failures."""
+        from ai_ready_rag.db.models import ReindexJob
+
+        job = ReindexJob(
+            status="running",
+            total_documents=10,
+            processed_documents=5,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        response = client.get("/api/admin/reindex/failures", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["job_id"] == job.id
+        assert data["failures"] == []
+        assert data["total_failures"] == 0
+
+    def test_returns_failures_with_details(self, client, admin_headers, db):
+        """GET returns failure details."""
+        import json
+
+        from ai_ready_rag.db.models import Document, ReindexJob
+
+        # Create a document
+        doc = Document(
+            filename="test.pdf",
+            original_filename="test.pdf",
+            file_path="/uploads/test.pdf",
+            file_type="application/pdf",
+            file_size=1000,
+            status="ready",
+            uploaded_by="user-1",
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+
+        # Create job with failure
+        job = ReindexJob(
+            status="paused",
+            total_documents=10,
+            processed_documents=5,
+            failed_documents=1,
+            failed_document_ids=json.dumps([doc.id]),
+            current_document_id=doc.id,
+            last_error="Embedding failed",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        response = client.get("/api/admin/reindex/failures", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["failures"]) == 1
+        assert data["failures"][0]["document_id"] == doc.id
+        assert data["failures"][0]["filename"] == "test.pdf"
+        assert data["total_failures"] == 1
+
+    def test_requires_admin(self, client, user_headers):
+        """GET requires admin role."""
+        response = client.get("/api/admin/reindex/failures", headers=user_headers)
+        assert response.status_code == 403
+
+
+class TestRetryDocument:
+    """Tests for POST /api/admin/reindex/retry/{document_id}."""
+
+    def test_returns_404_when_no_job(self, client, admin_headers):
+        """POST returns 404 when no job found."""
+        response = client.post(
+            "/api/admin/reindex/retry/doc-123",
+            headers=admin_headers,
+        )
+        assert response.status_code == 404
+
+    def test_returns_400_when_doc_not_in_failed_list(self, client, admin_headers, db):
+        """POST returns 400 when document not in failed list."""
+        from ai_ready_rag.db.models import ReindexJob
+
+        job = ReindexJob(
+            status="paused",
+            total_documents=10,
+            processed_documents=5,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        response = client.post(
+            "/api/admin/reindex/retry/doc-123",
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 400
+        assert "not in failed list" in response.json()["detail"].lower()
+
+    def test_marks_document_for_retry(self, client, admin_headers, db):
+        """POST marks document for retry."""
+        import json
+
+        from ai_ready_rag.db.models import Document, ReindexJob
+
+        # Create a document
+        doc = Document(
+            filename="test.pdf",
+            original_filename="test.pdf",
+            file_path="/uploads/test.pdf",
+            file_type="application/pdf",
+            file_size=1000,
+            status="ready",
+            uploaded_by="user-1",
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+
+        # Create job with document in failed list
+        job = ReindexJob(
+            status="paused",
+            total_documents=10,
+            processed_documents=5,
+            failed_documents=1,
+            failed_document_ids=json.dumps([doc.id]),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        response = client.post(
+            f"/api/admin/reindex/retry/{doc.id}",
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["current_document_id"] == doc.id
+        assert data["failed_documents"] == 0
+
+    def test_requires_admin(self, client, user_headers):
+        """POST requires admin role."""
+        response = client.post(
+            "/api/admin/reindex/retry/doc-123",
+            headers=user_headers,
+        )
+        assert response.status_code == 403

@@ -1,18 +1,28 @@
 """Reindex Service for background knowledge base rebuilding.
 
 Orchestrates full knowledge base reindex with atomic collection swap.
+Supports pause/resume workflow for handling failures.
 """
 
 import json
 import logging
 import uuid
 from datetime import UTC, datetime
+from enum import Enum
 
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.db.models import Document, ReindexJob
 
 logger = logging.getLogger(__name__)
+
+
+class ResumeAction(str, Enum):
+    """Actions for resuming a paused reindex."""
+
+    SKIP = "skip"  # Skip current document, continue
+    RETRY = "retry"  # Retry current document
+    SKIP_ALL = "skip_all"  # Enable auto-skip for all future failures
 
 
 class ReindexService:
@@ -245,3 +255,225 @@ class ReindexService:
             List of ReindexJob ordered by created_at desc
         """
         return self.db.query(ReindexJob).order_by(ReindexJob.created_at.desc()).limit(limit).all()
+
+    # =========================================================================
+    # Phase 3: Failure Handling
+    # =========================================================================
+
+    def pause_job(self, job_id: str, reason: str = "user_request") -> ReindexJob | None:
+        """Pause a running reindex job.
+
+        Args:
+            job_id: Job ID to pause
+            reason: 'failure' or 'user_request'
+
+        Returns:
+            Updated ReindexJob or None if not found
+        """
+        job = self.get_job(job_id)
+        if not job:
+            return None
+
+        if job.status != "running":
+            logger.warning(f"Cannot pause job {job_id} in status {job.status}")
+            return job
+
+        job.status = "paused"
+        job.paused_at = datetime.now(UTC)
+        job.paused_reason = reason
+        self.db.commit()
+        self.db.refresh(job)
+
+        logger.info(f"Paused reindex job {job_id} (reason: {reason})")
+        return job
+
+    def record_failure(
+        self,
+        job_id: str,
+        document_id: str,
+        error_message: str,
+    ) -> ReindexJob | None:
+        """Record a document failure and pause the job.
+
+        Args:
+            job_id: Job ID
+            document_id: Failed document ID
+            error_message: Error description
+
+        Returns:
+            Updated ReindexJob or None if not found
+        """
+        job = self.get_job(job_id)
+        if not job:
+            return None
+
+        # Parse existing failed document IDs
+        failed_ids = []
+        if job.failed_document_ids:
+            try:
+                failed_ids = json.loads(job.failed_document_ids)
+            except json.JSONDecodeError:
+                failed_ids = []
+
+        # Add new failure
+        if document_id not in failed_ids:
+            failed_ids.append(document_id)
+
+        job.failed_document_ids = json.dumps(failed_ids)
+        job.failed_documents = len(failed_ids)
+        job.last_error = error_message
+        job.current_document_id = document_id
+        job.retry_count = (job.retry_count or 0) + 1
+
+        # Auto-skip mode: don't pause, just log and continue
+        if job.auto_skip_failures:
+            logger.warning(
+                f"Auto-skipping failed document {document_id} in job {job_id}: {error_message}"
+            )
+            self.db.commit()
+            self.db.refresh(job)
+            return job
+
+        # Pause the job
+        job.status = "paused"
+        job.paused_at = datetime.now(UTC)
+        job.paused_reason = "failure"
+
+        self.db.commit()
+        self.db.refresh(job)
+
+        logger.warning(f"Reindex job {job_id} paused due to failure: {error_message}")
+        return job
+
+    def resume_job(
+        self,
+        job_id: str,
+        action: ResumeAction,
+    ) -> ReindexJob | None:
+        """Resume a paused reindex job.
+
+        Args:
+            job_id: Job ID to resume
+            action: What to do with the failed document
+
+        Returns:
+            Updated ReindexJob or None if not found/invalid state
+        """
+        job = self.get_job(job_id)
+        if not job:
+            return None
+
+        if job.status != "paused":
+            logger.warning(f"Cannot resume job {job_id} in status {job.status}")
+            return job
+
+        # Handle the action
+        if action == ResumeAction.SKIP:
+            # Mark current document as permanently skipped, continue
+            job.retry_count = 0
+            job.status = "running"
+            job.paused_at = None
+            job.paused_reason = None
+            logger.info(f"Resuming job {job_id}: skipping document {job.current_document_id}")
+
+        elif action == ResumeAction.RETRY:
+            # Check retry limit
+            if job.retry_count >= job.max_retries:
+                logger.warning(
+                    f"Max retries ({job.max_retries}) reached for job {job_id}. "
+                    "Use SKIP to continue."
+                )
+                # Don't change state - stay paused
+                return job
+
+            job.status = "running"
+            job.paused_at = None
+            job.paused_reason = None
+            logger.info(
+                f"Resuming job {job_id}: retrying document {job.current_document_id} "
+                f"(attempt {job.retry_count + 1}/{job.max_retries})"
+            )
+
+        elif action == ResumeAction.SKIP_ALL:
+            # Enable auto-skip mode and continue
+            job.auto_skip_failures = True
+            job.retry_count = 0
+            job.status = "running"
+            job.paused_at = None
+            job.paused_reason = None
+            logger.info(f"Resuming job {job_id}: enabled auto-skip mode")
+
+        self.db.commit()
+        self.db.refresh(job)
+        return job
+
+    def get_failures(self, job_id: str) -> list[dict]:
+        """Get detailed information about failed documents.
+
+        Args:
+            job_id: Job ID
+
+        Returns:
+            List of failure details with document info
+        """
+        job = self.get_job(job_id)
+        if not job or not job.failed_document_ids:
+            return []
+
+        try:
+            failed_ids = json.loads(job.failed_document_ids)
+        except json.JSONDecodeError:
+            return []
+
+        failures = []
+        for doc_id in failed_ids:
+            doc = self.db.query(Document).filter(Document.id == doc_id).first()
+            failures.append(
+                {
+                    "document_id": doc_id,
+                    "filename": doc.original_filename if doc else "Unknown",
+                    "status": doc.status if doc else "unknown",
+                    "error_message": job.last_error if doc_id == job.current_document_id else None,
+                }
+            )
+
+        return failures
+
+    def retry_document(self, job_id: str, document_id: str) -> ReindexJob | None:
+        """Retry a specific failed document.
+
+        Args:
+            job_id: Job ID
+            document_id: Document to retry
+
+        Returns:
+            Updated ReindexJob or None if not found
+        """
+        job = self.get_job(job_id)
+        if not job:
+            return None
+
+        # Verify document is in failed list
+        failed_ids = []
+        if job.failed_document_ids:
+            try:
+                failed_ids = json.loads(job.failed_document_ids)
+            except json.JSONDecodeError:
+                pass
+
+        if document_id not in failed_ids:
+            logger.warning(f"Document {document_id} not in failed list for job {job_id}")
+            return job
+
+        # Remove from failed list for retry
+        failed_ids.remove(document_id)
+        job.failed_document_ids = json.dumps(failed_ids) if failed_ids else None
+        job.failed_documents = len(failed_ids)
+        job.current_document_id = document_id
+        job.retry_count = 0
+
+        self.db.commit()
+        self.db.refresh(job)
+
+        logger.info(f"Marked document {document_id} for retry in job {job_id}")
+        return job

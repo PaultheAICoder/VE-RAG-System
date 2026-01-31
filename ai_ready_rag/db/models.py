@@ -202,3 +202,12 @@ class ReindexJob(Base):
     settings_changed = Column(Text, nullable=True)  # JSON encoded dict of changed settings
     temp_collection_name = Column(String, nullable=True)  # Temp collection being built
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Phase 3: Failure handling fields
+    failed_document_ids = Column(Text, nullable=True)  # JSON list of failed doc IDs
+    last_error = Column(Text, nullable=True)  # Last error message
+    retry_count = Column(Integer, default=0)  # Retries for current document
+    max_retries = Column(Integer, default=3)  # Max retries before skip
+    paused_at = Column(DateTime, nullable=True)  # When job was paused
+    paused_reason = Column(String, nullable=True)  # 'failure' or 'user_request'
+    auto_skip_failures = Column(Boolean, default=False)  # Skip-all mode
