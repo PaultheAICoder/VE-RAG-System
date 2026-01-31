@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Save, AlertTriangle, RefreshCw } from 'lucide-react';
 import { Button, Alert, Card, Select, Checkbox, Slider } from '../components/ui';
-import { ConfirmModal } from '../components/features/admin';
+import { ConfirmModal, ReindexStatusCard } from '../components/features/admin';
 import {
   getProcessingOptions,
   updateProcessingOptions,
@@ -506,6 +506,9 @@ export function SettingsView() {
           />
         </div>
       </Card>
+
+      {/* Reindex Status Section */}
+      <ReindexStatusCard />
 
       {/* Action Buttons */}
       <div className="flex justify-end gap-3">
