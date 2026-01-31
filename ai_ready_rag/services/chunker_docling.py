@@ -144,8 +144,9 @@ class DoclingChunker:
             page_number = None
             section = None
             if hasattr(chunk, "meta") and chunk.meta:
-                page_number = chunk.meta.get("page_number")
-                headings = chunk.meta.get("headings", [])
+                # DocMeta is an object, not a dict - use getattr
+                page_number = getattr(chunk.meta, "page_number", None)
+                headings = getattr(chunk.meta, "headings", []) or []
                 section = headings[-1] if headings else None
 
             chunk_dict = {
