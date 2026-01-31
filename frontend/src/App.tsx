@@ -1,4 +1,5 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import React from 'react';
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore } from './stores/authStore';
 import { Layout } from './components/layout';
 
@@ -12,13 +13,24 @@ const PlaceholderView = ({ name }: { name: string }) => (
 
 // Simple login page for development
 const LoginPage = () => {
-  const { login, isLoading, error } = useAuthStore();
+  const { login, isLoading, error, isAuthenticated } = useAuthStore();
+  const navigate = useNavigate();
+
+  // Redirect if already authenticated
+  React.useEffect(() => {
+    if (isAuthenticated) {
+      navigate('/chat');
+    }
+  }, [isAuthenticated, navigate]);
 
   const handleDemoLogin = async () => {
+    console.log('Demo login clicked');
     try {
-      await login('admin@example.com', 'admin');
-    } catch {
-      // Error is already set in store
+      console.log('Calling login...');
+      await login('admin@test.com', 'npassword2002!');
+      console.log('Login successful');
+    } catch (err) {
+      console.error('Login error:', err);
     }
   };
 
@@ -44,7 +56,7 @@ const LoginPage = () => {
           {isLoading ? 'Logging in...' : 'Demo Login (Admin)'}
         </button>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-4 text-center">
-          Connect to backend at localhost:8000 for full functionality
+          Backend: localhost:8502
         </p>
       </div>
     </div>
