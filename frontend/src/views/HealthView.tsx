@@ -6,7 +6,8 @@ import { getDetailedHealth } from '../api/health';
 import { clearKnowledgeBase } from '../api/admin';
 import type { DetailedHealthResponse } from '../types';
 
-const AUTO_REFRESH_INTERVAL = 30000; // 30 seconds
+const AUTO_REFRESH_INTERVAL_NORMAL = 30000; // 30 seconds when idle
+const AUTO_REFRESH_INTERVAL_ACTIVE = 3000; // 3 seconds when processing
 
 function formatRelativeTime(lastUpdated: Date): string {
   const seconds = Math.floor((Date.now() - lastUpdated.getTime()) / 1000);
@@ -60,15 +61,24 @@ export function HealthView() {
     fetchData();
   }, [fetchData]);
 
-  // Auto-refresh
+  // Determine if processing is active (pending or processing documents)
+  const isProcessingActive =
+    (healthData?.processing_queue.pending || 0) > 0 ||
+    (healthData?.processing_queue.processing || 0) > 0;
+
+  // Auto-refresh with dynamic interval
   useEffect(() => {
-    refreshIntervalRef.current = setInterval(fetchData, AUTO_REFRESH_INTERVAL);
+    const interval = isProcessingActive
+      ? AUTO_REFRESH_INTERVAL_ACTIVE
+      : AUTO_REFRESH_INTERVAL_NORMAL;
+
+    refreshIntervalRef.current = setInterval(fetchData, interval);
     return () => {
       if (refreshIntervalRef.current) {
         clearInterval(refreshIntervalRef.current);
       }
     };
-  }, [fetchData]);
+  }, [fetchData, isProcessingActive]);
 
   // Update relative time display
   useEffect(() => {
