@@ -7,14 +7,14 @@ import time
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
-from ai_ready_rag.core.dependencies import require_system_admin
+from ai_ready_rag.core.dependencies import require_admin, require_system_admin
 from ai_ready_rag.db.database import get_db
-from ai_ready_rag.db.models import User
+from ai_ready_rag.db.models import Document, User
 from ai_ready_rag.services.document_service import DocumentService
 from ai_ready_rag.services.model_service import ModelService, OllamaUnavailableError
 from ai_ready_rag.services.settings_service import SettingsService
@@ -872,4 +872,182 @@ async def change_embedding_model(
         "Clear the knowledge base and re-upload documents, or reprocess all documents.",
         reindex_required=True,
         documents_affected=documents_affected,
+    )
+
+
+# Detailed Health Endpoint Models
+class ComponentHealth(BaseModel):
+    """Health status of a single component."""
+
+    name: str
+    status: Literal["healthy", "unhealthy", "degraded"]
+    version: str | None = None
+    details: dict | None = None
+
+
+class RAGPipelineStatus(BaseModel):
+    """RAG pipeline status information."""
+
+    embedding_model: str
+    chat_model: str
+    chunker: str
+    stages: list[str]
+    all_stages_healthy: bool
+
+
+class KnowledgeBaseSummary(BaseModel):
+    """Knowledge base summary statistics."""
+
+    total_documents: int
+    total_chunks: int
+    storage_size_mb: float | None = None
+
+
+class ProcessingQueueStatus(BaseModel):
+    """Document processing queue status."""
+
+    pending: int
+    processing: int
+    failed: int
+    ready: int
+
+
+class DetailedHealthResponse(BaseModel):
+    """Comprehensive health response for admin dashboard."""
+
+    # Overall status
+    status: Literal["healthy", "unhealthy", "degraded"]
+    version: str
+    profile: str
+
+    # Component health
+    api_server: ComponentHealth
+    ollama_llm: ComponentHealth
+    vector_db: ComponentHealth
+
+    # RAG Pipeline status
+    rag_pipeline: RAGPipelineStatus
+
+    # Knowledge base summary
+    knowledge_base: KnowledgeBaseSummary
+
+    # Processing queue
+    processing_queue: ProcessingQueueStatus
+
+    # System info
+    uptime_seconds: int
+    last_checked: datetime
+
+
+@router.get("/health/detailed", response_model=DetailedHealthResponse)
+async def get_detailed_health(
+    request: Request,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Get detailed system health for admin dashboard.
+
+    Returns comprehensive health information including component status,
+    RAG pipeline status, knowledge base statistics, and processing queue.
+
+    Admin only (system_admin or customer_admin).
+    """
+    settings = get_settings()
+
+    # Get uptime from app state
+    start_time = getattr(request.app.state, "start_time", time.time())
+    uptime_seconds = int(time.time() - start_time)
+
+    # Check component health
+    vector_service = VectorService(
+        qdrant_url=settings.qdrant_url,
+        ollama_url=settings.ollama_base_url,
+        collection_name=settings.qdrant_collection,
+        embedding_model=settings.embedding_model,
+    )
+
+    ollama_healthy = False
+    vector_healthy = False
+    total_chunks = 0
+    storage_size_mb = None
+
+    try:
+        health = await vector_service.health_check()
+        ollama_healthy = health.ollama_healthy
+        vector_healthy = health.qdrant_healthy
+    except Exception as e:
+        logger.warning(f"Health check failed: {e}")
+
+    # Get knowledge base stats
+    try:
+        stats = await vector_service.get_extended_stats()
+        total_chunks = stats.get("total_chunks", 0)
+        storage_bytes = stats.get("collection_size_bytes")
+        if storage_bytes:
+            storage_size_mb = round(storage_bytes / (1024 * 1024), 2)
+    except Exception as e:
+        logger.warning(f"Failed to get KB stats: {e}")
+
+    # Get document counts from database
+    total_documents = db.query(Document).count()
+    pending_count = db.query(Document).filter(Document.status == "pending").count()
+    processing_count = db.query(Document).filter(Document.status == "processing").count()
+    failed_count = db.query(Document).filter(Document.status == "failed").count()
+    ready_count = db.query(Document).filter(Document.status == "ready").count()
+
+    # Determine overall status
+    if ollama_healthy and vector_healthy:
+        overall_status = "healthy"
+    elif ollama_healthy or vector_healthy:
+        overall_status = "degraded"
+    else:
+        overall_status = "unhealthy"
+
+    # Build response
+    return DetailedHealthResponse(
+        status=overall_status,
+        version=settings.app_version,
+        profile=settings.env_profile,
+        api_server=ComponentHealth(
+            name="FastAPI",
+            status="healthy",
+            version="0.115.x",
+            details={"uptime_hours": round(uptime_seconds / 3600, 2)},
+        ),
+        ollama_llm=ComponentHealth(
+            name="Ollama",
+            status="healthy" if ollama_healthy else "unhealthy",
+            details={
+                "model": settings.chat_model,
+                "url": settings.ollama_base_url,
+            },
+        ),
+        vector_db=ComponentHealth(
+            name=settings.vector_backend.capitalize(),
+            status="healthy" if vector_healthy else "unhealthy",
+            details={
+                "collection": settings.qdrant_collection,
+                "chunks": total_chunks,
+            },
+        ),
+        rag_pipeline=RAGPipelineStatus(
+            embedding_model=settings.embedding_model,
+            chat_model=settings.chat_model,
+            chunker=settings.chunker_backend,
+            stages=["query", "embed", "search", "rerank", "context", "llm", "response"],
+            all_stages_healthy=ollama_healthy and vector_healthy,
+        ),
+        knowledge_base=KnowledgeBaseSummary(
+            total_documents=total_documents,
+            total_chunks=total_chunks,
+            storage_size_mb=storage_size_mb,
+        ),
+        processing_queue=ProcessingQueueStatus(
+            pending=pending_count,
+            processing=processing_count,
+            failed=failed_count,
+            ready=ready_count,
+        ),
+        uptime_seconds=uptime_seconds,
+        last_checked=datetime.now(UTC),
     )

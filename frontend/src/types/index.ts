@@ -268,3 +268,45 @@ export interface HealthResponse {
     ocr_enabled: boolean;
   };
 }
+
+export interface ComponentHealth {
+  name: string;
+  status: 'healthy' | 'unhealthy' | 'degraded';
+  version?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface RAGPipelineStatus {
+  embedding_model: string;
+  chat_model: string;
+  chunker: string;
+  stages: string[];
+  all_stages_healthy: boolean;
+}
+
+export interface KnowledgeBaseSummary {
+  total_documents: number;
+  total_chunks: number;
+  storage_size_mb?: number;
+}
+
+export interface ProcessingQueueStatus {
+  pending: number;
+  processing: number;
+  failed: number;
+  ready: number;
+}
+
+export interface DetailedHealthResponse {
+  status: 'healthy' | 'unhealthy' | 'degraded';
+  version: string;
+  profile: string;
+  api_server: ComponentHealth;
+  ollama_llm: ComponentHealth;
+  vector_db: ComponentHealth;
+  rag_pipeline: RAGPipelineStatus;
+  knowledge_base: KnowledgeBaseSummary;
+  processing_queue: ProcessingQueueStatus;
+  uptime_seconds: number;
+  last_checked: string;
+}

@@ -1,21 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, Server, Cpu, Database, HardDrive, Clock } from 'lucide-react';
+import { RefreshCw, Server, Cpu, Database, HardDrive, Clock, Activity } from 'lucide-react';
 import { Button, Alert } from '../components/ui';
 import { HealthCard, StatsCard, PipelineVisualization } from '../components/features/admin';
-import { getHealth } from '../api/health';
-import { getArchitectureInfo, getKnowledgeBaseStats } from '../api/admin';
-import type { HealthResponse, ArchitectureInfo, KnowledgeBaseStats } from '../types';
+import { getDetailedHealth } from '../api/health';
+import type { DetailedHealthResponse } from '../types';
 
 const AUTO_REFRESH_INTERVAL = 30000; // 30 seconds
-
-function formatBytes(bytes: number | null | undefined): string {
-  if (bytes == null) return 'Unknown';
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
-}
 
 function formatRelativeTime(lastUpdated: Date): string {
   const seconds = Math.floor((Date.now() - lastUpdated.getTime()) / 1000);
@@ -26,11 +16,18 @@ function formatRelativeTime(lastUpdated: Date): string {
   return `${hours}h ago`;
 }
 
+function formatUptime(seconds: number): string {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 export function HealthView() {
-  // Data state
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [architecture, setArchitecture] = useState<ArchitectureInfo | null>(null);
-  const [kbStats, setKbStats] = useState<KnowledgeBaseStats | null>(null);
+  // Data state - single endpoint provides all data
+  const [healthData, setHealthData] = useState<DetailedHealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
@@ -39,18 +36,12 @@ export function HealthView() {
   const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Fetch all health data
+  // Fetch all health data from single detailed endpoint
   const fetchData = useCallback(async () => {
     setError(null);
     try {
-      const [healthData, archData, statsData] = await Promise.all([
-        getHealth(),
-        getArchitectureInfo(),
-        getKnowledgeBaseStats(),
-      ]);
-      setHealth(healthData);
-      setArchitecture(archData);
-      setKbStats(statsData);
+      const data = await getDetailedHealth();
+      setHealthData(data);
       setLastUpdated(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load health data');
@@ -94,23 +85,26 @@ export function HealthView() {
     fetchData();
   };
 
-  // Determine component health
-  const apiHealthy = health?.status === 'healthy';
-  const ollamaHealthy = architecture?.infrastructure.ollama_status === 'healthy';
-  const vectorDbHealthy = architecture?.infrastructure.vector_db_status === 'healthy';
+  // Determine component health from detailed response
+  const apiHealthy = healthData?.api_server.status === 'healthy';
+  const ollamaHealthy = healthData?.ollama_llm.status === 'healthy';
+  const vectorDbHealthy = healthData?.vector_db.status === 'healthy';
 
-  // Build pipeline stages
-  const pipelineStages = [
+  // Build pipeline stages from rag_pipeline
+  const pipelineStages = healthData?.rag_pipeline.stages.map((stage) => ({
+    name: stage,
+    healthy: healthData.rag_pipeline.all_stages_healthy,
+  })) || [
     { name: 'Query', healthy: apiHealthy },
     { name: 'Embed', healthy: ollamaHealthy },
     { name: 'Search', healthy: vectorDbHealthy },
-    { name: 'Rerank', healthy: true }, // Assume rerank works if search works
+    { name: 'Rerank', healthy: true },
     { name: 'Context', healthy: true },
     { name: 'LLM', healthy: ollamaHealthy },
     { name: 'Response', healthy: apiHealthy },
   ];
 
-  if (loading && !health) {
+  if (loading && !healthData) {
     return (
       <div className="p-6 flex items-center justify-center h-64">
         <div className="text-gray-500">Loading health data...</div>
@@ -152,35 +146,32 @@ export function HealthView() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <HealthCard
           title="API Server"
-          status={apiHealthy ? 'healthy' : 'unhealthy'}
+          status={healthData?.api_server.status || 'unhealthy'}
           icon={<Server size={24} />}
           details={[
-            { label: 'Version', value: health?.version || 'Unknown' },
-            { label: 'Profile', value: health?.profile || 'Unknown' },
-            { label: 'Database', value: health?.database || 'Unknown' },
+            { label: 'Version', value: healthData?.version || 'Unknown' },
+            { label: 'Profile', value: healthData?.profile || 'Unknown' },
+            { label: 'Uptime', value: healthData ? formatUptime(healthData.uptime_seconds) : 'Unknown' },
           ]}
         />
         <HealthCard
           title="Ollama LLM"
-          status={ollamaHealthy ? 'healthy' : 'unhealthy'}
+          status={healthData?.ollama_llm.status || 'unhealthy'}
           icon={<Cpu size={24} />}
           details={[
-            { label: 'Model', value: architecture?.chat_model.name || 'Unknown' },
-            { label: 'URL', value: architecture?.infrastructure.ollama_url || 'Unknown' },
-            { label: 'Status', value: architecture?.infrastructure.ollama_status || 'Unknown' },
+            { label: 'Model', value: healthData?.rag_pipeline.chat_model || 'Unknown' },
+            { label: 'Version', value: healthData?.ollama_llm.version || 'Unknown' },
+            { label: 'Status', value: healthData?.ollama_llm.status || 'Unknown' },
           ]}
         />
         <HealthCard
           title="Vector DB"
-          status={vectorDbHealthy ? 'healthy' : 'unhealthy'}
+          status={healthData?.vector_db.status || 'unhealthy'}
           icon={<Database size={24} />}
           details={[
-            { label: 'Backend', value: architecture?.embeddings.vector_store || 'Unknown' },
-            { label: 'Chunks', value: kbStats?.total_chunks.toLocaleString() || '0' },
-            {
-              label: 'Model',
-              value: architecture?.embeddings.model || 'Unknown',
-            },
+            { label: 'Version', value: healthData?.vector_db.version || 'Unknown' },
+            { label: 'Chunks', value: healthData?.knowledge_base.total_chunks.toLocaleString() || '0' },
+            { label: 'Model', value: healthData?.rag_pipeline.embedding_model || 'Unknown' },
           ]}
         />
       </div>
@@ -188,13 +179,9 @@ export function HealthView() {
       {/* Pipeline Visualization */}
       <PipelineVisualization
         stages={pipelineStages}
-        embeddingModel={
-          architecture?.embeddings.model
-            ? `${architecture.embeddings.model} (${architecture.embeddings.dimensions} dim)`
-            : undefined
-        }
-        chatModel={architecture?.chat_model.name}
-        chunker={`${architecture?.document_parsing.engine || 'Unknown'} (${architecture?.profile || 'Unknown'} profile)`}
+        embeddingModel={healthData?.rag_pipeline.embedding_model}
+        chatModel={healthData?.rag_pipeline.chat_model}
+        chunker={healthData?.rag_pipeline.chunker}
       />
 
       {/* Stats Cards */}
@@ -203,67 +190,24 @@ export function HealthView() {
           title="Knowledge Base"
           icon={<HardDrive size={20} />}
           stats={[
-            { label: 'Total Documents', value: kbStats?.unique_files || 0 },
-            { label: 'Total Chunks', value: kbStats?.total_chunks.toLocaleString() || '0' },
-            { label: 'Storage Used', value: formatBytes(kbStats?.storage_size_bytes) },
-            { label: 'Collection', value: kbStats?.collection_name || 'Unknown' },
+            { label: 'Total Documents', value: healthData?.knowledge_base.total_documents || 0 },
+            { label: 'Total Chunks', value: healthData?.knowledge_base.total_chunks.toLocaleString() || '0' },
+            { label: 'Storage Used', value: healthData?.knowledge_base.storage_size_mb ? `${healthData.knowledge_base.storage_size_mb.toFixed(1)} MB` : 'Unknown' },
+            { label: 'Profile', value: healthData?.profile || 'Unknown' },
           ]}
         />
         <StatsCard
-          title="System Configuration"
-          icon={<Server size={20} />}
+          title="Processing Queue"
+          icon={<Activity size={20} />}
           stats={[
-            { label: 'Profile', value: architecture?.profile || 'Unknown' },
-            { label: 'Vector Backend', value: architecture?.embeddings.vector_store || 'Unknown' },
-            { label: 'Chunker', value: architecture?.document_parsing.engine || 'Unknown' },
-            { label: 'RAG Enabled', value: health?.rag_enabled ? 'Yes' : 'No' },
+            { label: 'Pending', value: healthData?.processing_queue.pending || 0 },
+            { label: 'Processing', value: healthData?.processing_queue.processing || 0 },
+            { label: 'Ready', value: healthData?.processing_queue.ready || 0 },
+            { label: 'Failed', value: healthData?.processing_queue.failed || 0 },
           ]}
         />
       </div>
 
-      {/* OCR Status */}
-      {architecture?.ocr_status && (
-        <div className="bg-gray-50 dark:bg-gray-800/50 rounded-xl p-4">
-          <h3 className="font-semibold text-gray-900 dark:text-white mb-3">OCR Status</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="flex items-center gap-3">
-              <span
-                className={`w-2.5 h-2.5 rounded-full ${
-                  architecture.ocr_status.tesseract.available ? 'bg-green-500' : 'bg-gray-400'
-                }`}
-              />
-              <div>
-                <span className="font-medium text-gray-700 dark:text-gray-300">Tesseract</span>
-                {architecture.ocr_status.tesseract.available ? (
-                  <span className="text-sm text-gray-500 ml-2">
-                    v{architecture.ocr_status.tesseract.version} -{' '}
-                    {architecture.ocr_status.tesseract.languages?.length || 0} languages
-                  </span>
-                ) : (
-                  <span className="text-sm text-gray-400 ml-2">Not installed</span>
-                )}
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <span
-                className={`w-2.5 h-2.5 rounded-full ${
-                  architecture.ocr_status.easyocr.available ? 'bg-green-500' : 'bg-gray-400'
-                }`}
-              />
-              <div>
-                <span className="font-medium text-gray-700 dark:text-gray-300">EasyOCR</span>
-                {architecture.ocr_status.easyocr.available ? (
-                  <span className="text-sm text-gray-500 ml-2">
-                    v{architecture.ocr_status.easyocr.version}
-                  </span>
-                ) : (
-                  <span className="text-sm text-gray-400 ml-2">Not installed</span>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
