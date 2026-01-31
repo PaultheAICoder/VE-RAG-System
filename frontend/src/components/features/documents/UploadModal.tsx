@@ -105,20 +105,11 @@ export function UploadModal({
     setIsUploading(false);
     onUploadComplete();
 
-    // Check if all files succeeded by looking at final state
-    setQueuedFiles((prev) => {
-      const allSucceeded = prev.every((f) => f.status === 'done');
-      if (allSucceeded && prev.length > 0) {
-        // Auto-close after a brief delay so user sees completion
-        setTimeout(() => {
-          setQueuedFiles([]);
-          setSelectedTagIds([]);
-          setError(null);
-          onClose();
-        }, 800);
-      }
-      return prev;
-    });
+    // Close modal immediately - document table shows processing status
+    setQueuedFiles([]);
+    setSelectedTagIds([]);
+    setError(null);
+    onClose();
   };
 
   const handleClose = () => {
