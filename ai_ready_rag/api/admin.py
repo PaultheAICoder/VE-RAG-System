@@ -1502,3 +1502,362 @@ async def get_settings_audit(
         limit=limit,
         offset=offset,
     )
+
+
+# =============================================================================
+# Advanced Settings & Reindex Endpoints
+# =============================================================================
+
+# Default values for advanced settings
+ADVANCED_DEFAULTS = {
+    "embedding_model": "nomic-embed-text",
+    "chunk_size": 200,
+    "chunk_overlap": 40,
+    "hnsw_ef_construct": 100,
+    "hnsw_m": 16,
+    "vector_backend": "qdrant",
+}
+
+
+class AdvancedSettingsResponse(BaseModel):
+    """Response containing advanced (destructive) RAG settings."""
+
+    embedding_model: str
+    chunk_size: int
+    chunk_overlap: int
+    hnsw_ef_construct: int
+    hnsw_m: int
+    vector_backend: str
+
+
+class AdvancedSettingsRequest(BaseModel):
+    """Request to update advanced settings (requires reindex)."""
+
+    embedding_model: str | None = None
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+    hnsw_ef_construct: int | None = None
+    hnsw_m: int | None = None
+    vector_backend: str | None = None
+    confirm_reindex: bool = False
+
+
+class ReindexJobResponse(BaseModel):
+    """Reindex job information."""
+
+    id: str
+    status: str
+    total_documents: int
+    processed_documents: int
+    failed_documents: int
+    progress_percent: float
+    current_document_id: str | None = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    settings_changed: dict | None = None
+
+
+class ReindexEstimate(BaseModel):
+    """Time estimate for reindex operation."""
+
+    total_documents: int
+    avg_processing_time_ms: int
+    estimated_total_seconds: int
+    estimated_time_str: str
+
+
+class StartReindexRequest(BaseModel):
+    """Request to start reindex operation."""
+
+    confirm: bool = False
+
+
+@router.get("/settings/advanced", response_model=AdvancedSettingsResponse)
+async def get_advanced_settings(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get advanced RAG settings that require reindex when changed.
+
+    These settings affect document processing and vector storage.
+    Changing them requires a full knowledge base reindex.
+
+    Admin only.
+    """
+    service = SettingsService(db)
+    settings = get_settings()
+
+    return AdvancedSettingsResponse(
+        embedding_model=service.get("embedding_model") or settings.embedding_model,
+        chunk_size=service.get("chunk_size") or ADVANCED_DEFAULTS["chunk_size"],
+        chunk_overlap=service.get("chunk_overlap") or ADVANCED_DEFAULTS["chunk_overlap"],
+        hnsw_ef_construct=service.get("hnsw_ef_construct")
+        or ADVANCED_DEFAULTS["hnsw_ef_construct"],
+        hnsw_m=service.get("hnsw_m") or ADVANCED_DEFAULTS["hnsw_m"],
+        vector_backend=service.get("vector_backend") or ADVANCED_DEFAULTS["vector_backend"],
+    )
+
+
+@router.put("/settings/advanced", response_model=AdvancedSettingsResponse)
+async def update_advanced_settings(
+    request: AdvancedSettingsRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Update advanced RAG settings.
+
+    WARNING: Changing these settings invalidates all existing vectors.
+    A full reindex is required after changing these settings.
+
+    Set confirm_reindex=true to acknowledge this.
+
+    Admin only.
+    """
+    if not request.confirm_reindex:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Changing advanced settings requires a knowledge base reindex. "
+            "Set confirm_reindex=true to acknowledge this.",
+        )
+
+    service = SettingsService(db)
+    settings = get_settings()
+
+    # Update only provided settings with audit trail
+    if request.embedding_model is not None:
+        service.set_with_audit(
+            "embedding_model",
+            request.embedding_model,
+            changed_by=current_user.id,
+            reason="Advanced settings update",
+        )
+    if request.chunk_size is not None:
+        service.set_with_audit(
+            "chunk_size",
+            request.chunk_size,
+            changed_by=current_user.id,
+            reason="Advanced settings update",
+        )
+    if request.chunk_overlap is not None:
+        service.set_with_audit(
+            "chunk_overlap",
+            request.chunk_overlap,
+            changed_by=current_user.id,
+            reason="Advanced settings update",
+        )
+    if request.hnsw_ef_construct is not None:
+        service.set_with_audit(
+            "hnsw_ef_construct",
+            request.hnsw_ef_construct,
+            changed_by=current_user.id,
+            reason="Advanced settings update",
+        )
+    if request.hnsw_m is not None:
+        service.set_with_audit(
+            "hnsw_m",
+            request.hnsw_m,
+            changed_by=current_user.id,
+            reason="Advanced settings update",
+        )
+    if request.vector_backend is not None:
+        service.set_with_audit(
+            "vector_backend",
+            request.vector_backend,
+            changed_by=current_user.id,
+            reason="Advanced settings update",
+        )
+
+    logger.warning(f"Admin {current_user.email} updated advanced settings. Reindex required.")
+
+    return AdvancedSettingsResponse(
+        embedding_model=service.get("embedding_model") or settings.embedding_model,
+        chunk_size=service.get("chunk_size") or ADVANCED_DEFAULTS["chunk_size"],
+        chunk_overlap=service.get("chunk_overlap") or ADVANCED_DEFAULTS["chunk_overlap"],
+        hnsw_ef_construct=service.get("hnsw_ef_construct")
+        or ADVANCED_DEFAULTS["hnsw_ef_construct"],
+        hnsw_m=service.get("hnsw_m") or ADVANCED_DEFAULTS["hnsw_m"],
+        vector_backend=service.get("vector_backend") or ADVANCED_DEFAULTS["vector_backend"],
+    )
+
+
+@router.get("/reindex/estimate", response_model=ReindexEstimate)
+async def get_reindex_estimate(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get time estimate for reindex operation.
+
+    Based on historical document processing times.
+
+    Admin only.
+    """
+    from ai_ready_rag.services.reindex_service import ReindexService
+
+    service = ReindexService(db)
+    total_docs = db.query(Document).filter(Document.status == "ready").count()
+    estimate = service.estimate_time(total_docs)
+
+    return ReindexEstimate(
+        total_documents=estimate["total_documents"],
+        avg_processing_time_ms=estimate["avg_processing_time_ms"],
+        estimated_total_seconds=estimate["estimated_total_seconds"],
+        estimated_time_str=estimate["estimated_time_str"],
+    )
+
+
+@router.post(
+    "/reindex/start", response_model=ReindexJobResponse, status_code=status.HTTP_202_ACCEPTED
+)
+async def start_reindex(
+    request: StartReindexRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Start a background reindex operation.
+
+    Creates a new reindex job that will rebuild the knowledge base
+    with current settings. Returns 202 Accepted immediately.
+
+    Poll GET /api/admin/reindex/status to monitor progress.
+
+    Admin only.
+    """
+    if not request.confirm:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must confirm=true to start reindex operation.",
+        )
+
+    from ai_ready_rag.services.reindex_service import ReindexService
+
+    service = ReindexService(db)
+
+    # Check for existing active job
+    active_job = service.get_active_job()
+    if active_job:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Reindex job {active_job.id} already in progress. "
+            "Abort it first or wait for completion.",
+        )
+
+    # Create new job
+    try:
+        job = service.create_job(triggered_by=current_user.id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
+
+    logger.info(f"Admin {current_user.email} started reindex job {job.id}")
+
+    # Note: Actual reindex is started via background task
+    # For now, job is created in 'pending' state
+    # A background worker would pick it up
+
+    return _job_to_response(job)
+
+
+@router.get("/reindex/status", response_model=ReindexJobResponse | None)
+async def get_reindex_status(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get current reindex job status.
+
+    Returns the active reindex job if one exists, otherwise None.
+
+    Admin only.
+    """
+    from ai_ready_rag.services.reindex_service import ReindexService
+
+    service = ReindexService(db)
+    job = service.get_active_job()
+
+    if not job:
+        return None
+
+    return _job_to_response(job)
+
+
+@router.post("/reindex/abort", response_model=ReindexJobResponse)
+async def abort_reindex(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Abort the current reindex operation.
+
+    Stops the reindex and cleans up any temporary resources.
+    The existing collection remains unchanged.
+
+    Admin only.
+    """
+    from ai_ready_rag.services.reindex_service import ReindexService
+
+    service = ReindexService(db)
+    job = service.get_active_job()
+
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active reindex job to abort.",
+        )
+
+    job = service.abort_job(job.id)
+    logger.warning(f"Admin {current_user.email} aborted reindex job {job.id}")
+
+    return _job_to_response(job)
+
+
+@router.get("/reindex/history", response_model=list[ReindexJobResponse])
+async def get_reindex_history(
+    limit: int = Query(10, ge=1, le=50, description="Maximum jobs to return"),
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get reindex job history.
+
+    Returns recent reindex jobs ordered by creation date descending.
+
+    Admin only.
+    """
+    from ai_ready_rag.services.reindex_service import ReindexService
+
+    service = ReindexService(db)
+    jobs = service.get_job_history(limit=limit)
+
+    return [_job_to_response(job) for job in jobs]
+
+
+def _job_to_response(job) -> ReindexJobResponse:
+    """Convert ReindexJob model to response."""
+    import json
+
+    progress = 0.0
+    if job.total_documents > 0:
+        progress = (job.processed_documents / job.total_documents) * 100
+
+    settings_changed = None
+    if job.settings_changed:
+        try:
+            settings_changed = json.loads(job.settings_changed)
+        except json.JSONDecodeError:
+            pass
+
+    return ReindexJobResponse(
+        id=job.id,
+        status=job.status,
+        total_documents=job.total_documents,
+        processed_documents=job.processed_documents,
+        failed_documents=job.failed_documents,
+        progress_percent=round(progress, 1),
+        current_document_id=job.current_document_id,
+        error_message=job.error_message,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        created_at=job.created_at,
+        settings_changed=settings_changed,
+    )

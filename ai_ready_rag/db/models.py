@@ -180,3 +180,25 @@ class SettingsAudit(Base):
     changed_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     changed_at = Column(DateTime, default=datetime.utcnow)
     change_reason = Column(String, nullable=True)
+
+
+class ReindexJob(Base):
+    """Tracks background knowledge base reindex operations."""
+
+    __tablename__ = "reindex_jobs"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    status = Column(
+        String, default="pending"
+    )  # pending, running, paused, completed, failed, aborted
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    total_documents = Column(Integer, default=0)
+    processed_documents = Column(Integer, default=0)
+    failed_documents = Column(Integer, default=0)
+    current_document_id = Column(String, nullable=True)
+    error_message = Column(Text, nullable=True)
+    triggered_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    settings_changed = Column(Text, nullable=True)  # JSON encoded dict of changed settings
+    temp_collection_name = Column(String, nullable=True)  # Temp collection being built
+    created_at = Column(DateTime, default=datetime.utcnow)
