@@ -13,7 +13,7 @@ import {
   listDocuments,
   bulkDeleteDocuments,
   updateDocumentTags,
-  reprocessDocument,
+  bulkReprocessDocuments,
 } from '../api/documents';
 import { listTags } from '../api/tags';
 import { useAuthStore } from '../stores/authStore';
@@ -158,15 +158,16 @@ export function DocumentsView() {
     }
   };
 
-  // Handle bulk reprocess
+  // Handle bulk reprocess - uses single API call, returns immediately
   const handleBulkReprocess = async () => {
     setActionLoading(true);
     try {
-      const promises = Array.from(selectedIds).map((docId) =>
-        reprocessDocument(docId)
-      );
-      await Promise.all(promises);
+      const result = await bulkReprocessDocuments(Array.from(selectedIds));
+      if (result.skipped > 0) {
+        setError(`Queued ${result.queued} documents, ${result.skipped} skipped (not in ready/failed status)`);
+      }
       setSelectedIds(new Set());
+      // Refresh to show documents changing to "pending" status
       fetchDocuments();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reprocess documents');
