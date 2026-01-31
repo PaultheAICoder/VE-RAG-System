@@ -7,6 +7,7 @@ import time
 from datetime import UTC, datetime
 from typing import Literal
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -970,6 +971,8 @@ async def get_detailed_health(
     vector_healthy = False
     total_chunks = 0
     storage_size_mb = None
+    vector_db_version = None
+    ollama_version = None
 
     try:
         health = await vector_service.health_check()
@@ -977,6 +980,33 @@ async def get_detailed_health(
         vector_healthy = health.qdrant_healthy
     except Exception as e:
         logger.warning(f"Health check failed: {e}")
+
+    # Get Vector DB version
+    try:
+        if settings.vector_backend == "qdrant":
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(settings.qdrant_url)
+                if resp.status_code == 200:
+                    vector_db_version = resp.json().get("version")
+        elif settings.vector_backend == "chroma":
+            # ChromaDB doesn't have a remote API for version, get from package
+            try:
+                import chromadb
+
+                vector_db_version = chromadb.__version__
+            except ImportError:
+                vector_db_version = "installed"
+    except Exception as e:
+        logger.debug(f"Failed to get vector DB version: {e}")
+
+    # Get Ollama version
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{settings.ollama_base_url}/api/version")
+            if resp.status_code == 200:
+                ollama_version = resp.json().get("version")
+    except Exception as e:
+        logger.debug(f"Failed to get Ollama version: {e}")
 
     # Get knowledge base stats
     try:
@@ -1017,6 +1047,7 @@ async def get_detailed_health(
         ollama_llm=ComponentHealth(
             name="Ollama",
             status="healthy" if ollama_healthy else "unhealthy",
+            version=ollama_version,
             details={
                 "model": settings.chat_model,
                 "url": settings.ollama_base_url,
@@ -1025,6 +1056,7 @@ async def get_detailed_health(
         vector_db=ComponentHealth(
             name=settings.vector_backend.capitalize(),
             status="healthy" if vector_healthy else "unhealthy",
+            version=vector_db_version,
             details={
                 "collection": settings.qdrant_collection,
                 "chunks": total_chunks,
