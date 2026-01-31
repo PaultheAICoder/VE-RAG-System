@@ -3,9 +3,12 @@
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from ai_ready_rag.api import admin, auth, chat, documents, health, setup, tags, users
 from ai_ready_rag.config import get_settings
@@ -104,16 +107,44 @@ if settings.enable_gradio:
         traceback.print_exc()
 
 
-@app.get("/")
-async def root():
-    """Root endpoint."""
-    return {
-        "message": f"Welcome to {settings.app_name}",
-        "version": settings.app_version,
-        "docs": "/api/docs" if settings.debug else "disabled",
-        "health": "/api/health",
-        "ui": "/app" if settings.enable_gradio else "disabled",
-    }
+# Serve React frontend static files if dist exists
+FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "dist"
+if FRONTEND_DIR.exists():
+    # Mount static assets (js, css, etc.)
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="static")
+    print(f"React frontend mounted from {FRONTEND_DIR}")
+
+    @app.get("/")
+    async def serve_frontend():
+        """Serve React frontend."""
+        return FileResponse(FRONTEND_DIR / "index.html")
+
+    @app.get("/{path:path}")
+    async def serve_spa(path: str):
+        """Catch-all for SPA client-side routing."""
+        # Don't intercept API or Gradio routes
+        if path.startswith("api/") or path.startswith("app/"):
+            return {"detail": "Not Found"}
+
+        # Serve static files if they exist
+        file_path = FRONTEND_DIR / path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+
+        # Otherwise serve index.html for SPA routing
+        return FileResponse(FRONTEND_DIR / "index.html")
+else:
+
+    @app.get("/")
+    async def root():
+        """Root endpoint."""
+        return {
+            "message": f"Welcome to {settings.app_name}",
+            "version": settings.app_version,
+            "docs": "/api/docs" if settings.debug else "disabled",
+            "health": "/api/health",
+            "ui": "/app" if settings.enable_gradio else "disabled",
+        }
 
 
 if __name__ == "__main__":

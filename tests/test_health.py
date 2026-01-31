@@ -21,9 +21,14 @@ class TestHealth:
         assert "version" in data
 
     def test_root_endpoint(self, client):
-        """Test root endpoint."""
+        """Test root endpoint returns either JSON or HTML (if frontend built)."""
         response = client.get("/")
         assert response.status_code == 200
-        data = response.json()
-        assert "message" in data
-        assert "version" in data
+        # If frontend dist exists, returns HTML; otherwise JSON
+        content_type = response.headers.get("content-type", "")
+        if "text/html" in content_type:
+            assert "<!DOCTYPE html>" in response.text or "<html" in response.text
+        else:
+            data = response.json()
+            assert "message" in data
+            assert "version" in data
