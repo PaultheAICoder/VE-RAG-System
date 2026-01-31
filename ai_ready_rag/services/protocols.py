@@ -21,7 +21,8 @@ class VectorServiceProtocol(Protocol):
         chunks: list[str],
         tags: list[str],
         uploaded_by: str,
-        metadata: dict[str, Any] | None = None,
+        chunk_metadata: list[dict[str, Any]] | None = None,
+        tenant_id: str | None = None,
     ) -> int:
         """Index document chunks to vector store.
 
@@ -31,7 +32,8 @@ class VectorServiceProtocol(Protocol):
             chunks: List of text chunks to embed and index
             tags: Access control tags
             uploaded_by: User ID who uploaded the document
-            metadata: Optional document metadata
+            chunk_metadata: Optional per-chunk metadata list
+            tenant_id: Optional tenant ID for multi-tenancy
 
         Returns:
             Number of vectors indexed

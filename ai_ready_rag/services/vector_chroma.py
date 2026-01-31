@@ -86,7 +86,8 @@ class ChromaVectorService:
         chunks: list[str],
         tags: list[str],
         uploaded_by: str,
-        metadata: dict[str, Any] | None = None,
+        chunk_metadata: list[dict] | None = None,
+        tenant_id: str | None = None,
     ) -> int:
         """Index document chunks to Chroma."""
         if not chunks:
@@ -109,8 +110,13 @@ class ChromaVectorService:
                 "tags": ",".join(tags),  # Chroma stores as string
                 "uploaded_by": uploaded_by,
             }
-            if metadata:
-                meta.update({k: str(v) for k, v in metadata.items() if v is not None})
+            if tenant_id:
+                meta["tenant_id"] = tenant_id
+            # Add per-chunk metadata if provided
+            if chunk_metadata and i < len(chunk_metadata):
+                for k, v in chunk_metadata[i].items():
+                    if v is not None:
+                        meta[k] = str(v) if not isinstance(v, str) else v
             metadatas.append(meta)
 
         # Add to collection
