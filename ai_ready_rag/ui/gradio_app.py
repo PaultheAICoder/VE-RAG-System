@@ -506,11 +506,41 @@ def create_app() -> gr.Blocks:
                                             "Cancel", size="sm", variant="secondary"
                                         )
 
-                            # Failures accordion (visible when failures > 0)
+                            # Failures modal/accordion (visible when failures > 0) (#74)
                             with gr.Accordion(
                                 "Failed Documents", open=False, visible=False
                             ) as reindex_failures_accordion:
-                                reindex_failures_list = gr.Markdown("")
+                                reindex_failures_subtitle = gr.Markdown(
+                                    "_0 documents failed during reindex_"
+                                )
+
+                                # Failures table using Dataframe (#74)
+                                reindex_failures_table = gr.Dataframe(
+                                    headers=["Filename", "Doc ID", "Status", "Error"],
+                                    datatype=["str", "str", "str", "str"],
+                                    interactive=False,
+                                    wrap=True,
+                                    height=200,
+                                )
+
+                                # Per-document retry section (#74)
+                                gr.Markdown("**Retry Failed Document**")
+                                with gr.Row():
+                                    reindex_retry_doc_id = gr.Textbox(
+                                        label="Document ID",
+                                        placeholder="Click a row or paste document ID...",
+                                        scale=3,
+                                    )
+                                    reindex_retry_doc_btn = gr.Button(
+                                        "Retry", variant="primary", size="sm", scale=1
+                                    )
+                                reindex_retry_status = gr.Markdown("")
+
+                                # Empty state when no failures
+                                reindex_failures_empty = gr.Markdown(
+                                    "✅ No failed documents. All documents processed successfully.",
+                                    visible=False,
+                                )
 
                 # Chat area
                 with gr.Column(scale=3, elem_classes=["chat-area"]):
@@ -1984,7 +2014,7 @@ def create_app() -> gr.Blocks:
         def load_reindex_status(auth: dict) -> tuple:
             """Load and display reindex job status.
 
-            Returns 16 outputs:
+            Returns 20 outputs:
             1. status_display - Status message
             2. empty_state - Visibility of empty state
             3. reindex_card - Visibility of status card
@@ -1996,14 +2026,17 @@ def create_app() -> gr.Blocks:
             9. action_row - Visibility of pause/abort buttons
             10. resume_section - Visibility of resume controls
             11. failures_accordion - Visibility of failures list
-            12. failures_list - Failures table markdown
-            13. paused_info - Paused info text (#73)
-            14. retry_btn - Retry button interactive state (#73)
-            15. retry_tooltip - Retry tooltip visibility (#73)
-            16. skip_all_confirm - Skip all confirmation visibility (#73)
+            12. failures_subtitle - Failures count text (#74)
+            13. failures_table - Dataframe rows (#74)
+            14. failures_retry_status - Retry status message (#74)
+            15. failures_empty - Empty state visibility (#74)
+            16. paused_info - Paused info text (#73)
+            17. retry_btn - Retry button interactive state (#73)
+            18. retry_tooltip - Retry tooltip visibility (#73)
+            19. skip_all_confirm - Skip all confirmation visibility (#73)
             """
             token = auth.get("token")
-            # Default return for unauthenticated state
+            # Default return for unauthenticated state (20 outputs)
             default_return = (
                 "Not authenticated.",
                 gr.update(visible=True),  # empty_state
@@ -2016,7 +2049,10 @@ def create_app() -> gr.Blocks:
                 gr.update(visible=False),  # action_row
                 gr.update(visible=False),  # resume_section
                 gr.update(visible=False),  # failures_accordion
-                "",  # failures_list
+                "_0 documents failed_",  # failures_subtitle (#74)
+                [],  # failures_table (#74)
+                "",  # failures_retry_status (#74)
+                gr.update(visible=False),  # failures_empty (#74)
                 "",  # paused_info (#73)
                 gr.update(interactive=True),  # retry_btn (#73)
                 gr.update(visible=False),  # retry_tooltip (#73)
@@ -2042,7 +2078,10 @@ def create_app() -> gr.Blocks:
                         gr.update(visible=False),
                         gr.update(visible=False),
                         gr.update(visible=False),
-                        "",
+                        "_0 documents failed_",  # failures_subtitle
+                        [],  # failures_table
+                        "",  # failures_retry_status
+                        gr.update(visible=False),  # failures_empty
                         "",  # paused_info
                         gr.update(interactive=True),  # retry_btn
                         gr.update(visible=False),  # retry_tooltip
@@ -2103,22 +2142,36 @@ def create_app() -> gr.Blocks:
                 retry_disabled = retry_count >= max_retries
                 show_retry_tooltip = retry_disabled and status == "paused"
 
-                # Load failures if any
-                failures_text = ""
+                # Load failures into Dataframe (#74)
+                failures_subtitle = f"_{failed} documents failed during reindex_"
+                failures_rows: list[list[str]] = []
+                show_failures_empty = False
+
                 if show_failures:
                     try:
                         failures_data = GradioAPIClient.get_reindex_failures(token)
                         failures = failures_data.get("failures", [])
                         if failures:
-                            failures_text = "| Document | Error |\n|----------|-------|\n"
-                            for f in failures[:10]:  # Limit to 10
-                                fname = f.get("filename", "Unknown")[:30]
-                                err = f.get("error_message", "No error message")[:50]
-                                failures_text += f"| {fname} | {err} |\n"
-                            if len(failures) > 10:
-                                failures_text += f"\n_...and {len(failures) - 10} more_"
+                            for f in failures[:20]:  # Limit to 20 rows
+                                doc_id = f.get("document_id", "")
+                                truncated_id = doc_id[:12] + "..." if len(doc_id) > 12 else doc_id
+                                error = f.get("error_message") or "Unknown error"
+                                if len(error) > 80:
+                                    error = error[:80] + "..."
+                                failures_rows.append(
+                                    [
+                                        f.get("filename", "Unknown")[:40],
+                                        truncated_id,
+                                        f.get("status", "failed"),
+                                        error,
+                                    ]
+                                )
+                            if len(failures) > 20:
+                                failures_subtitle += " _(showing first 20)_"
                     except Exception:
-                        failures_text = "Failed to load failure details."
+                        failures_subtitle = "_Failed to load failure details_"
+                else:
+                    show_failures_empty = True
 
                 return (
                     "",  # Clear status display message
@@ -2132,11 +2185,14 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=show_actions),  # action_row
                     gr.update(visible=show_resume),  # resume_section
                     gr.update(visible=show_failures),  # failures_accordion
-                    failures_text,
+                    failures_subtitle,  # failures_subtitle (#74)
+                    failures_rows,  # failures_table (#74)
+                    "",  # failures_retry_status (#74)
+                    gr.update(visible=show_failures_empty),  # failures_empty (#74)
                     paused_info_text,  # paused_info (#73)
                     gr.update(interactive=not retry_disabled),  # retry_btn (#73)
                     gr.update(visible=show_retry_tooltip),  # retry_tooltip (#73)
-                    gr.update(visible=False),  # skip_all_confirm (#73) - hidden by default
+                    gr.update(visible=False),  # skip_all_confirm (#73)
                 )
 
             except httpx.HTTPStatusError as e:
@@ -2153,7 +2209,10 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),
                     gr.update(visible=False),
                     gr.update(visible=False),
+                    "_0 documents failed_",
+                    [],
                     "",
+                    gr.update(visible=False),
                     "",
                     gr.update(interactive=True),
                     gr.update(visible=False),
@@ -2172,7 +2231,10 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),
                     gr.update(visible=False),
                     gr.update(visible=False),
+                    "_0 documents failed_",
+                    [],
                     "",
+                    gr.update(visible=False),
                     "",
                     gr.update(interactive=True),
                     gr.update(visible=False),
@@ -2180,7 +2242,7 @@ def create_app() -> gr.Blocks:
                 )
 
         def _make_error_response(message: str) -> tuple:
-            """Create error response tuple with 16 outputs."""
+            """Create error response tuple with 20 outputs."""
             return (
                 message,
                 gr.update(visible=True),  # empty_state
@@ -2193,7 +2255,10 @@ def create_app() -> gr.Blocks:
                 gr.update(visible=False),  # action_row
                 gr.update(visible=False),  # resume_section
                 gr.update(visible=False),  # failures_accordion
-                "",
+                "_0 documents failed_",  # failures_subtitle (#74)
+                [],  # failures_table (#74)
+                "",  # failures_retry_status (#74)
+                gr.update(visible=False),  # failures_empty (#74)
                 "",  # paused_info
                 gr.update(interactive=True),  # retry_btn
                 gr.update(visible=False),  # retry_tooltip
@@ -2284,7 +2349,7 @@ def create_app() -> gr.Blocks:
             outputs=[model_status, model_current],
         )
 
-        # Reindex status event handlers (#72, #73)
+        # Reindex status event handlers (#72, #73, #74)
         reindex_outputs = [
             reindex_status_display,
             reindex_empty_state,
@@ -2297,7 +2362,10 @@ def create_app() -> gr.Blocks:
             reindex_action_row,
             reindex_resume_section,
             reindex_failures_accordion,
-            reindex_failures_list,
+            reindex_failures_subtitle,  # (#74)
+            reindex_failures_table,  # (#74)
+            reindex_retry_status,  # (#74)
+            reindex_failures_empty,  # (#74)
             reindex_paused_info,  # (#73)
             reindex_retry_btn,  # (#73)
             reindex_retry_tooltip,  # (#73)
@@ -2358,6 +2426,59 @@ def create_app() -> gr.Blocks:
 
         reindex_abort_btn.click(
             fn=handle_abort_reindex,
+            inputs=[auth_state],
+            outputs=reindex_outputs,
+        )
+
+        # ========== REINDEX FAILURES MODAL EVENT HANDLERS (#74) ==========
+
+        def handle_failures_row_select(evt: gr.SelectData, table_data: list[list[str]]) -> str:
+            """Handle clicking a row to populate retry input with document ID."""
+            if table_data and evt.index[0] < len(table_data):
+                # Column 1 contains the truncated doc ID
+                return table_data[evt.index[0]][1]
+            return ""
+
+        def retry_failed_document(auth: dict, doc_id: str) -> str:
+            """Retry a specific failed document."""
+            token = auth.get("token")
+            if not token:
+                return "Not authenticated."
+
+            if not doc_id or not doc_id.strip():
+                return "Please enter or select a document ID."
+
+            # Handle truncated IDs - need full ID for API
+            doc_id = doc_id.strip()
+            if doc_id.endswith("..."):
+                return "Please enter the full document ID (truncated IDs won't work)."
+
+            try:
+                GradioAPIClient.retry_reindex_document(token, doc_id)
+                return f"✅ Document `{doc_id[:12]}...` marked for retry."
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    return "❌ Document not found in failed list."
+                elif e.response.status_code == 404:
+                    return "❌ No active reindex job."
+                return f"❌ Retry failed (HTTP {e.response.status_code})"
+            except Exception as e:
+                return f"❌ Error: {e}"
+
+        # Row selection populates the doc ID input
+        reindex_failures_table.select(
+            fn=handle_failures_row_select,
+            inputs=[reindex_failures_table],
+            outputs=[reindex_retry_doc_id],
+        )
+
+        # Retry button calls API and refreshes status
+        reindex_retry_doc_btn.click(
+            fn=retry_failed_document,
+            inputs=[auth_state, reindex_retry_doc_id],
+            outputs=[reindex_retry_status],
+        ).then(
+            fn=load_reindex_status,
             inputs=[auth_state],
             outputs=reindex_outputs,
         )
