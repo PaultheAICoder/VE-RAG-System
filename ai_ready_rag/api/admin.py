@@ -1497,6 +1497,13 @@ class ReindexJobResponse(BaseModel):
     completed_at: datetime | None = None
     created_at: datetime
     settings_changed: dict | None = None
+    # Phase 3: Failure handling fields
+    last_error: str | None = None
+    retry_count: int = 0
+    max_retries: int = 3
+    paused_at: datetime | None = None
+    paused_reason: str | None = None
+    auto_skip_failures: bool = False
 
 
 class ReindexEstimate(BaseModel):
@@ -1512,6 +1519,29 @@ class StartReindexRequest(BaseModel):
     """Request to start reindex operation."""
 
     confirm: bool = False
+
+
+class ResumeReindexRequest(BaseModel):
+    """Request to resume a paused reindex."""
+
+    action: Literal["skip", "retry", "skip_all"]
+
+
+class ReindexFailureInfo(BaseModel):
+    """Information about a failed document during reindex."""
+
+    document_id: str
+    filename: str
+    status: str
+    error_message: str | None = None
+
+
+class ReindexFailuresResponse(BaseModel):
+    """Response containing reindex failure details."""
+
+    job_id: str
+    failures: list[ReindexFailureInfo]
+    total_failures: int
 
 
 @router.get("/settings/advanced", response_model=AdvancedSettingsResponse)
@@ -1800,4 +1830,198 @@ def _job_to_response(job) -> ReindexJobResponse:
         completed_at=job.completed_at,
         created_at=job.created_at,
         settings_changed=settings_changed,
+        # Phase 3 fields
+        last_error=job.last_error,
+        retry_count=job.retry_count or 0,
+        max_retries=job.max_retries or 3,
+        paused_at=job.paused_at,
+        paused_reason=job.paused_reason,
+        auto_skip_failures=job.auto_skip_failures or False,
     )
+
+
+# =============================================================================
+# Phase 3: Reindex Failure Handling
+# =============================================================================
+
+
+@router.post("/reindex/pause", response_model=ReindexJobResponse)
+async def pause_reindex(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Pause the current reindex operation.
+
+    Pauses a running reindex job. Use resume to continue.
+
+    Admin only.
+    """
+    from ai_ready_rag.services.reindex_service import ReindexService
+
+    service = ReindexService(db)
+    job = service.get_active_job()
+
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active reindex job to pause.",
+        )
+
+    if job.status != "running":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot pause job in status '{job.status}'. Only running jobs can be paused.",
+        )
+
+    job = service.pause_job(job.id, reason="user_request")
+    logger.info(f"Admin {current_user.email} paused reindex job {job.id}")
+
+    return _job_to_response(job)
+
+
+@router.post("/reindex/resume", response_model=ReindexJobResponse)
+async def resume_reindex(
+    request: ResumeReindexRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Resume a paused reindex operation.
+
+    Actions:
+    - skip: Skip the failed document and continue
+    - retry: Retry the failed document (up to max_retries)
+    - skip_all: Enable auto-skip mode for all future failures
+
+    Admin only.
+    """
+    from ai_ready_rag.services.reindex_service import ReindexService, ResumeAction
+
+    service = ReindexService(db)
+    job = service.get_active_job()
+
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active reindex job to resume.",
+        )
+
+    if job.status != "paused":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot resume job in status '{job.status}'. Only paused jobs can be resumed.",
+        )
+
+    # Convert string action to enum
+    action = ResumeAction(request.action)
+
+    # Check retry limit before allowing retry
+    if action == ResumeAction.RETRY and job.retry_count >= job.max_retries:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Max retries ({job.max_retries}) reached. Use 'skip' to continue.",
+        )
+
+    job = service.resume_job(job.id, action)
+    logger.info(f"Admin {current_user.email} resumed reindex job {job.id} with action '{action}'")
+
+    return _job_to_response(job)
+
+
+@router.get("/reindex/failures", response_model=ReindexFailuresResponse)
+async def get_reindex_failures(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get details about failed documents in the current reindex.
+
+    Returns information about all documents that have failed during
+    the current or most recent reindex job.
+
+    Admin only.
+    """
+    from ai_ready_rag.services.reindex_service import ReindexService
+
+    service = ReindexService(db)
+
+    # Get active job or most recent completed job with failures
+    job = service.get_active_job()
+    if not job:
+        # Get most recent job
+        history = service.get_job_history(limit=1)
+        job = history[0] if history else None
+
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No reindex job found.",
+        )
+
+    failures = service.get_failures(job.id)
+
+    return ReindexFailuresResponse(
+        job_id=job.id,
+        failures=[
+            ReindexFailureInfo(
+                document_id=f["document_id"],
+                filename=f["filename"],
+                status=f["status"],
+                error_message=f.get("error_message"),
+            )
+            for f in failures
+        ],
+        total_failures=len(failures),
+    )
+
+
+@router.post("/reindex/retry/{document_id}", response_model=ReindexJobResponse)
+async def retry_reindex_document(
+    document_id: str,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Retry a specific failed document.
+
+    Removes the document from the failed list and marks it for reprocessing.
+
+    Admin only.
+    """
+    import json
+
+    from ai_ready_rag.services.reindex_service import ReindexService
+
+    service = ReindexService(db)
+    job = service.get_active_job()
+
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active reindex job.",
+        )
+
+    # Check if document is in failed list before attempting retry
+    failed_ids = []
+    if job.failed_document_ids:
+        try:
+            failed_ids = json.loads(job.failed_document_ids)
+        except json.JSONDecodeError:
+            pass
+
+    if document_id not in failed_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Document {document_id} not in failed list for this job.",
+        )
+
+    job = service.retry_document(job.id, document_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found.",
+        )
+
+    logger.info(
+        f"Admin {current_user.email} marked document {document_id} for retry in job {job.id}"
+    )
+
+    return _job_to_response(job)

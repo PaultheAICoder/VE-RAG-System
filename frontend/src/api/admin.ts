@@ -10,6 +10,8 @@ import type {
   AdvancedSettings,
   ReindexJob,
   ReindexEstimate,
+  ResumeAction,
+  ReindexFailuresResponse,
 } from '../types';
 
 /**
@@ -233,4 +235,50 @@ export async function abortReindex(): Promise<ReindexJob> {
 export async function getReindexHistory(limit?: number): Promise<ReindexJob[]> {
   const url = limit ? `/api/admin/reindex/history?limit=${limit}` : '/api/admin/reindex/history';
   return apiClient.get<ReindexJob[]>(url);
+}
+
+// =============================================================================
+// Reindex Failure Handling (Phase 3)
+// =============================================================================
+
+/**
+ * Pause a running reindex job (system admin only).
+ * Use this to manually pause a reindex operation.
+ */
+export async function pauseReindex(): Promise<ReindexJob> {
+  return apiClient.post<ReindexJob>('/api/admin/reindex/pause', {});
+}
+
+/**
+ * Resume a paused reindex job (system admin only).
+ * @param action - What to do: 'skip' (skip failed doc), 'retry' (retry failed doc), or 'skip_all' (auto-skip all failures)
+ */
+export async function resumeReindex(action: ResumeAction): Promise<ReindexJob> {
+  return apiClient.post<ReindexJob>('/api/admin/reindex/resume', { action });
+}
+
+/**
+ * Get details about failed documents in a reindex job (system admin only).
+ * @param jobId - Optional job ID. If not provided, returns failures for active job.
+ */
+export async function getReindexFailures(jobId?: string): Promise<ReindexFailuresResponse> {
+  const url = jobId
+    ? `/api/admin/reindex/failures?job_id=${jobId}`
+    : '/api/admin/reindex/failures';
+  return apiClient.get<ReindexFailuresResponse>(url);
+}
+
+/**
+ * Retry a specific failed document in a reindex job (system admin only).
+ * @param documentId - ID of the document to retry
+ * @param jobId - Optional job ID. If not provided, uses active job.
+ */
+export async function retryReindexDocument(
+  documentId: string,
+  jobId?: string
+): Promise<ReindexJob> {
+  const url = jobId
+    ? `/api/admin/reindex/retry/${documentId}?job_id=${jobId}`
+    : `/api/admin/reindex/retry/${documentId}`;
+  return apiClient.post<ReindexJob>(url, {});
 }
