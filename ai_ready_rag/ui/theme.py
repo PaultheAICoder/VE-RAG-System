@@ -223,4 +223,69 @@ custom_css = """
     font-weight: 600;
     color: #374151;
 }
+
+/* Reindex status card styles (#72) */
+.reindex-status-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.875rem;
+    font-weight: 600;
+}
+
+.status-pending { background-color: #e5e7eb; color: #374151; }
+.status-running { background-color: #dbeafe; color: #1d4ed8; }
+.status-paused { background-color: #fef3c7; color: #92400e; }
+.status-completed { background-color: #d1fae5; color: #065f46; }
+.status-failed { background-color: #fee2e2; color: #991b1b; }
+.status-aborted { background-color: #e5e7eb; color: #374151; }
+
+/* Progress bar for reindex */
+.reindex-progress-bar {
+    height: 0.75rem;
+    border-radius: 9999px;
+    background-color: #e5e7eb;
+    overflow: hidden;
+    margin: 0.5rem 0;
+}
+
+.reindex-progress-fill {
+    height: 100%;
+    border-radius: 9999px;
+    background-color: #3b82f6;
+    transition: width 0.3s ease;
+}
+
+/* Auto-skip badge */
+.auto-skip-badge {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background-color: #fef3c7;
+    color: #92400e;
+    margin-left: 0.5rem;
+}
+
+/* Failure list styling */
+.failure-item {
+    padding: 0.5rem;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.failure-item:last-child {
+    border-bottom: none;
+}
+
+.failure-filename {
+    font-weight: 600;
+    color: #374151;
+}
+
+.failure-error {
+    font-size: 0.875rem;
+    color: #ef4444;
+    margin-top: 0.25rem;
+}
 """

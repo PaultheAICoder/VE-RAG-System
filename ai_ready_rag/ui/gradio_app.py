@@ -438,6 +438,59 @@ def create_app() -> gr.Blocks:
                                 size="sm",
                             )
 
+                        # Reindex Status Section (#72)
+                        with gr.Accordion(
+                            "Reindex Status",
+                            open=False,
+                        ):
+                            reindex_refresh_btn = gr.Button("Check Status", size="sm")
+                            reindex_status_display = gr.Markdown("Click 'Check Status' to load.")
+
+                            # Empty state (shown when no job)
+                            reindex_empty_state = gr.Markdown(
+                                "No reindex job in progress.",
+                                visible=False,
+                            )
+
+                            # Status card (shown when job exists)
+                            with gr.Column(visible=False) as reindex_card:
+                                reindex_status_badge = gr.Markdown("")
+                                reindex_progress_md = gr.Markdown("")
+                                reindex_doc_counter = gr.Markdown("")
+                                reindex_current_doc = gr.Markdown("")
+                                reindex_last_updated = gr.Markdown("")
+
+                                # Action buttons for running job
+                                with gr.Row(visible=False) as reindex_action_row:
+                                    reindex_pause_btn = gr.Button(
+                                        "Pause", size="sm", variant="secondary"
+                                    )
+                                    reindex_abort_btn = gr.Button(
+                                        "Abort", size="sm", variant="stop"
+                                    )
+
+                                # Resume section (visible when paused)
+                                with gr.Column(visible=False) as reindex_resume_section:
+                                    gr.Markdown("**Job Paused** - Choose action:")
+                                    reindex_resume_action = gr.Radio(
+                                        choices=[
+                                            ("Skip failed document", "skip"),
+                                            ("Retry failed document", "retry"),
+                                            ("Skip all future failures", "skip_all"),
+                                        ],
+                                        value="skip",
+                                        label="Resume Action",
+                                    )
+                                    reindex_resume_btn = gr.Button(
+                                        "Resume", variant="primary", size="sm"
+                                    )
+
+                            # Failures accordion (visible when failures > 0)
+                            with gr.Accordion(
+                                "Failed Documents", open=False, visible=False
+                            ) as reindex_failures_accordion:
+                                reindex_failures_list = gr.Markdown("")
+
                 # Chat area
                 with gr.Column(scale=3, elem_classes=["chat-area"]):
                     chat_display = gr.Chatbot(
@@ -1883,6 +1936,227 @@ def create_app() -> gr.Blocks:
             except Exception as e:
                 return (f"Error: {e}", "**Current**: Error")
 
+        # ========== REINDEX STATUS EVENT HANDLERS (#72) ==========
+
+        def _format_reindex_status_badge(status: str) -> str:
+            """Format status as styled badge."""
+            status_labels = {
+                "pending": "⏳ Pending",
+                "running": "🔄 Running",
+                "paused": "⏸️ Paused",
+                "completed": "✅ Completed",
+                "failed": "❌ Failed",
+                "aborted": "⛔ Aborted",
+            }
+            label = status_labels.get(status, status)
+            return f'<span class="reindex-status-badge status-{status}">{label}</span>'
+
+        def _format_progress_bar(progress: float) -> str:
+            """Format progress bar as HTML."""
+            return (
+                f'<div class="reindex-progress-bar">'
+                f'<div class="reindex-progress-fill" style="width: {progress:.1f}%;"></div>'
+                f"</div>"
+                f"**Progress**: {progress:.1f}%"
+            )
+
+        def load_reindex_status(auth: dict) -> tuple:
+            """Load and display reindex job status."""
+            token = auth.get("token")
+            if not token:
+                return (
+                    "Not authenticated.",
+                    gr.update(visible=True),  # empty_state
+                    gr.update(visible=False),  # reindex_card
+                    "",  # status_badge
+                    "",  # progress_md
+                    "",  # doc_counter
+                    "",  # current_doc
+                    "",  # last_updated
+                    gr.update(visible=False),  # action_row
+                    gr.update(visible=False),  # resume_section
+                    gr.update(visible=False),  # failures_accordion
+                    "",  # failures_list
+                )
+
+            try:
+                job = GradioAPIClient.get_reindex_status(token)
+
+                if not job:
+                    return (
+                        "No active reindex job.",
+                        gr.update(visible=True),  # empty_state
+                        gr.update(visible=False),  # reindex_card
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                        "",
+                    )
+
+                status = job.get("status", "unknown")
+                progress = job.get("progress_percent", 0)
+                processed = job.get("processed_documents", 0)
+                total = job.get("total_documents", 0)
+                failed = job.get("failed_documents", 0)
+                current_doc = job.get("current_document_id")
+                auto_skip = job.get("auto_skip_failures", False)
+
+                # Format badge with auto-skip indicator
+                badge_html = _format_reindex_status_badge(status)
+                if auto_skip:
+                    badge_html += ' <span class="auto-skip-badge">Auto-skip enabled</span>'
+
+                # Progress bar
+                progress_html = _format_progress_bar(progress)
+
+                # Document counter
+                doc_counter = f"**Documents**: {processed} of {total} processed"
+                if failed > 0:
+                    doc_counter += f" ({failed} failed)"
+
+                # Current document
+                current_doc_text = ""
+                if current_doc and status == "running":
+                    current_doc_text = f"**Processing**: `{current_doc[:12]}...`"
+                elif current_doc and status == "paused":
+                    current_doc_text = f"**Paused on**: `{current_doc[:12]}...`"
+
+                # Last updated
+                last_updated = f"_Updated: {datetime.now().strftime('%H:%M:%S')}_"
+
+                # Visibility logic
+                show_actions = status == "running"
+                show_resume = status == "paused"
+                show_failures = failed > 0
+
+                # Load failures if any
+                failures_text = ""
+                if show_failures:
+                    try:
+                        failures_data = GradioAPIClient.get_reindex_failures(token)
+                        failures = failures_data.get("failures", [])
+                        if failures:
+                            failures_text = "| Document | Error |\n|----------|-------|\n"
+                            for f in failures[:10]:  # Limit to 10
+                                fname = f.get("filename", "Unknown")[:30]
+                                err = f.get("error_message", "No error message")[:50]
+                                failures_text += f"| {fname} | {err} |\n"
+                            if len(failures) > 10:
+                                failures_text += f"\n_...and {len(failures) - 10} more_"
+                    except Exception:
+                        failures_text = "Failed to load failure details."
+
+                return (
+                    "",  # Clear status display message
+                    gr.update(visible=False),  # empty_state
+                    gr.update(visible=True),  # reindex_card
+                    badge_html,
+                    progress_html,
+                    doc_counter,
+                    current_doc_text,
+                    last_updated,
+                    gr.update(visible=show_actions),  # action_row
+                    gr.update(visible=show_resume),  # resume_section
+                    gr.update(visible=show_failures),  # failures_accordion
+                    failures_text,
+                )
+
+            except httpx.HTTPStatusError as e:
+                error_info = handle_api_error(e)
+                return (
+                    error_info["message"],
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    "",
+                )
+            except Exception as e:
+                return (
+                    f"Error loading status: {e}",
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    "",
+                )
+
+        def handle_pause_reindex(auth: dict) -> tuple:
+            """Pause the running reindex job."""
+            token = auth.get("token")
+            if not token:
+                return ("Not authenticated.",) + ("",) * 10 + (gr.update(visible=False),) * 3
+
+            try:
+                GradioAPIClient.pause_reindex(token)
+                # Reload status to reflect changes
+                return load_reindex_status(auth)
+            except httpx.HTTPStatusError as e:
+                error_info = handle_api_error(e)
+                # Return current state with error message
+                result = list(load_reindex_status(auth))
+                result[0] = error_info["message"]
+                return tuple(result)
+            except Exception as e:
+                result = list(load_reindex_status(auth))
+                result[0] = f"Error: {e}"
+                return tuple(result)
+
+        def handle_resume_reindex(auth: dict, action: str) -> tuple:
+            """Resume the paused reindex job with specified action."""
+            token = auth.get("token")
+            if not token:
+                return ("Not authenticated.",) + ("",) * 10 + (gr.update(visible=False),) * 3
+
+            try:
+                GradioAPIClient.resume_reindex(token, action)
+                return load_reindex_status(auth)
+            except httpx.HTTPStatusError as e:
+                error_info = handle_api_error(e)
+                result = list(load_reindex_status(auth))
+                result[0] = error_info["message"]
+                return tuple(result)
+            except Exception as e:
+                result = list(load_reindex_status(auth))
+                result[0] = f"Error: {e}"
+                return tuple(result)
+
+        def handle_abort_reindex(auth: dict) -> tuple:
+            """Abort the reindex job."""
+            token = auth.get("token")
+            if not token:
+                return ("Not authenticated.",) + ("",) * 10 + (gr.update(visible=False),) * 3
+
+            try:
+                GradioAPIClient.abort_reindex(token)
+                return load_reindex_status(auth)
+            except httpx.HTTPStatusError as e:
+                error_info = handle_api_error(e)
+                result = list(load_reindex_status(auth))
+                result[0] = error_info["message"]
+                return tuple(result)
+            except Exception as e:
+                result = list(load_reindex_status(auth))
+                result[0] = f"Error: {e}"
+                return tuple(result)
+
         model_refresh_btn.click(
             fn=load_models,
             inputs=[auth_state],
@@ -1906,6 +2180,46 @@ def create_app() -> gr.Blocks:
             fn=apply_chat_model_change,
             inputs=[auth_state, model_dropdown],
             outputs=[model_status, model_current],
+        )
+
+        # Reindex status event handlers (#72)
+        reindex_outputs = [
+            reindex_status_display,
+            reindex_empty_state,
+            reindex_card,
+            reindex_status_badge,
+            reindex_progress_md,
+            reindex_doc_counter,
+            reindex_current_doc,
+            reindex_last_updated,
+            reindex_action_row,
+            reindex_resume_section,
+            reindex_failures_accordion,
+            reindex_failures_list,
+        ]
+
+        reindex_refresh_btn.click(
+            fn=load_reindex_status,
+            inputs=[auth_state],
+            outputs=reindex_outputs,
+        )
+
+        reindex_pause_btn.click(
+            fn=handle_pause_reindex,
+            inputs=[auth_state],
+            outputs=reindex_outputs,
+        )
+
+        reindex_resume_btn.click(
+            fn=handle_resume_reindex,
+            inputs=[auth_state, reindex_resume_action],
+            outputs=reindex_outputs,
+        )
+
+        reindex_abort_btn.click(
+            fn=handle_abort_reindex,
+            inputs=[auth_state],
+            outputs=reindex_outputs,
         )
 
     return app
