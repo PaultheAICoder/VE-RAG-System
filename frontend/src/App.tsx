@@ -4,14 +4,10 @@ import { useAuthStore } from './stores/authStore';
 import { Layout } from './components/layout';
 import { ChatView } from './views/ChatView';
 import { DocumentsView } from './views/DocumentsView';
-
-// Placeholder views - will be implemented in separate issues
-const PlaceholderView = ({ name }: { name: string }) => (
-  <div className="p-8">
-    <h1 className="text-2xl font-heading font-bold">{name} View</h1>
-    <p className="text-gray-600 dark:text-gray-400 mt-2">Coming soon...</p>
-  </div>
-);
+import { TagsView } from './views/TagsView';
+import { UsersView } from './views/UsersView';
+import { SettingsView } from './views/SettingsView';
+import { HealthView } from './views/HealthView';
 
 // Simple login page for development
 const LoginPage = () => {
@@ -80,10 +76,10 @@ function App() {
                 <Route path="/" element={<Navigate to="/chat" replace />} />
                 <Route path="/chat" element={<ChatView />} />
                 <Route path="/documents" element={<DocumentsView />} />
-                <Route path="/tags" element={<PlaceholderView name="Tags" />} />
-                <Route path="/users" element={<PlaceholderView name="Users" />} />
-                <Route path="/settings" element={<PlaceholderView name="Settings" />} />
-                <Route path="/health" element={<PlaceholderView name="Health" />} />
+                <Route path="/tags" element={<TagsView />} />
+                <Route path="/users" element={<UsersView />} />
+                <Route path="/settings" element={<SettingsView />} />
+                <Route path="/health" element={<HealthView />} />
               </Routes>
             </Layout>
           ) : (

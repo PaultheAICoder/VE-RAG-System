@@ -1,49 +1,52 @@
-import { useAuthStore } from '../stores/authStore';
+import { apiClient } from './client';
 import type { Tag } from '../types';
 
-const getAuthHeaders = (): HeadersInit => {
-  const token = useAuthStore.getState().token;
-  const headers: HeadersInit = {};
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-  return headers;
-};
+export interface TagCreate {
+  name: string;
+  display_name: string;
+  description?: string | null;
+  color?: string;
+  owner_id?: string | null;
+}
+
+export interface TagUpdate {
+  display_name?: string;
+  description?: string | null;
+  color?: string;
+  owner_id?: string | null;
+}
 
 /**
  * List all tags.
  */
 export async function listTags(): Promise<Tag[]> {
-  const response = await fetch('/api/tags', {
-    headers: getAuthHeaders(),
-  });
-
-  if (!response.ok) {
-    if (response.status === 401) {
-      useAuthStore.getState().logout();
-    }
-    const error = await response.json().catch(() => ({ detail: 'Failed to fetch tags' }));
-    throw new Error(error.detail || `HTTP ${response.status}`);
-  }
-
-  return response.json();
+  return apiClient.get<Tag[]>('/api/tags');
 }
 
 /**
  * Get a single tag by ID.
  */
 export async function getTag(id: string): Promise<Tag> {
-  const response = await fetch(`/api/tags/${id}`, {
-    headers: getAuthHeaders(),
-  });
+  return apiClient.get<Tag>(`/api/tags/${id}`);
+}
 
-  if (!response.ok) {
-    if (response.status === 401) {
-      useAuthStore.getState().logout();
-    }
-    const error = await response.json().catch(() => ({ detail: 'Failed to fetch tag' }));
-    throw new Error(error.detail || `HTTP ${response.status}`);
-  }
+/**
+ * Create a new tag (admin only).
+ */
+export async function createTag(data: TagCreate): Promise<Tag> {
+  return apiClient.post<Tag>('/api/tags', data);
+}
 
-  return response.json();
+/**
+ * Update a tag (admin only).
+ */
+export async function updateTag(id: string, data: TagUpdate): Promise<Tag> {
+  return apiClient.put<Tag>(`/api/tags/${id}`, data);
+}
+
+/**
+ * Delete a tag (admin only).
+ */
+export async function deleteTag(id: string): Promise<{ message: string }> {
+  return apiClient.delete<{ message: string }>(`/api/tags/${id}`);
 }

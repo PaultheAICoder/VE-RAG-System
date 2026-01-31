@@ -2,7 +2,7 @@ import type { ComponentPropsWithoutRef } from 'react';
 import type { LucideIcon } from 'lucide-react';
 
 interface ButtonProps extends ComponentPropsWithoutRef<'button'> {
-  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
+  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger' | 'warning';
   size?: 'sm' | 'md' | 'lg';
   icon?: LucideIcon;
 }
@@ -24,6 +24,7 @@ export function Button({
     outline: 'border-2 border-primary text-primary hover:bg-primary hover:text-white',
     ghost: 'text-primary hover:bg-primary/10',
     danger: 'bg-red-500 hover:bg-red-600 text-white',
+    warning: 'bg-amber-500 hover:bg-amber-600 text-white',
   };
 
   const sizes = {
