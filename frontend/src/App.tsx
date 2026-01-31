@@ -2,6 +2,7 @@ import React from 'react';
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore } from './stores/authStore';
 import { Layout } from './components/layout';
+import { ChatView } from './views/ChatView';
 import { DocumentsView } from './views/DocumentsView';
 
 // Placeholder views - will be implemented in separate issues
@@ -77,7 +78,7 @@ function App() {
             <Layout>
               <Routes>
                 <Route path="/" element={<Navigate to="/chat" replace />} />
-                <Route path="/chat" element={<PlaceholderView name="Chat" />} />
+                <Route path="/chat" element={<ChatView />} />
                 <Route path="/documents" element={<DocumentsView />} />
                 <Route path="/tags" element={<PlaceholderView name="Tags" />} />
                 <Route path="/users" element={<PlaceholderView name="Users" />} />

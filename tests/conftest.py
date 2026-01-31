@@ -129,6 +129,74 @@ def user_headers(user_token) -> dict:
 
 
 @pytest.fixture(scope="function")
+def customer_admin_user(db) -> User:
+    """Create a customer admin user for testing."""
+    user = User(
+        email="customer_admin@test.com",
+        display_name="Customer Admin",
+        password_hash=hash_password("CustomerAdminPassword123"),
+        role="customer_admin",
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()
+    db.refresh(user)
+    return user
+
+
+@pytest.fixture(scope="function")
+def customer_admin_token(customer_admin_user) -> str:
+    """Get JWT token for customer admin user."""
+    return create_access_token(
+        data={
+            "sub": customer_admin_user.id,
+            "email": customer_admin_user.email,
+            "role": customer_admin_user.role,
+        }
+    )
+
+
+@pytest.fixture(scope="function")
+def customer_admin_headers(customer_admin_token) -> dict:
+    """Authorization headers for customer admin."""
+    return {"Authorization": f"Bearer {customer_admin_token}"}
+
+
+@pytest.fixture(scope="function")
+def system_admin_user(db) -> User:
+    """Create a system admin user for testing (explicit system_admin role)."""
+    user = User(
+        email="system_admin@test.com",
+        display_name="System Admin",
+        password_hash=hash_password("SystemAdminPassword123"),
+        role="system_admin",
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()
+    db.refresh(user)
+    return user
+
+
+@pytest.fixture(scope="function")
+def system_admin_token(system_admin_user) -> str:
+    """Get JWT token for system admin user."""
+    return create_access_token(
+        data={
+            "sub": system_admin_user.id,
+            "email": system_admin_user.email,
+            "role": system_admin_user.role,
+        }
+    )
+
+
+@pytest.fixture(scope="function")
+def system_admin_headers(system_admin_token) -> dict:
+    """Authorization headers for system admin."""
+    return {"Authorization": f"Bearer {system_admin_token}"}
+
+
+@pytest.fixture(scope="function")
 def sample_tag(db, admin_user) -> Tag:
     """Create a sample tag."""
     tag = Tag(
