@@ -976,8 +976,21 @@ async def get_detailed_health(
 
     try:
         health = await vector_service.health_check()
-        ollama_healthy = health.ollama_healthy
-        vector_healthy = health.qdrant_healthy
+        # Handle both Qdrant (named tuple) and ChromaDB (dict) responses
+        if isinstance(health, dict):
+            # ChromaDB returns {'healthy': bool, ...}
+            vector_healthy = health.get("healthy", False)
+            # Check Ollama separately for ChromaDB
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(f"{settings.ollama_base_url}/api/tags")
+                    ollama_healthy = resp.status_code == 200
+            except Exception:
+                ollama_healthy = False
+        else:
+            # Qdrant returns named tuple with ollama_healthy, qdrant_healthy
+            ollama_healthy = health.ollama_healthy
+            vector_healthy = health.qdrant_healthy
     except Exception as e:
         logger.warning(f"Health check failed: {e}")
 
