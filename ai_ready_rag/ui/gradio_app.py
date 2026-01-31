@@ -356,10 +356,43 @@ def create_app() -> gr.Blocks:
                             with gr.Accordion("Indexed Files", open=False):
                                 kb_file_list = gr.Markdown("No files loaded.")
 
+                            # Clear button (initiates confirmation flow)
                             kb_clear_btn = gr.Button(
                                 "Clear Knowledge Base",
                                 variant="stop",
                                 size="sm",
+                            )
+
+                            # Confirmation dialog (hidden by default) (#62)
+                            with gr.Column(visible=False) as kb_clear_confirm_container:
+                                gr.Markdown(
+                                    "**WARNING**: This will permanently delete all vectors "
+                                    "from the knowledge base. This action cannot be undone."
+                                )
+                                kb_clear_input = gr.Textbox(
+                                    label="Type CLEAR to confirm",
+                                    placeholder="Type CLEAR to proceed...",
+                                )
+                                kb_delete_source_files = gr.Checkbox(
+                                    label="Also delete source documents from database",
+                                    value=False,
+                                )
+                                with gr.Row():
+                                    kb_clear_confirm_btn = gr.Button(
+                                        "Confirm Clear",
+                                        variant="stop",
+                                        size="sm",
+                                    )
+                                    kb_clear_cancel_btn = gr.Button(
+                                        "Cancel",
+                                        variant="secondary",
+                                        size="sm",
+                                    )
+
+                            # Progress indicator (hidden by default)
+                            kb_clear_progress = gr.Markdown(
+                                "Clearing knowledge base...",
+                                visible=False,
                             )
 
                         # Model Configuration Section (#14, #21)
@@ -1588,23 +1621,99 @@ def create_app() -> gr.Blocks:
             except Exception as e:
                 return (f"Error: {e}", "Error loading stats.", "Error loading files.")
 
-        def clear_kb(auth: dict) -> tuple:
-            """Clear knowledge base after confirmation."""
+        # ========== KNOWLEDGE BASE CLEAR CONFIRMATION HANDLERS (#62) ==========
+
+        def show_clear_confirmation() -> tuple:
+            """Show confirmation dialog, hide clear button."""
+            return (
+                gr.update(visible=False),  # kb_clear_btn
+                gr.update(visible=True),  # kb_clear_confirm_container
+                gr.update(value=""),  # kb_clear_input - reset
+                gr.update(value=False),  # kb_delete_source_files - reset
+            )
+
+        def hide_clear_confirmation() -> tuple:
+            """Hide confirmation dialog, show clear button."""
+            return (
+                gr.update(visible=True),  # kb_clear_btn
+                gr.update(visible=False),  # kb_clear_confirm_container
+                gr.update(value=""),  # kb_clear_input - reset
+                gr.update(value=False),  # kb_delete_source_files - reset
+            )
+
+        def confirm_clear_kb(auth: dict, confirm_text: str, delete_source_files: bool) -> tuple:
+            """Execute KB clear after confirmation."""
             token = auth.get("token")
             if not token:
-                return ("Not authenticated.", "No data.", "No files.")
+                return (
+                    "Not authenticated.",
+                    "No data.",
+                    "No files.",
+                    gr.update(visible=True),  # kb_clear_btn
+                    gr.update(visible=False),  # kb_clear_confirm_container
+                    gr.update(visible=False),  # kb_clear_progress
+                    gr.update(value=""),  # kb_clear_input
+                    gr.update(value=False),  # kb_delete_source_files
+                )
+
+            # Validate confirmation text
+            if confirm_text.strip().upper() != "CLEAR":
+                return (
+                    "Please type CLEAR to confirm.",
+                    gr.update(),  # kb_stats_display unchanged
+                    gr.update(),  # kb_file_list unchanged
+                    gr.update(visible=False),  # kb_clear_btn stays hidden
+                    gr.update(visible=True),  # kb_clear_confirm_container stays visible
+                    gr.update(visible=False),  # kb_clear_progress
+                    gr.update(),  # kb_clear_input unchanged
+                    gr.update(),  # kb_delete_source_files unchanged
+                )
 
             try:
-                result = GradioAPIClient.clear_knowledge_base(token)
+                result = GradioAPIClient.clear_knowledge_base(token, delete_source_files)
                 deleted_chunks = result.get("deleted_chunks", 0)
                 deleted_files = result.get("deleted_files", 0)
 
                 status = f"Cleared {deleted_chunks} chunks from {deleted_files} files."
-                return (status, "**Total Chunks**: 0\n**Unique Files**: 0", "*No files indexed.*")
+                if delete_source_files:
+                    status += " Source documents also deleted."
+
+                return (
+                    status,
+                    "**Total Chunks**: 0\n**Unique Files**: 0",
+                    "*No files indexed.*",
+                    gr.update(visible=True),  # kb_clear_btn
+                    gr.update(visible=False),  # kb_clear_confirm_container
+                    gr.update(visible=False),  # kb_clear_progress
+                    gr.update(value=""),  # kb_clear_input - reset
+                    gr.update(value=False),  # kb_delete_source_files - reset
+                )
             except httpx.HTTPStatusError as e:
-                return (f"Failed to clear (HTTP {e.response.status_code})", "Error.", "Error.")
+                return (
+                    f"Failed to clear (HTTP {e.response.status_code})",
+                    gr.update(),
+                    gr.update(),
+                    gr.update(visible=True),  # kb_clear_btn
+                    gr.update(visible=False),  # kb_clear_confirm_container
+                    gr.update(visible=False),  # kb_clear_progress
+                    gr.update(value=""),
+                    gr.update(value=False),
+                )
             except Exception as e:
-                return (f"Error: {e}", "Error.", "Error.")
+                return (
+                    f"Error: {e}",
+                    gr.update(),
+                    gr.update(),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                    gr.update(value=""),
+                    gr.update(value=False),
+                )
+
+        def show_clear_progress() -> gr.update:
+            """Show progress indicator during clearing."""
+            return gr.update(visible=True)
 
         kb_refresh_btn.click(
             fn=load_kb_stats,
@@ -1612,10 +1721,45 @@ def create_app() -> gr.Blocks:
             outputs=[kb_status, kb_stats_display, kb_file_list],
         )
 
+        # KB Clear button - shows confirmation dialog
         kb_clear_btn.click(
-            fn=clear_kb,
-            inputs=[auth_state],
-            outputs=[kb_status, kb_stats_display, kb_file_list],
+            fn=show_clear_confirmation,
+            outputs=[
+                kb_clear_btn,
+                kb_clear_confirm_container,
+                kb_clear_input,
+                kb_delete_source_files,
+            ],
+        )
+
+        # Cancel button - hides confirmation dialog
+        kb_clear_cancel_btn.click(
+            fn=hide_clear_confirmation,
+            outputs=[
+                kb_clear_btn,
+                kb_clear_confirm_container,
+                kb_clear_input,
+                kb_delete_source_files,
+            ],
+        )
+
+        # Confirm button - executes clear with progress indicator
+        kb_clear_confirm_btn.click(
+            fn=show_clear_progress,
+            outputs=[kb_clear_progress],
+        ).then(
+            fn=confirm_clear_kb,
+            inputs=[auth_state, kb_clear_input, kb_delete_source_files],
+            outputs=[
+                kb_status,
+                kb_stats_display,
+                kb_file_list,
+                kb_clear_btn,
+                kb_clear_confirm_container,
+                kb_clear_progress,
+                kb_clear_input,
+                kb_delete_source_files,
+            ],
         )
 
         # ========== MODEL CONFIGURATION EVENT HANDLERS (#14, #21) ==========

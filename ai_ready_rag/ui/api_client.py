@@ -487,11 +487,12 @@ class GradioAPIClient:
             return response.json()
 
     @staticmethod
-    def clear_knowledge_base(token: str) -> dict[str, Any]:
+    def clear_knowledge_base(token: str, delete_source_files: bool = False) -> dict[str, Any]:
         """Clear all documents from knowledge base.
 
         Args:
             token: JWT access token
+            delete_source_files: If True, also delete source documents from database
 
         Returns:
             Result dict with message, deleted_chunks, deleted_files.
@@ -499,7 +500,7 @@ class GradioAPIClient:
         with httpx.Client(base_url=BASE_URL, timeout=60.0) as client:
             response = client.delete(
                 "/api/admin/knowledge-base",
-                json={"confirm": True},
+                json={"confirm": True, "delete_source_files": delete_source_files},
                 headers=GradioAPIClient._headers(token),
             )
             response.raise_for_status()
