@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Plus } from 'lucide-react';
 import { Button, Pagination, Alert } from '../components/ui';
 import {
@@ -20,6 +20,7 @@ import { useAuthStore } from '../stores/authStore';
 import type { Document, Tag, DocumentStatus } from '../types';
 
 const ITEMS_PER_PAGE = 20;
+const AUTO_REFRESH_INTERVAL_ACTIVE = 3000; // 3 seconds when processing
 
 export function DocumentsView() {
   const { user } = useAuthStore();
@@ -102,10 +103,54 @@ export function DocumentsView() {
     setPage(1);
   }, [search, selectedTagId, status]);
 
-  // Clear selection when documents change
+  // Clear selection only when the set of document IDs changes (not just status updates)
+  const documentIds = documents.map((d) => d.id).join(',');
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [documents]);
+  }, [documentIds]);
+
+  // Check if any documents are processing or pending
+  const isProcessingActive = documents.some(
+    (doc) => doc.status === 'processing' || doc.status === 'pending'
+  );
+
+  // Auto-refresh when processing is active
+  const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    // Clear existing interval
+    if (refreshIntervalRef.current) {
+      clearInterval(refreshIntervalRef.current);
+      refreshIntervalRef.current = null;
+    }
+
+    // Set up auto-refresh only when processing is active
+    if (isProcessingActive) {
+      refreshIntervalRef.current = setInterval(() => {
+        // Silent refresh - don't show loading state
+        listDocuments({
+          limit: ITEMS_PER_PAGE,
+          offset: (page - 1) * ITEMS_PER_PAGE,
+          search: search || undefined,
+          tag_id: selectedTagId || undefined,
+          status: status || undefined,
+          sort_by: sortBy,
+          sort_order: sortOrder,
+        }).then((data) => {
+          setDocuments(data.documents);
+          setTotal(data.total);
+        }).catch(() => {
+          // Ignore errors during auto-refresh
+        });
+      }, AUTO_REFRESH_INTERVAL_ACTIVE);
+    }
+
+    return () => {
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+      }
+    };
+  }, [isProcessingActive, page, search, selectedTagId, status, sortBy, sortOrder]);
 
   // Handle sort
   const handleSort = (field: string) => {
@@ -164,7 +209,7 @@ export function DocumentsView() {
     try {
       const result = await bulkReprocessDocuments(Array.from(selectedIds));
       if (result.skipped > 0) {
-        setError(`Queued ${result.queued} documents, ${result.skipped} skipped (not in ready/failed status)`);
+        setError(`Queued ${result.queued} documents, ${result.skipped} skipped (already processing)`);
       }
       setSelectedIds(new Set());
       // Refresh to show documents changing to "pending" status

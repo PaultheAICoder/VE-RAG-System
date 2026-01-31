@@ -62,6 +62,8 @@ async def process_document_task(
     from ai_ready_rag.services.factory import get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingOptions, ProcessingService
 
+    print(f"[BACKGROUND TASK] Starting processing for document {document_id}", flush=True)
+
     # Acquire semaphore to limit concurrent processing
     semaphore = get_processing_semaphore()
     async with semaphore:
@@ -104,11 +106,19 @@ async def process_document_task(
             )
 
             if result.success:
+                print(
+                    f"[BACKGROUND TASK] Document {document_id} SUCCESS: {result.chunk_count} chunks",
+                    flush=True,
+                )
                 logger.info(
                     f"Document {document_id} processed successfully: "
                     f"{result.chunk_count} chunks in {result.processing_time_ms}ms"
                 )
             else:
+                print(
+                    f"[BACKGROUND TASK] Document {document_id} FAILED: {result.error_message}",
+                    flush=True,
+                )
                 logger.warning(f"Document {document_id} processing failed: {result.error_message}")
 
         except Exception as e:
@@ -600,11 +610,17 @@ async def bulk_reprocess_documents(
     Resets all valid documents to pending and queues for background processing.
     Returns immediately - processing happens in background.
     """
+    print(
+        f"[BULK REPROCESS] Received request with {len(request.document_ids)} document IDs",
+        flush=True,
+    )
+
     queued = 0
     skipped_ids = []
 
     # Get all documents in one query
     documents = db.query(Document).filter(Document.id.in_(request.document_ids)).all()
+    print(f"[BULK REPROCESS] Found {len(documents)} documents in database", flush=True)
 
     doc_map = {doc.id: doc for doc in documents}
 
@@ -613,19 +629,31 @@ async def bulk_reprocess_documents(
 
         # Skip if not found
         if not document:
+            print(f"[BULK REPROCESS] Document {doc_id} NOT FOUND", flush=True)
             skipped_ids.append(doc_id)
             continue
 
-        # Skip if not in valid status
-        if document.status not in ("ready", "failed"):
+        # Skip only if currently processing (to avoid double-processing)
+        if document.status == "processing":
+            print(
+                f"[BULK REPROCESS] Document {doc_id} is currently processing - SKIPPED", flush=True
+            )
             skipped_ids.append(doc_id)
             continue
 
-        # Track if we need to delete existing vectors
-        delete_existing = document.chunk_count and document.chunk_count > 0
+        print(
+            f"[BULK REPROCESS] Document {doc_id} status={document.status} -> processing", flush=True
+        )
+
+        # Track if we need to delete existing vectors (only for ready/failed with chunks)
+        delete_existing = (
+            document.status in ("ready", "failed")
+            and document.chunk_count
+            and document.chunk_count > 0
+        )
 
         # Reset document state
-        document.status = "pending"
+        document.status = "processing"
         document.chunk_count = None
         document.processed_at = None
         document.error_message = None
@@ -636,6 +664,10 @@ async def bulk_reprocess_documents(
         queued += 1
 
     db.commit()
+    print(
+        f"[BULK REPROCESS] COMMITTED: Queued {queued} documents, skipped {len(skipped_ids)}",
+        flush=True,
+    )
     logger.info(f"Bulk reprocess: queued {queued} documents, skipped {len(skipped_ids)}")
 
     return BulkReprocessResponse(
