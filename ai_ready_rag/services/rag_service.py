@@ -441,8 +441,53 @@ class RAGService:
 
     @property
     def rag_max_response_tokens(self) -> int:
-        """Get max response tokens from database."""
-        return get_rag_setting("llm_max_response_tokens", self.settings.rag_max_response_tokens)
+        """Get max response tokens from database, capped to model limit."""
+        requested = get_rag_setting(
+            "llm_max_response_tokens", self.settings.rag_max_response_tokens
+        )
+        return self._get_effective_max_tokens(requested)
+
+    def _get_effective_max_tokens(self, requested: int) -> int:
+        """Cap requested tokens to current model's limit.
+
+        Args:
+            requested: User-requested max tokens
+
+        Returns:
+            Effective max tokens (capped to model limit if necessary)
+        """
+        model = self._get_current_chat_model()
+        model_limit = MODEL_LIMITS.get(model, {}).get("max_response")
+
+        # Fallback for unknown models: use a safe default
+        if model_limit is None:
+            model_limit = 2048
+            logger.debug(f"Unknown model '{model}', using default limit {model_limit}")
+
+        if requested > model_limit:
+            logger.warning(
+                f"Requested {requested} tokens exceeds {model} limit ({model_limit}). "
+                f"Capping to {model_limit}."
+            )
+            return model_limit
+        return requested
+
+    def _get_current_chat_model(self) -> str:
+        """Get current chat model from database settings or default.
+
+        Returns:
+            Current chat model name
+        """
+        from ai_ready_rag.db.database import SessionLocal
+        from ai_ready_rag.services.settings_service import SettingsService
+
+        db = SessionLocal()
+        try:
+            service = SettingsService(db)
+            model = service.get("chat_model")
+            return model if model else self.default_model
+        finally:
+            db.close()
 
     @property
     def retrieval_top_k(self) -> int:

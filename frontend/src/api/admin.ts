@@ -7,6 +7,7 @@ import type {
   RetrievalSettings,
   LLMSettings,
   SettingsAuditResponse,
+  ModelLimitsResponse,
 } from '../types';
 
 /**
@@ -77,6 +78,14 @@ export async function changeEmbeddingModel(
     model_name: modelName,
     confirm_reindex: confirmReindex,
   });
+}
+
+/**
+ * Get model-specific limits for settings validation (system admin only).
+ * Returns current model limits and all known model limits.
+ */
+export async function getModelLimits(): Promise<ModelLimitsResponse> {
+  return apiClient.get<ModelLimitsResponse>('/api/admin/model-limits');
 }
 
 /**

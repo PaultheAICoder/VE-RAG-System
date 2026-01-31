@@ -340,3 +340,17 @@ export interface SettingsAuditResponse {
   limit: number;
   offset: number;
 }
+
+// Model Limits (for settings validation)
+export interface ModelLimits {
+  context_window: number;
+  max_response: number;
+  temperature_min: number;
+  temperature_max: number;
+}
+
+export interface ModelLimitsResponse {
+  current_model: string;
+  limits: ModelLimits;
+  all_models: Record<string, ModelLimits>;
+}
