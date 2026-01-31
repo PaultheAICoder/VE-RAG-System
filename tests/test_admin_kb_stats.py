@@ -8,8 +8,8 @@ from fastapi import status
 class TestKnowledgeBaseStats:
     """Tests for GET /api/admin/knowledge-base/stats endpoint."""
 
-    @patch("ai_ready_rag.api.admin.VectorService")
-    def test_stats_returns_data(self, mock_vector_class, client, admin_headers):
+    @patch("ai_ready_rag.api.admin.get_vector_service")
+    def test_stats_returns_data(self, mock_get_vs, client, admin_headers):
         """Test that endpoint returns knowledge base statistics."""
         # Mock VectorService
         mock_instance = AsyncMock()
@@ -38,7 +38,7 @@ class TestKnowledgeBaseStats:
                 ],
             }
         )
-        mock_vector_class.return_value = mock_instance
+        mock_get_vs.return_value = mock_instance
 
         response = client.get("/api/admin/knowledge-base/stats", headers=admin_headers)
 
@@ -65,8 +65,8 @@ class TestKnowledgeBaseStats:
         response = client.get("/api/admin/knowledge-base/stats")
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
-    @patch("ai_ready_rag.api.admin.VectorService")
-    def test_stats_empty_collection(self, mock_vector_class, client, admin_headers):
+    @patch("ai_ready_rag.api.admin.get_vector_service")
+    def test_stats_empty_collection(self, mock_get_vs, client, admin_headers):
         """Test stats endpoint with empty collection."""
         mock_instance = AsyncMock()
         mock_instance.get_extended_stats = AsyncMock(
@@ -78,7 +78,7 @@ class TestKnowledgeBaseStats:
                 "files": [],
             }
         )
-        mock_vector_class.return_value = mock_instance
+        mock_get_vs.return_value = mock_instance
 
         response = client.get("/api/admin/knowledge-base/stats", headers=admin_headers)
 
@@ -92,8 +92,8 @@ class TestKnowledgeBaseStats:
 class TestClearKnowledgeBase:
     """Tests for DELETE /api/admin/knowledge-base endpoint."""
 
-    @patch("ai_ready_rag.api.admin.VectorService")
-    def test_clear_success(self, mock_vector_class, client, admin_headers):
+    @patch("ai_ready_rag.api.admin.get_vector_service")
+    def test_clear_success(self, mock_get_vs, client, admin_headers):
         """Test successful knowledge base clearing with confirmation."""
         mock_instance = AsyncMock()
         mock_instance.get_extended_stats = AsyncMock(
@@ -106,7 +106,7 @@ class TestClearKnowledgeBase:
             }
         )
         mock_instance.clear_collection = AsyncMock(return_value=True)
-        mock_vector_class.return_value = mock_instance
+        mock_get_vs.return_value = mock_instance
 
         response = client.request(
             "DELETE",
@@ -155,10 +155,8 @@ class TestClearKnowledgeBase:
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     @patch("ai_ready_rag.api.admin.DocumentService")
-    @patch("ai_ready_rag.api.admin.VectorService")
-    def test_clear_with_source_files(
-        self, mock_vector_class, mock_doc_class, client, admin_headers
-    ):
+    @patch("ai_ready_rag.api.admin.get_vector_service")
+    def test_clear_with_source_files(self, mock_get_vs, mock_doc_class, client, admin_headers):
         """Test clearing with delete_source_files option."""
         # Mock VectorService
         mock_vector_instance = AsyncMock()
@@ -172,7 +170,7 @@ class TestClearKnowledgeBase:
             }
         )
         mock_vector_instance.clear_collection = AsyncMock(return_value=True)
-        mock_vector_class.return_value = mock_vector_instance
+        mock_get_vs.return_value = mock_vector_instance
 
         # Mock DocumentService
         mock_doc_instance = mock_doc_class.return_value
@@ -190,8 +188,8 @@ class TestClearKnowledgeBase:
         assert data["success"] is True
         assert data["deleted_files"] == 2
 
-    @patch("ai_ready_rag.api.admin.VectorService")
-    def test_clear_failure(self, mock_vector_class, client, admin_headers):
+    @patch("ai_ready_rag.api.admin.get_vector_service")
+    def test_clear_failure(self, mock_get_vs, client, admin_headers):
         """Test handling of clear operation failure."""
         mock_instance = AsyncMock()
         mock_instance.get_extended_stats = AsyncMock(
@@ -204,7 +202,7 @@ class TestClearKnowledgeBase:
             }
         )
         mock_instance.clear_collection = AsyncMock(return_value=False)
-        mock_vector_class.return_value = mock_instance
+        mock_get_vs.return_value = mock_instance
 
         response = client.request(
             "DELETE",

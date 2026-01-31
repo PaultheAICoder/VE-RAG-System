@@ -17,9 +17,9 @@ from ai_ready_rag.core.dependencies import require_admin, require_system_admin
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import Document, User
 from ai_ready_rag.services.document_service import DocumentService
+from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.services.model_service import ModelService, OllamaUnavailableError
 from ai_ready_rag.services.settings_service import SettingsService
-from ai_ready_rag.services.vector_service import VectorService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -253,12 +253,8 @@ async def get_knowledge_base_stats(
     Admin only.
     """
     settings = get_settings()
-    vector_service = VectorService(
-        qdrant_url=settings.qdrant_url,
-        ollama_url=settings.ollama_base_url,
-        collection_name=settings.qdrant_collection,
-        embedding_model=settings.embedding_model,
-    )
+    vector_service = get_vector_service(settings)
+    await vector_service.initialize()
 
     try:
         stats = await vector_service.get_extended_stats()
@@ -311,12 +307,8 @@ async def clear_knowledge_base(
         )
 
     settings = get_settings()
-    vector_service = VectorService(
-        qdrant_url=settings.qdrant_url,
-        ollama_url=settings.ollama_base_url,
-        collection_name=settings.qdrant_collection,
-        embedding_model=settings.embedding_model,
-    )
+    vector_service = get_vector_service(settings)
+    await vector_service.initialize()
 
     # Get stats before clearing to report deleted counts
     try:
@@ -529,17 +521,25 @@ async def get_architecture_info(
     settings = get_settings()
 
     # Check infrastructure health
-    vector_service = VectorService(
-        qdrant_url=settings.qdrant_url,
-        ollama_url=settings.ollama_base_url,
-        collection_name=settings.qdrant_collection,
-        embedding_model=settings.embedding_model,
-    )
+    vector_service = get_vector_service(settings)
+    await vector_service.initialize()
 
     try:
         health = await vector_service.health_check()
-        ollama_status = "healthy" if health.ollama_healthy else "unhealthy"
-        vector_db_status = "healthy" if health.qdrant_healthy else "unhealthy"
+        # Handle both Qdrant (named tuple) and ChromaDB (dict) responses
+        if isinstance(health, dict):
+            vector_db_status = "healthy" if health.get("healthy", False) else "unhealthy"
+            # Check Ollama separately for ChromaDB
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(f"{settings.ollama_base_url}/api/tags")
+                    ollama_status = "healthy" if resp.status_code == 200 else "unhealthy"
+            except Exception:
+                ollama_status = "unhealthy"
+        else:
+            # Qdrant returns named tuple
+            ollama_status = "healthy" if health.ollama_healthy else "unhealthy"
+            vector_db_status = "healthy" if health.qdrant_healthy else "unhealthy"
     except Exception as e:
         logger.warning(f"Health check failed: {e}")
         ollama_status = "unhealthy"
@@ -960,12 +960,8 @@ async def get_detailed_health(
     uptime_seconds = int(time.time() - start_time)
 
     # Check component health
-    vector_service = VectorService(
-        qdrant_url=settings.qdrant_url,
-        ollama_url=settings.ollama_base_url,
-        collection_name=settings.qdrant_collection,
-        embedding_model=settings.embedding_model,
-    )
+    vector_service = get_vector_service(settings)
+    await vector_service.initialize()
 
     ollama_healthy = False
     vector_healthy = False

@@ -19,19 +19,26 @@ class TestArchitectureInfo:
     def test_architecture_returns_structure(self, client, admin_headers):
         """Admin can get architecture info with correct structure."""
         # Mock health check to avoid actual service calls
-        with patch("ai_ready_rag.api.admin.VectorService") as mock_vs_class:
-            mock_vs = mock_vs_class.return_value
-            mock_health = AsyncMock()
-            mock_health.ollama_healthy = True
-            mock_health.qdrant_healthy = True
-            mock_vs.health_check = AsyncMock(return_value=mock_health)
+        with patch("ai_ready_rag.api.admin.get_vector_service") as mock_get_vs:
+            mock_vs = AsyncMock()
+            # Return a dict for ChromaDB-style response
+            mock_vs.health_check = AsyncMock(return_value={"healthy": True})
+            mock_get_vs.return_value = mock_vs
 
             # Clear cache to force fresh response
             import ai_ready_rag.api.admin as admin_module
 
             admin_module._architecture_cache = {}
 
-            response = client.get("/api/admin/architecture", headers=admin_headers)
+            # Also mock the Ollama health check
+            with patch("ai_ready_rag.api.admin.httpx.AsyncClient") as mock_client:
+                mock_response = AsyncMock()
+                mock_response.status_code = 200
+                mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                    return_value=mock_response
+                )
+
+                response = client.get("/api/admin/architecture", headers=admin_headers)
 
         assert response.status_code == 200
 
@@ -49,18 +56,23 @@ class TestArchitectureInfo:
 
         settings = get_settings()
 
-        with patch("ai_ready_rag.api.admin.VectorService") as mock_vs_class:
-            mock_vs = mock_vs_class.return_value
-            mock_health = AsyncMock()
-            mock_health.ollama_healthy = True
-            mock_health.qdrant_healthy = True
-            mock_vs.health_check = AsyncMock(return_value=mock_health)
+        with patch("ai_ready_rag.api.admin.get_vector_service") as mock_get_vs:
+            mock_vs = AsyncMock()
+            mock_vs.health_check = AsyncMock(return_value={"healthy": True})
+            mock_get_vs.return_value = mock_vs
 
             import ai_ready_rag.api.admin as admin_module
 
             admin_module._architecture_cache = {}
 
-            response = client.get("/api/admin/architecture", headers=admin_headers)
+            with patch("ai_ready_rag.api.admin.httpx.AsyncClient") as mock_client:
+                mock_response = AsyncMock()
+                mock_response.status_code = 200
+                mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                    return_value=mock_response
+                )
+
+                response = client.get("/api/admin/architecture", headers=admin_headers)
 
         data = response.json()
 
@@ -75,18 +87,23 @@ class TestArchitectureInfo:
 
     def test_architecture_embeddings(self, client, admin_headers):
         """Embeddings section has required fields."""
-        with patch("ai_ready_rag.api.admin.VectorService") as mock_vs_class:
-            mock_vs = mock_vs_class.return_value
-            mock_health = AsyncMock()
-            mock_health.ollama_healthy = True
-            mock_health.qdrant_healthy = True
-            mock_vs.health_check = AsyncMock(return_value=mock_health)
+        with patch("ai_ready_rag.api.admin.get_vector_service") as mock_get_vs:
+            mock_vs = AsyncMock()
+            mock_vs.health_check = AsyncMock(return_value={"healthy": True})
+            mock_get_vs.return_value = mock_vs
 
             import ai_ready_rag.api.admin as admin_module
 
             admin_module._architecture_cache = {}
 
-            response = client.get("/api/admin/architecture", headers=admin_headers)
+            with patch("ai_ready_rag.api.admin.httpx.AsyncClient") as mock_client:
+                mock_response = AsyncMock()
+                mock_response.status_code = 200
+                mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                    return_value=mock_response
+                )
+
+                response = client.get("/api/admin/architecture", headers=admin_headers)
 
         data = response.json()
 
@@ -98,18 +115,23 @@ class TestArchitectureInfo:
 
     def test_architecture_chat_model(self, client, admin_headers):
         """Chat model section has required fields."""
-        with patch("ai_ready_rag.api.admin.VectorService") as mock_vs_class:
-            mock_vs = mock_vs_class.return_value
-            mock_health = AsyncMock()
-            mock_health.ollama_healthy = True
-            mock_health.qdrant_healthy = True
-            mock_vs.health_check = AsyncMock(return_value=mock_health)
+        with patch("ai_ready_rag.api.admin.get_vector_service") as mock_get_vs:
+            mock_vs = AsyncMock()
+            mock_vs.health_check = AsyncMock(return_value={"healthy": True})
+            mock_get_vs.return_value = mock_vs
 
             import ai_ready_rag.api.admin as admin_module
 
             admin_module._architecture_cache = {}
 
-            response = client.get("/api/admin/architecture", headers=admin_headers)
+            with patch("ai_ready_rag.api.admin.httpx.AsyncClient") as mock_client:
+                mock_response = AsyncMock()
+                mock_response.status_code = 200
+                mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                    return_value=mock_response
+                )
+
+                response = client.get("/api/admin/architecture", headers=admin_headers)
 
         data = response.json()
 
@@ -121,18 +143,23 @@ class TestArchitectureInfo:
 
     def test_architecture_infrastructure(self, client, admin_headers):
         """Infrastructure section has required fields."""
-        with patch("ai_ready_rag.api.admin.VectorService") as mock_vs_class:
-            mock_vs = mock_vs_class.return_value
-            mock_health = AsyncMock()
-            mock_health.ollama_healthy = True
-            mock_health.qdrant_healthy = True
-            mock_vs.health_check = AsyncMock(return_value=mock_health)
+        with patch("ai_ready_rag.api.admin.get_vector_service") as mock_get_vs:
+            mock_vs = AsyncMock()
+            mock_vs.health_check = AsyncMock(return_value={"healthy": True})
+            mock_get_vs.return_value = mock_vs
 
             import ai_ready_rag.api.admin as admin_module
 
             admin_module._architecture_cache = {}
 
-            response = client.get("/api/admin/architecture", headers=admin_headers)
+            with patch("ai_ready_rag.api.admin.httpx.AsyncClient") as mock_client:
+                mock_response = AsyncMock()
+                mock_response.status_code = 200
+                mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                    return_value=mock_response
+                )
+
+                response = client.get("/api/admin/architecture", headers=admin_headers)
 
         data = response.json()
 
@@ -145,18 +172,23 @@ class TestArchitectureInfo:
 
     def test_architecture_ocr_status(self, client, admin_headers):
         """OCR status has tesseract and easyocr sections."""
-        with patch("ai_ready_rag.api.admin.VectorService") as mock_vs_class:
-            mock_vs = mock_vs_class.return_value
-            mock_health = AsyncMock()
-            mock_health.ollama_healthy = True
-            mock_health.qdrant_healthy = True
-            mock_vs.health_check = AsyncMock(return_value=mock_health)
+        with patch("ai_ready_rag.api.admin.get_vector_service") as mock_get_vs:
+            mock_vs = AsyncMock()
+            mock_vs.health_check = AsyncMock(return_value={"healthy": True})
+            mock_get_vs.return_value = mock_vs
 
             import ai_ready_rag.api.admin as admin_module
 
             admin_module._architecture_cache = {}
 
-            response = client.get("/api/admin/architecture", headers=admin_headers)
+            with patch("ai_ready_rag.api.admin.httpx.AsyncClient") as mock_client:
+                mock_response = AsyncMock()
+                mock_response.status_code = 200
+                mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                    return_value=mock_response
+                )
+
+                response = client.get("/api/admin/architecture", headers=admin_headers)
 
         data = response.json()
 
@@ -168,34 +200,40 @@ class TestArchitectureInfo:
 
     def test_architecture_cache_works(self, client, admin_headers):
         """Response is cached for subsequent requests."""
-        with patch("ai_ready_rag.api.admin.VectorService") as mock_vs_class:
-            mock_vs = mock_vs_class.return_value
-            mock_health = AsyncMock()
-            mock_health.ollama_healthy = True
-            mock_health.qdrant_healthy = True
-            mock_vs.health_check = AsyncMock(return_value=mock_health)
+        with patch("ai_ready_rag.api.admin.get_vector_service") as mock_get_vs:
+            mock_vs = AsyncMock()
+            mock_vs.health_check = AsyncMock(return_value={"healthy": True})
+            mock_get_vs.return_value = mock_vs
 
             import ai_ready_rag.api.admin as admin_module
 
             admin_module._architecture_cache = {}
 
-            # First request
-            response1 = client.get("/api/admin/architecture", headers=admin_headers)
-            assert response1.status_code == 200
+            with patch("ai_ready_rag.api.admin.httpx.AsyncClient") as mock_client:
+                mock_response = AsyncMock()
+                mock_response.status_code = 200
+                mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                    return_value=mock_response
+                )
 
-            # Second request should use cache (VectorService not called again)
-            mock_vs_class.reset_mock()
-            response2 = client.get("/api/admin/architecture", headers=admin_headers)
-            assert response2.status_code == 200
+                # First request
+                response1 = client.get("/api/admin/architecture", headers=admin_headers)
+                assert response1.status_code == 200
 
-            # VectorService should not be instantiated for cached response
-            # (it was called once for first request, then cache is used)
+                # Second request should use cache (get_vector_service not called again)
+                mock_get_vs.reset_mock()
+                response2 = client.get("/api/admin/architecture", headers=admin_headers)
+                assert response2.status_code == 200
+
+                # get_vector_service should not be called for cached response
+                # (it was called once for first request, then cache is used)
 
     def test_architecture_handles_health_check_failure(self, client, admin_headers):
         """Endpoint handles health check failure gracefully."""
-        with patch("ai_ready_rag.api.admin.VectorService") as mock_vs_class:
-            mock_vs = mock_vs_class.return_value
+        with patch("ai_ready_rag.api.admin.get_vector_service") as mock_get_vs:
+            mock_vs = AsyncMock()
             mock_vs.health_check = AsyncMock(side_effect=Exception("Connection failed"))
+            mock_get_vs.return_value = mock_vs
 
             import ai_ready_rag.api.admin as admin_module
 
