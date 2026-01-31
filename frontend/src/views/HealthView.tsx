@@ -169,9 +169,9 @@ export function HealthView() {
           status={healthData?.vector_db.status || 'unhealthy'}
           icon={<Database size={24} />}
           details={[
+            { label: 'Backend', value: healthData?.vector_db.name || 'Unknown' },
             { label: 'Version', value: healthData?.vector_db.version || 'Unknown' },
             { label: 'Chunks', value: healthData?.knowledge_base.total_chunks.toLocaleString() || '0' },
-            { label: 'Model', value: healthData?.rag_pipeline.embedding_model || 'Unknown' },
           ]}
         />
       </div>
