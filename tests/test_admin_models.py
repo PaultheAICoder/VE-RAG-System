@@ -214,3 +214,71 @@ class TestChangeModel:
         # Check that the change was logged
         assert any("changed chat model" in record.message for record in caplog.records)
         assert any("gemma2:9b" in record.message for record in caplog.records)
+
+
+class TestGetModelLimits:
+    """Tests for GET /api/admin/model-limits."""
+
+    def test_get_returns_current_model_limits(self, client, admin_headers):
+        """GET returns limits for current model."""
+        response = client.get("/api/admin/model-limits", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "current_model" in data
+        assert "limits" in data
+        assert "all_models" in data
+
+    def test_get_limits_structure(self, client, admin_headers):
+        """GET returns correct limits structure."""
+        response = client.get("/api/admin/model-limits", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        limits = data["limits"]
+        assert "context_window" in limits
+        assert "max_response" in limits
+        assert "temperature_min" in limits
+        assert "temperature_max" in limits
+        assert isinstance(limits["context_window"], int)
+        assert isinstance(limits["max_response"], int)
+
+    def test_get_all_models_included(self, client, admin_headers):
+        """GET includes all known model limits."""
+        response = client.get("/api/admin/model-limits", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        all_models = data["all_models"]
+        # Should have at least qwen3:8b and llama3.2
+        assert len(all_models) >= 2
+        # Check structure of model limits
+        for _model_name, limits in all_models.items():
+            assert "context_window" in limits
+            assert "max_response" in limits
+
+    def test_get_requires_admin(self, client, user_headers):
+        """GET requires admin role."""
+        response = client.get("/api/admin/model-limits", headers=user_headers)
+        assert response.status_code == 403
+
+    def test_get_requires_auth(self, client):
+        """GET requires authentication."""
+        response = client.get("/api/admin/model-limits")
+        assert response.status_code == 401
+
+    def test_get_respects_current_model_setting(self, client, admin_headers, db):
+        """GET uses model from database settings when set."""
+        from ai_ready_rag.services.settings_service import SettingsService
+
+        # Set a custom chat model in database
+        settings_service = SettingsService(db)
+        settings_service.set("chat_model", "llama3.2")
+
+        response = client.get("/api/admin/model-limits", headers=admin_headers)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["current_model"] == "llama3.2"
+        # llama3.2 has 1024 max_response
+        assert data["limits"]["max_response"] == 1024

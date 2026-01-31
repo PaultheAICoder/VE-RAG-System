@@ -896,6 +896,66 @@ async def change_embedding_model(
     )
 
 
+# Model Limits Endpoint Models
+class ModelLimits(BaseModel):
+    """Limits for a specific model."""
+
+    context_window: int
+    max_response: int
+    temperature_min: float = 0.0
+    temperature_max: float = 1.0
+
+
+class ModelLimitsResponse(BaseModel):
+    """Response containing model limits for settings validation."""
+
+    current_model: str
+    limits: ModelLimits
+    all_models: dict[str, ModelLimits]
+
+
+@router.get("/model-limits", response_model=ModelLimitsResponse)
+async def get_model_limits(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get model-specific limits for settings validation.
+
+    Returns the current chat model's limits and all known model limits.
+    Used by frontend to display warnings when settings exceed model limits.
+
+    Admin only.
+    """
+    from ai_ready_rag.services.rag_constants import MODEL_LIMITS
+
+    settings = get_settings()
+    settings_service = SettingsService(db)
+
+    # Get current chat model from settings, fallback to config
+    current_model = settings_service.get(CHAT_MODEL_KEY)
+    if current_model is None:
+        current_model = settings.chat_model
+
+    # Get limits for current model, fallback to qwen3:8b defaults
+    default_limits = {"context_window": 32768, "max_response": 2048}
+    current_limits = MODEL_LIMITS.get(current_model, default_limits)
+
+    return ModelLimitsResponse(
+        current_model=current_model,
+        limits=ModelLimits(
+            context_window=current_limits["context_window"],
+            max_response=current_limits["max_response"],
+        ),
+        all_models={
+            name: ModelLimits(
+                context_window=limits["context_window"],
+                max_response=limits["max_response"],
+            )
+            for name, limits in MODEL_LIMITS.items()
+        },
+    )
+
+
 # Detailed Health Endpoint Models
 class ComponentHealth(BaseModel):
     """Health status of a single component."""

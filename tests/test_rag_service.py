@@ -353,6 +353,56 @@ class TestTokenBudget:
             MODEL_LIMITS.update(original_limits)
 
 
+class TestMaxResponseTokensCapping:
+    """Test max_response_tokens capping to model limits."""
+
+    def test_caps_to_model_limit(self, mock_settings):
+        """Requested tokens above model limit get capped."""
+        service = RAGService(vector_service=AsyncMock(), settings=mock_settings)
+        service.default_model = "llama3.2"  # Has 1024 max_response
+
+        # Request 4096 but llama3.2 only supports 1024
+        result = service._get_effective_max_tokens(4096)
+
+        assert result == 1024
+
+    def test_no_cap_when_under_limit(self, mock_settings):
+        """Requested tokens under model limit returned as-is."""
+        service = RAGService(vector_service=AsyncMock(), settings=mock_settings)
+        service.default_model = "qwen3:8b"  # Has 2048 max_response
+
+        # Request 1000 which is under the 2048 limit
+        result = service._get_effective_max_tokens(1000)
+
+        assert result == 1000
+
+    def test_unknown_model_uses_default(self, mock_settings):
+        """Unknown models use 2048 default limit."""
+        from unittest.mock import patch
+
+        service = RAGService(vector_service=AsyncMock(), settings=mock_settings)
+        service.default_model = "unknown-model:latest"
+
+        # Mock _get_current_chat_model to return the unknown model
+        with patch.object(service, "_get_current_chat_model", return_value="unknown-model:latest"):
+            # Default limit is 2048
+            result = service._get_effective_max_tokens(3000)
+
+        assert result == 2048
+
+    def test_capping_logs_warning(self, mock_settings, caplog):
+        """Capping logs a warning message."""
+        import logging
+
+        service = RAGService(vector_service=AsyncMock(), settings=mock_settings)
+        service.default_model = "llama3.2"  # Has 1024 max_response
+
+        with caplog.at_level(logging.WARNING, logger="ai_ready_rag.services.rag_service"):
+            service._get_effective_max_tokens(2000)
+
+        assert any("Capping to 1024" in record.message for record in caplog.records)
+
+
 class TestDeduplicateChunks:
     """Test chunk deduplication."""
 
