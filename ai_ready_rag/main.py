@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -31,6 +32,10 @@ async def lifespan(app: FastAPI):
     print(f"Starting {settings.app_name} v{settings.app_version}")
     print(f"Debug mode: {settings.debug}")
     print(f"RAG enabled: {settings.enable_rag}")
+
+    # Track server start time for uptime calculation
+    app.state.start_time = time.time()
+
     init_db()
 
     # Recover stuck documents from previous crashes
