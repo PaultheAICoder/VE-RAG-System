@@ -133,3 +133,138 @@ export interface SendMessageResponse {
   generation_time_ms: number;
   routing_decision?: string;
 }
+
+// User management types
+export interface UserTag {
+  id: string;
+  name: string;
+  display_name: string;
+}
+
+export interface UserWithTags extends User {
+  must_reset_password: boolean;
+  tags: UserTag[];
+}
+
+export interface UserCreate {
+  email: string;
+  display_name: string;
+  password: string;
+  role?: UserRole;
+}
+
+export interface UserUpdate {
+  email?: string;
+  display_name?: string;
+  role?: UserRole;
+  is_active?: boolean;
+}
+
+// Admin types
+export interface ProcessingOptions {
+  enable_ocr: boolean;
+  force_full_page_ocr: boolean;
+  ocr_language: string;
+  table_extraction_mode: 'accurate' | 'fast';
+  include_image_descriptions: boolean;
+  query_routing_mode: 'retrieve_only' | 'retrieve_and_direct';
+}
+
+export interface ModelInfo {
+  name: string;
+  display_name: string;
+  size_gb: number;
+  parameters: string | null;
+  quantization: string | null;
+  recommended: boolean;
+}
+
+export interface ModelsResponse {
+  available_models: ModelInfo[];
+  embedding_models: ModelInfo[];
+  chat_models: ModelInfo[];
+  current_chat_model: string;
+  current_embedding_model: string;
+}
+
+export interface TesseractStatus {
+  available: boolean;
+  version: string | null;
+  languages: string[] | null;
+}
+
+export interface EasyOCRStatus {
+  available: boolean;
+  version: string | null;
+}
+
+export interface OCRStatus {
+  tesseract: TesseractStatus;
+  easyocr: EasyOCRStatus;
+}
+
+export interface DocumentParsingInfo {
+  engine: string;
+  version: string;
+  type: string;
+  capabilities: string[];
+}
+
+export interface EmbeddingsInfo {
+  model: string;
+  dimensions: number;
+  vector_store: string;
+  vector_store_url: string;
+}
+
+export interface ChatModelInfo {
+  name: string;
+  provider: string;
+  capabilities: string[];
+}
+
+export interface InfrastructureStatus {
+  ollama_url: string;
+  ollama_status: 'healthy' | 'unhealthy';
+  vector_db_status: 'healthy' | 'unhealthy';
+}
+
+export interface ArchitectureInfo {
+  document_parsing: DocumentParsingInfo;
+  embeddings: EmbeddingsInfo;
+  chat_model: ChatModelInfo;
+  infrastructure: InfrastructureStatus;
+  ocr_status: OCRStatus;
+  profile: string;
+}
+
+export interface FileStats {
+  document_id: string;
+  filename: string;
+  chunk_count: number;
+  status: string | null;
+}
+
+export interface KnowledgeBaseStats {
+  total_chunks: number;
+  unique_files: number;
+  total_vectors: number;
+  collection_name: string;
+  files: FileStats[];
+  storage_size_bytes: number | null;
+  last_updated: string;
+}
+
+export interface HealthResponse {
+  status: 'healthy' | 'unhealthy';
+  version: string;
+  database: string;
+  rag_enabled: boolean;
+  gradio_enabled: boolean;
+  profile: string;
+  backends: {
+    vector: string;
+    chunker: string;
+    ocr_enabled: boolean;
+  };
+}
