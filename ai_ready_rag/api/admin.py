@@ -334,12 +334,32 @@ async def clear_knowledge_base(
             detail=f"Failed to clear knowledge base: {e}",
         ) from e
 
-    # Optionally delete source files from SQLite
+    # Handle document records
     deleted_files = 0
     if request.delete_source_files and success:
+        # Delete documents from SQLite entirely
         document_service = DocumentService(db, settings)
         deleted_files = document_service.delete_all_documents()
         logger.warning(f"Deleted {deleted_files} documents from database")
+    elif success:
+        # Reset all documents to pending status (ready for reprocessing)
+        # This ensures Processing Queue shows correct state after KB clear
+        reset_count = (
+            db.query(Document)
+            .filter(Document.status.in_(["ready", "failed", "processing"]))
+            .update(
+                {
+                    "status": "pending",
+                    "chunk_count": None,
+                    "processed_at": None,
+                    "error_message": None,
+                    "processing_time_ms": None,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        logger.info(f"Reset {reset_count} documents to pending status")
 
     return ClearKnowledgeBaseResponse(
         deleted_chunks=chunks_before if success else 0,

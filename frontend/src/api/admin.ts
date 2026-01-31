@@ -89,3 +89,26 @@ export async function getArchitectureInfo(): Promise<ArchitectureInfo> {
 export async function getKnowledgeBaseStats(): Promise<KnowledgeBaseStats> {
   return apiClient.get<KnowledgeBaseStats>('/api/admin/knowledge-base/stats');
 }
+
+/**
+ * Clear knowledge base (system admin only).
+ * Deletes all vectors from the knowledge base.
+ */
+export async function clearKnowledgeBase(
+  deleteSourceFiles: boolean = false
+): Promise<{
+  deleted_chunks: number;
+  deleted_files: number;
+  success: boolean;
+  backend: string;
+}> {
+  return apiClient.delete<{
+    deleted_chunks: number;
+    deleted_files: number;
+    success: boolean;
+    backend: string;
+  }>('/api/admin/knowledge-base', {
+    confirm: true,
+    delete_source_files: deleteSourceFiles,
+  });
+}

@@ -6,3 +6,4 @@ export { HealthCard } from './HealthCard';
 export { StatsCard } from './StatsCard';
 export { PipelineVisualization } from './PipelineVisualization';
 export { ConfirmModal } from './ConfirmModal';
+export { ClearKBModal } from './ClearKBModal';

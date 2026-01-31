@@ -202,7 +202,7 @@ export async function updateDocumentTags(
 }
 
 /**
- * Reprocess a document.
+ * Reprocess a single document.
  */
 export async function reprocessDocument(documentId: string): Promise<Document> {
   const response = await fetch(`/api/documents/${documentId}/reprocess`, {
@@ -218,6 +218,39 @@ export async function reprocessDocument(documentId: string): Promise<Document> {
       useAuthStore.getState().logout();
     }
     const error = await response.json().catch(() => ({ detail: 'Failed to reprocess document' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export interface BulkReprocessResponse {
+  queued: number;
+  skipped: number;
+  skipped_ids: string[];
+}
+
+/**
+ * Bulk reprocess multiple documents.
+ * Returns immediately - processing happens in background.
+ */
+export async function bulkReprocessDocuments(
+  documentIds: string[]
+): Promise<BulkReprocessResponse> {
+  const response = await fetch('/api/documents/bulk-reprocess', {
+    method: 'POST',
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ document_ids: documentIds }),
+  });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      useAuthStore.getState().logout();
+    }
+    const error = await response.json().catch(() => ({ detail: 'Failed to reprocess documents' }));
     throw new Error(error.detail || `HTTP ${response.status}`);
   }
 

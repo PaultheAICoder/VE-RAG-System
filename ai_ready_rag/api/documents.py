@@ -47,6 +47,7 @@ def get_processing_semaphore() -> asyncio.Semaphore:
 async def process_document_task(
     document_id: str,
     processing_options_dict: dict | None = None,
+    delete_existing: bool = False,
 ) -> None:
     """Background task to process a document.
 
@@ -56,9 +57,12 @@ async def process_document_task(
     Args:
         document_id: Document ID to process.
         processing_options_dict: Optional dict of per-upload processing options.
+        delete_existing: If True, delete existing vectors before processing (for reprocess).
     """
     from ai_ready_rag.services.factory import get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingOptions, ProcessingService
+
+    print(f"[BACKGROUND TASK] Starting processing for document {document_id}", flush=True)
 
     # Acquire semaphore to limit concurrent processing
     semaphore = get_processing_semaphore()
@@ -82,6 +86,15 @@ async def process_document_task(
             vector_service = get_vector_service(settings)
             await vector_service.initialize()
 
+            # Delete existing vectors if reprocessing
+            if delete_existing:
+                try:
+                    await vector_service.delete_document(document_id)
+                    logger.info(f"Deleted existing vectors for document {document_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete vectors for {document_id}: {e}")
+                    # Continue anyway - vectors may not exist
+
             processing_service = ProcessingService(
                 vector_service=vector_service,
                 settings=settings,
@@ -93,11 +106,19 @@ async def process_document_task(
             )
 
             if result.success:
+                print(
+                    f"[BACKGROUND TASK] Document {document_id} SUCCESS: {result.chunk_count} chunks",
+                    flush=True,
+                )
                 logger.info(
                     f"Document {document_id} processed successfully: "
                     f"{result.chunk_count} chunks in {result.processing_time_ms}ms"
                 )
             else:
+                print(
+                    f"[BACKGROUND TASK] Document {document_id} FAILED: {result.error_message}",
+                    flush=True,
+                )
                 logger.warning(f"Document {document_id} processing failed: {result.error_message}")
 
         except Exception as e:
@@ -517,13 +538,10 @@ async def reprocess_document(
 ):
     """Reprocess a document (admin only).
 
-    Deletes existing vectors, resets status to pending, and queues for reprocessing.
+    Resets status to pending and queues for reprocessing.
+    Vector deletion is handled in background task for fast response.
     Only allowed for documents in 'ready' or 'failed' status.
     """
-    from ai_ready_rag.services.factory import get_vector_service
-
-    settings = get_settings()
-
     # Get document
     document = db.query(Document).filter(Document.id == document_id).first()
     if not document:
@@ -540,17 +558,10 @@ async def reprocess_document(
             "Only 'ready' or 'failed' documents can be reprocessed.",
         )
 
-    # Delete existing vectors first (if any)
-    if document.chunk_count and document.chunk_count > 0:
-        try:
-            vector_service = get_vector_service(settings)
-            await vector_service.delete_document(document_id)
-            logger.info(f"Deleted existing vectors for document {document_id}")
-        except Exception as e:
-            logger.warning(f"Failed to delete vectors for document {document_id}: {e}")
-            # Continue anyway - vectors may not exist or Qdrant may be down
+    # Track if we need to delete existing vectors (done in background)
+    delete_existing = document.chunk_count and document.chunk_count > 0
 
-    # Reset document state
+    # Reset document state immediately for fast response
     document.status = "pending"
     document.chunk_count = None
     document.processed_at = None
@@ -560,8 +571,107 @@ async def reprocess_document(
     db.commit()
     db.refresh(document)
 
-    # Queue for background processing
-    background_tasks.add_task(process_document_task, document.id)
-    logger.info(f"Queued document {document_id} for reprocessing")
+    # Queue for background processing (vector deletion + reprocessing)
+    background_tasks.add_task(process_document_task, document.id, None, delete_existing)
+    logger.info(
+        f"Queued document {document_id} for reprocessing (delete_existing={delete_existing})"
+    )
 
     return document
+
+
+class BulkReprocessRequest(BaseModel):
+    """Request body for bulk reprocess."""
+
+    document_ids: list[str]
+
+
+class BulkReprocessResponse(BaseModel):
+    """Response for bulk reprocess operation."""
+
+    queued: int
+    skipped: int
+    skipped_ids: list[str]
+
+
+@router.post(
+    "/bulk-reprocess",
+    response_model=BulkReprocessResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def bulk_reprocess_documents(
+    request: BulkReprocessRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Bulk reprocess multiple documents (admin only).
+
+    Resets all valid documents to pending and queues for background processing.
+    Returns immediately - processing happens in background.
+    """
+    print(
+        f"[BULK REPROCESS] Received request with {len(request.document_ids)} document IDs",
+        flush=True,
+    )
+
+    queued = 0
+    skipped_ids = []
+
+    # Get all documents in one query
+    documents = db.query(Document).filter(Document.id.in_(request.document_ids)).all()
+    print(f"[BULK REPROCESS] Found {len(documents)} documents in database", flush=True)
+
+    doc_map = {doc.id: doc for doc in documents}
+
+    for doc_id in request.document_ids:
+        document = doc_map.get(doc_id)
+
+        # Skip if not found
+        if not document:
+            print(f"[BULK REPROCESS] Document {doc_id} NOT FOUND", flush=True)
+            skipped_ids.append(doc_id)
+            continue
+
+        # Skip only if currently processing (to avoid double-processing)
+        if document.status == "processing":
+            print(
+                f"[BULK REPROCESS] Document {doc_id} is currently processing - SKIPPED", flush=True
+            )
+            skipped_ids.append(doc_id)
+            continue
+
+        print(
+            f"[BULK REPROCESS] Document {doc_id} status={document.status} -> processing", flush=True
+        )
+
+        # Track if we need to delete existing vectors (only for ready/failed with chunks)
+        delete_existing = (
+            document.status in ("ready", "failed")
+            and document.chunk_count
+            and document.chunk_count > 0
+        )
+
+        # Reset document state
+        document.status = "processing"
+        document.chunk_count = None
+        document.processed_at = None
+        document.error_message = None
+        document.processing_time_ms = None
+
+        # Queue for background processing
+        background_tasks.add_task(process_document_task, document.id, None, delete_existing)
+        queued += 1
+
+    db.commit()
+    print(
+        f"[BULK REPROCESS] COMMITTED: Queued {queued} documents, skipped {len(skipped_ids)}",
+        flush=True,
+    )
+    logger.info(f"Bulk reprocess: queued {queued} documents, skipped {len(skipped_ids)}")
+
+    return BulkReprocessResponse(
+        queued=queued,
+        skipped=len(skipped_ids),
+        skipped_ids=skipped_ids,
+    )

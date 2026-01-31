@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, Server, Cpu, Database, HardDrive, Clock, Activity } from 'lucide-react';
+import { RefreshCw, Server, Cpu, Database, HardDrive, Clock, Activity, Trash2 } from 'lucide-react';
 import { Button, Alert } from '../components/ui';
-import { HealthCard, StatsCard, PipelineVisualization } from '../components/features/admin';
+import { HealthCard, StatsCard, PipelineVisualization, ClearKBModal } from '../components/features/admin';
 import { getDetailedHealth } from '../api/health';
+import { clearKnowledgeBase } from '../api/admin';
 import type { DetailedHealthResponse } from '../types';
 
-const AUTO_REFRESH_INTERVAL = 30000; // 30 seconds
+const AUTO_REFRESH_INTERVAL_NORMAL = 30000; // 30 seconds when idle
+const AUTO_REFRESH_INTERVAL_ACTIVE = 3000; // 3 seconds when processing
 
 function formatRelativeTime(lastUpdated: Date): string {
   const seconds = Math.floor((Date.now() - lastUpdated.getTime()) / 1000);
@@ -33,6 +35,10 @@ export function HealthView() {
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [relativeTime, setRelativeTime] = useState('just now');
 
+  // Clear KB modal state
+  const [showClearModal, setShowClearModal] = useState(false);
+  const [clearing, setClearing] = useState(false);
+
   const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -55,15 +61,24 @@ export function HealthView() {
     fetchData();
   }, [fetchData]);
 
-  // Auto-refresh
+  // Determine if processing is active (pending or processing documents)
+  const isProcessingActive =
+    (healthData?.processing_queue.pending || 0) > 0 ||
+    (healthData?.processing_queue.processing || 0) > 0;
+
+  // Auto-refresh with dynamic interval
   useEffect(() => {
-    refreshIntervalRef.current = setInterval(fetchData, AUTO_REFRESH_INTERVAL);
+    const interval = isProcessingActive
+      ? AUTO_REFRESH_INTERVAL_ACTIVE
+      : AUTO_REFRESH_INTERVAL_NORMAL;
+
+    refreshIntervalRef.current = setInterval(fetchData, interval);
     return () => {
       if (refreshIntervalRef.current) {
         clearInterval(refreshIntervalRef.current);
       }
     };
-  }, [fetchData]);
+  }, [fetchData, isProcessingActive]);
 
   // Update relative time display
   useEffect(() => {
@@ -83,6 +98,21 @@ export function HealthView() {
   const handleRefresh = () => {
     setLoading(true);
     fetchData();
+  };
+
+  // Clear knowledge base
+  const handleClearKB = async (deleteSourceFiles: boolean) => {
+    setClearing(true);
+    try {
+      await clearKnowledgeBase(deleteSourceFiles);
+      setShowClearModal(false);
+      // Refresh data to show updated stats
+      fetchData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to clear knowledge base');
+    } finally {
+      setClearing(false);
+    }
   };
 
   // Determine component health from detailed response
@@ -186,16 +216,27 @@ export function HealthView() {
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <StatsCard
-          title="Knowledge Base"
-          icon={<HardDrive size={20} />}
-          stats={[
-            { label: 'Total Documents', value: healthData?.knowledge_base.total_documents || 0 },
-            { label: 'Total Chunks', value: healthData?.knowledge_base.total_chunks.toLocaleString() || '0' },
-            { label: 'Storage Used', value: healthData?.knowledge_base.storage_size_mb ? `${healthData.knowledge_base.storage_size_mb.toFixed(1)} MB` : 'Unknown' },
-            { label: 'Profile', value: healthData?.profile || 'Unknown' },
-          ]}
-        />
+        <div className="space-y-3">
+          <StatsCard
+            title="Knowledge Base"
+            icon={<HardDrive size={20} />}
+            stats={[
+              { label: 'Total Documents', value: healthData?.knowledge_base.total_documents || 0 },
+              { label: 'Total Chunks', value: healthData?.knowledge_base.total_chunks.toLocaleString() || '0' },
+              { label: 'Storage Used', value: healthData?.knowledge_base.storage_size_mb ? `${healthData.knowledge_base.storage_size_mb.toFixed(1)} MB` : 'Unknown' },
+              { label: 'Profile', value: healthData?.profile || 'Unknown' },
+            ]}
+          />
+          <Button
+            variant="danger"
+            icon={Trash2}
+            onClick={() => setShowClearModal(true)}
+            className="w-full"
+            disabled={(healthData?.knowledge_base.total_chunks || 0) === 0}
+          >
+            Clear Knowledge Base
+          </Button>
+        </div>
         <StatsCard
           title="Processing Queue"
           icon={<Activity size={20} />}
@@ -207,6 +248,16 @@ export function HealthView() {
           ]}
         />
       </div>
+
+      {/* Clear Knowledge Base Modal */}
+      <ClearKBModal
+        isOpen={showClearModal}
+        onClose={() => setShowClearModal(false)}
+        onConfirm={handleClearKB}
+        totalChunks={healthData?.knowledge_base.total_chunks || 0}
+        totalDocuments={healthData?.knowledge_base.total_documents || 0}
+        isLoading={clearing}
+      />
 
     </div>
   );
