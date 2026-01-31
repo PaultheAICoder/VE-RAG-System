@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-primary: #2A9D8F;
+  --color-primary-dark: #238578;
+  --color-primary-light: #3AB4A5;
+}
+
+.dark {
+  --color-primary: #3AB4A5;
+  --color-primary-dark: #2A9D8F;
+  --color-primary-light: #4ECDC4;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Poppins', system-ui, sans-serif;
+}
