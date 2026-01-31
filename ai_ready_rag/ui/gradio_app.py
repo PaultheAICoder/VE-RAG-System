@@ -469,21 +469,42 @@ def create_app() -> gr.Blocks:
                                         "Abort", size="sm", variant="stop"
                                     )
 
-                                # Resume section (visible when paused)
+                                # Resume section (visible when paused) (#73)
                                 with gr.Column(visible=False) as reindex_resume_section:
-                                    gr.Markdown("**Job Paused** - Choose action:")
-                                    reindex_resume_action = gr.Radio(
-                                        choices=[
-                                            ("Skip failed document", "skip"),
-                                            ("Retry failed document", "retry"),
-                                            ("Skip all future failures", "skip_all"),
-                                        ],
-                                        value="skip",
-                                        label="Resume Action",
+                                    reindex_paused_info = gr.Markdown("**Job Paused**")
+
+                                    # Three action buttons in a row
+                                    with gr.Row():
+                                        reindex_skip_btn = gr.Button(
+                                            "Skip", size="sm", variant="secondary"
+                                        )
+                                        reindex_retry_btn = gr.Button(
+                                            "Retry", size="sm", variant="primary"
+                                        )
+                                        reindex_skip_all_btn = gr.Button(
+                                            "Skip All", size="sm", variant="stop"
+                                        )
+
+                                    # Retry disabled tooltip (visible when max retries reached)
+                                    reindex_retry_tooltip = gr.Markdown(
+                                        "_Max retries (3) reached. Use Skip to continue._",
+                                        visible=False,
                                     )
-                                    reindex_resume_btn = gr.Button(
-                                        "Resume", variant="primary", size="sm"
+
+                                # Skip All confirmation dialog (#73)
+                                with gr.Column(visible=False) as reindex_skip_all_confirm:
+                                    gr.Markdown(
+                                        "**⚠️ Confirm Skip All**\n\n"
+                                        "This will automatically skip all future failures. "
+                                        "Documents can be retried later.\n\nContinue?"
                                     )
+                                    with gr.Row():
+                                        reindex_skip_all_confirm_btn = gr.Button(
+                                            "Yes, Skip All", size="sm", variant="stop"
+                                        )
+                                        reindex_skip_all_cancel_btn = gr.Button(
+                                            "Cancel", size="sm", variant="secondary"
+                                        )
 
                             # Failures accordion (visible when failures > 0)
                             with gr.Accordion(
@@ -1961,23 +1982,49 @@ def create_app() -> gr.Blocks:
             )
 
         def load_reindex_status(auth: dict) -> tuple:
-            """Load and display reindex job status."""
+            """Load and display reindex job status.
+
+            Returns 16 outputs:
+            1. status_display - Status message
+            2. empty_state - Visibility of empty state
+            3. reindex_card - Visibility of status card
+            4. status_badge - Badge HTML
+            5. progress_md - Progress bar HTML
+            6. doc_counter - Document counter text
+            7. current_doc - Current document text
+            8. last_updated - Last updated timestamp
+            9. action_row - Visibility of pause/abort buttons
+            10. resume_section - Visibility of resume controls
+            11. failures_accordion - Visibility of failures list
+            12. failures_list - Failures table markdown
+            13. paused_info - Paused info text (#73)
+            14. retry_btn - Retry button interactive state (#73)
+            15. retry_tooltip - Retry tooltip visibility (#73)
+            16. skip_all_confirm - Skip all confirmation visibility (#73)
+            """
             token = auth.get("token")
+            # Default return for unauthenticated state
+            default_return = (
+                "Not authenticated.",
+                gr.update(visible=True),  # empty_state
+                gr.update(visible=False),  # reindex_card
+                "",  # status_badge
+                "",  # progress_md
+                "",  # doc_counter
+                "",  # current_doc
+                "",  # last_updated
+                gr.update(visible=False),  # action_row
+                gr.update(visible=False),  # resume_section
+                gr.update(visible=False),  # failures_accordion
+                "",  # failures_list
+                "",  # paused_info (#73)
+                gr.update(interactive=True),  # retry_btn (#73)
+                gr.update(visible=False),  # retry_tooltip (#73)
+                gr.update(visible=False),  # skip_all_confirm (#73)
+            )
+
             if not token:
-                return (
-                    "Not authenticated.",
-                    gr.update(visible=True),  # empty_state
-                    gr.update(visible=False),  # reindex_card
-                    "",  # status_badge
-                    "",  # progress_md
-                    "",  # doc_counter
-                    "",  # current_doc
-                    "",  # last_updated
-                    gr.update(visible=False),  # action_row
-                    gr.update(visible=False),  # resume_section
-                    gr.update(visible=False),  # failures_accordion
-                    "",  # failures_list
-                )
+                return default_return
 
             try:
                 job = GradioAPIClient.get_reindex_status(token)
@@ -1996,6 +2043,10 @@ def create_app() -> gr.Blocks:
                         gr.update(visible=False),
                         gr.update(visible=False),
                         "",
+                        "",  # paused_info
+                        gr.update(interactive=True),  # retry_btn
+                        gr.update(visible=False),  # retry_tooltip
+                        gr.update(visible=False),  # skip_all_confirm
                     )
 
                 status = job.get("status", "unknown")
@@ -2005,6 +2056,10 @@ def create_app() -> gr.Blocks:
                 failed = job.get("failed_documents", 0)
                 current_doc = job.get("current_document_id")
                 auto_skip = job.get("auto_skip_failures", False)
+                retry_count = job.get("retry_count", 0)
+                max_retries = job.get("max_retries", 3)
+                last_error = job.get("last_error")
+                paused_reason = job.get("paused_reason")
 
                 # Format badge with auto-skip indicator
                 badge_html = _format_reindex_status_badge(status)
@@ -2033,6 +2088,20 @@ def create_app() -> gr.Blocks:
                 show_actions = status == "running"
                 show_resume = status == "paused"
                 show_failures = failed > 0
+
+                # Paused info text (#73)
+                paused_info_text = "**Job Paused**"
+                if status == "paused":
+                    if paused_reason == "failure" and last_error:
+                        paused_info_text = f"**Job Paused** - Failed: {last_error[:80]}"
+                    elif paused_reason == "user_request":
+                        paused_info_text = "**Job Paused** - User requested"
+                    if retry_count > 0:
+                        paused_info_text += f" (retry {retry_count}/{max_retries})"
+
+                # Retry button state (#73)
+                retry_disabled = retry_count >= max_retries
+                show_retry_tooltip = retry_disabled and status == "paused"
 
                 # Load failures if any
                 failures_text = ""
@@ -2064,6 +2133,10 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=show_resume),  # resume_section
                     gr.update(visible=show_failures),  # failures_accordion
                     failures_text,
+                    paused_info_text,  # paused_info (#73)
+                    gr.update(interactive=not retry_disabled),  # retry_btn (#73)
+                    gr.update(visible=show_retry_tooltip),  # retry_tooltip (#73)
+                    gr.update(visible=False),  # skip_all_confirm (#73) - hidden by default
                 )
 
             except httpx.HTTPStatusError as e:
@@ -2081,6 +2154,10 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),
                     gr.update(visible=False),
                     "",
+                    "",
+                    gr.update(interactive=True),
+                    gr.update(visible=False),
+                    gr.update(visible=False),
                 )
             except Exception as e:
                 return (
@@ -2096,13 +2173,38 @@ def create_app() -> gr.Blocks:
                     gr.update(visible=False),
                     gr.update(visible=False),
                     "",
+                    "",
+                    gr.update(interactive=True),
+                    gr.update(visible=False),
+                    gr.update(visible=False),
                 )
+
+        def _make_error_response(message: str) -> tuple:
+            """Create error response tuple with 16 outputs."""
+            return (
+                message,
+                gr.update(visible=True),  # empty_state
+                gr.update(visible=False),  # reindex_card
+                "",
+                "",
+                "",
+                "",
+                "",
+                gr.update(visible=False),  # action_row
+                gr.update(visible=False),  # resume_section
+                gr.update(visible=False),  # failures_accordion
+                "",
+                "",  # paused_info
+                gr.update(interactive=True),  # retry_btn
+                gr.update(visible=False),  # retry_tooltip
+                gr.update(visible=False),  # skip_all_confirm
+            )
 
         def handle_pause_reindex(auth: dict) -> tuple:
             """Pause the running reindex job."""
             token = auth.get("token")
             if not token:
-                return ("Not authenticated.",) + ("",) * 10 + (gr.update(visible=False),) * 3
+                return _make_error_response("Not authenticated.")
 
             try:
                 GradioAPIClient.pause_reindex(token)
@@ -2123,7 +2225,7 @@ def create_app() -> gr.Blocks:
             """Resume the paused reindex job with specified action."""
             token = auth.get("token")
             if not token:
-                return ("Not authenticated.",) + ("",) * 10 + (gr.update(visible=False),) * 3
+                return _make_error_response("Not authenticated.")
 
             try:
                 GradioAPIClient.resume_reindex(token, action)
@@ -2142,7 +2244,7 @@ def create_app() -> gr.Blocks:
             """Abort the reindex job."""
             token = auth.get("token")
             if not token:
-                return ("Not authenticated.",) + ("",) * 10 + (gr.update(visible=False),) * 3
+                return _make_error_response("Not authenticated.")
 
             try:
                 GradioAPIClient.abort_reindex(token)
@@ -2182,7 +2284,7 @@ def create_app() -> gr.Blocks:
             outputs=[model_status, model_current],
         )
 
-        # Reindex status event handlers (#72)
+        # Reindex status event handlers (#72, #73)
         reindex_outputs = [
             reindex_status_display,
             reindex_empty_state,
@@ -2196,6 +2298,10 @@ def create_app() -> gr.Blocks:
             reindex_resume_section,
             reindex_failures_accordion,
             reindex_failures_list,
+            reindex_paused_info,  # (#73)
+            reindex_retry_btn,  # (#73)
+            reindex_retry_tooltip,  # (#73)
+            reindex_skip_all_confirm,  # (#73)
         ]
 
         reindex_refresh_btn.click(
@@ -2210,9 +2316,43 @@ def create_app() -> gr.Blocks:
             outputs=reindex_outputs,
         )
 
-        reindex_resume_btn.click(
-            fn=handle_resume_reindex,
-            inputs=[auth_state, reindex_resume_action],
+        # Skip button - resume with skip action (#73)
+        reindex_skip_btn.click(
+            fn=lambda auth: handle_resume_reindex(auth, "skip"),
+            inputs=[auth_state],
+            outputs=reindex_outputs,
+        )
+
+        # Retry button - resume with retry action (#73)
+        reindex_retry_btn.click(
+            fn=lambda auth: handle_resume_reindex(auth, "retry"),
+            inputs=[auth_state],
+            outputs=reindex_outputs,
+        )
+
+        # Skip All button - show confirmation dialog (#73)
+        def show_skip_all_confirmation() -> gr.update:
+            """Show the Skip All confirmation dialog."""
+            return gr.update(visible=True)
+
+        def hide_skip_all_confirmation() -> gr.update:
+            """Hide the Skip All confirmation dialog."""
+            return gr.update(visible=False)
+
+        reindex_skip_all_btn.click(
+            fn=show_skip_all_confirmation,
+            outputs=[reindex_skip_all_confirm],
+        )
+
+        reindex_skip_all_cancel_btn.click(
+            fn=hide_skip_all_confirmation,
+            outputs=[reindex_skip_all_confirm],
+        )
+
+        # Skip All confirmed - resume with skip_all action (#73)
+        reindex_skip_all_confirm_btn.click(
+            fn=lambda auth: handle_resume_reindex(auth, "skip_all"),
+            inputs=[auth_state],
             outputs=reindex_outputs,
         )
 
