@@ -7,6 +7,9 @@ import type {
   RetrievalSettings,
   LLMSettings,
   SettingsAuditResponse,
+  AdvancedSettings,
+  ReindexJob,
+  ReindexEstimate,
 } from '../types';
 
 /**
@@ -166,4 +169,68 @@ export async function getSettingsAudit(params?: {
   const queryString = searchParams.toString();
   const url = queryString ? `/api/admin/settings/audit?${queryString}` : '/api/admin/settings/audit';
   return apiClient.get<SettingsAuditResponse>(url);
+}
+
+// =============================================================================
+// Advanced Settings & Reindex
+// =============================================================================
+
+/**
+ * Get advanced RAG settings (system admin only).
+ * These settings require a reindex when changed.
+ */
+export async function getAdvancedSettings(): Promise<AdvancedSettings> {
+  return apiClient.get<AdvancedSettings>('/api/admin/settings/advanced');
+}
+
+/**
+ * Update advanced RAG settings (system admin only).
+ * Requires confirmReindex=true to proceed.
+ */
+export async function updateAdvancedSettings(
+  settings: Partial<AdvancedSettings>,
+  confirmReindex: boolean
+): Promise<AdvancedSettings> {
+  return apiClient.put<AdvancedSettings>('/api/admin/settings/advanced', {
+    ...settings,
+    confirm_reindex: confirmReindex,
+  });
+}
+
+/**
+ * Get time estimate for reindex operation (system admin only).
+ */
+export async function getReindexEstimate(): Promise<ReindexEstimate> {
+  return apiClient.get<ReindexEstimate>('/api/admin/reindex/estimate');
+}
+
+/**
+ * Start a background reindex operation (system admin only).
+ * Returns the created job. Poll getReindexStatus for progress.
+ */
+export async function startReindex(): Promise<ReindexJob> {
+  return apiClient.post<ReindexJob>('/api/admin/reindex/start', { confirm: true });
+}
+
+/**
+ * Get current reindex job status (system admin only).
+ * Returns null if no job is running.
+ */
+export async function getReindexStatus(): Promise<ReindexJob | null> {
+  return apiClient.get<ReindexJob | null>('/api/admin/reindex/status');
+}
+
+/**
+ * Abort current reindex operation (system admin only).
+ */
+export async function abortReindex(): Promise<ReindexJob> {
+  return apiClient.post<ReindexJob>('/api/admin/reindex/abort', {});
+}
+
+/**
+ * Get reindex job history (system admin only).
+ */
+export async function getReindexHistory(limit?: number): Promise<ReindexJob[]> {
+  const url = limit ? `/api/admin/reindex/history?limit=${limit}` : '/api/admin/reindex/history';
+  return apiClient.get<ReindexJob[]>(url);
 }

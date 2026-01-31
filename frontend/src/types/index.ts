@@ -340,3 +340,44 @@ export interface SettingsAuditResponse {
   limit: number;
   offset: number;
 }
+
+// Advanced Settings (destructive, require reindex)
+export interface AdvancedSettings {
+  embedding_model: string;
+  chunk_size: number;
+  chunk_overlap: number;
+  hnsw_ef_construct: number;
+  hnsw_m: number;
+  vector_backend: string;
+}
+
+// Reindex Job
+export type ReindexJobStatus =
+  | 'pending'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'aborted';
+
+export interface ReindexJob {
+  id: string;
+  status: ReindexJobStatus;
+  total_documents: number;
+  processed_documents: number;
+  failed_documents: number;
+  progress_percent: number;
+  current_document_id: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  settings_changed: Record<string, unknown> | null;
+}
+
+export interface ReindexEstimate {
+  total_documents: number;
+  avg_processing_time_ms: number;
+  estimated_total_seconds: number;
+  estimated_time_str: string;
+}
