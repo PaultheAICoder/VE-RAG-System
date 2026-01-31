@@ -127,3 +127,28 @@ class TokenBudgetExceededError(RAGServiceError):
     """
 
     pass
+
+
+# -----------------------------------------------------------------------------
+# Reindex Service Exceptions
+# -----------------------------------------------------------------------------
+
+
+class ReindexError(Exception):
+    """Base exception for reindex service errors."""
+
+    pass
+
+
+class ReindexPausedError(ReindexError):
+    """Raised when reindex pauses due to document failure.
+
+    Allows callers to handle pause state and present options
+    to the user (skip, retry, abort).
+    """
+
+    def __init__(self, job_id: str, document_id: str, error: str):
+        self.job_id = job_id
+        self.document_id = document_id
+        self.error = error
+        super().__init__(f"Reindex paused on document {document_id}: {error}")
