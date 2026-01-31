@@ -32,6 +32,7 @@ from ai_ready_rag.services.rag_constants import (
     ROUTING_RETRIEVE,
     STOPWORDS,
 )
+from ai_ready_rag.services.settings_service import get_rag_setting
 from ai_ready_rag.services.vector_service import SearchResult
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ class RAGRequest:
     tenant_id: str = "default"
     chat_history: list[ChatMessage] | None = None
     model: str | None = None
-    max_context_chunks: int = 8  # Increased from 5 per Spark config
+    max_context_chunks: int | None = None  # None = use database setting
 
 
 @dataclass
@@ -397,7 +398,7 @@ class RAGService:
         """Initialize RAG service.
 
         Args:
-            settings: Application settings
+            settings: Application settings (used for non-tunable config like URLs)
             vector_service: Optional VectorService override (uses factory if None)
             ollama_url: Optional Ollama URL override
             default_model: Optional default model override
@@ -406,13 +407,47 @@ class RAGService:
         self._vector_service = vector_service
         self.ollama_url = ollama_url or settings.ollama_base_url
         self.default_model = default_model or settings.chat_model
-        self.min_similarity_score = settings.rag_min_similarity_score
+        # Non-tunable settings from config (not exposed in UI)
         self.max_chunks_per_doc = settings.rag_max_chunks_per_doc
         self.chunk_overlap_threshold = settings.rag_chunk_overlap_threshold
         self.dedup_candidates_cap = settings.rag_dedup_candidates_cap
-        self.confidence_threshold = settings.rag_confidence_threshold
-        self.enable_query_expansion = settings.rag_enable_query_expansion
         self.enable_hallucination_check = settings.rag_enable_hallucination_check
+
+    # -------------------------------------------------------------------------
+    # Dynamic settings from database (single source of truth)
+    # -------------------------------------------------------------------------
+
+    @property
+    def min_similarity_score(self) -> float:
+        """Get min similarity score from database."""
+        return get_rag_setting("retrieval_min_score", self.settings.rag_min_similarity_score)
+
+    @property
+    def confidence_threshold(self) -> int:
+        """Get confidence threshold from database."""
+        return get_rag_setting("llm_confidence_threshold", self.settings.rag_confidence_threshold)
+
+    @property
+    def enable_query_expansion(self) -> bool:
+        """Get query expansion setting from database."""
+        return get_rag_setting(
+            "retrieval_enable_expansion", self.settings.rag_enable_query_expansion
+        )
+
+    @property
+    def rag_temperature(self) -> float:
+        """Get LLM temperature from database."""
+        return get_rag_setting("llm_temperature", self.settings.rag_temperature)
+
+    @property
+    def rag_max_response_tokens(self) -> int:
+        """Get max response tokens from database."""
+        return get_rag_setting("llm_max_response_tokens", self.settings.rag_max_response_tokens)
+
+    @property
+    def retrieval_top_k(self) -> int:
+        """Get top-k retrieval count from database."""
+        return get_rag_setting("retrieval_top_k", self.settings.rag_total_context_chunks)
 
     @property
     def vector_service(self):
@@ -1038,7 +1073,7 @@ class RAGService:
                     llm = ChatOllama(
                         base_url=self.ollama_url,
                         model=model,
-                        temperature=self.settings.rag_temperature,
+                        temperature=self.rag_temperature,
                         timeout=self.settings.rag_timeout_seconds,
                     )
                     response = await llm.ainvoke([("human", request.query)])
@@ -1053,12 +1088,13 @@ class RAGService:
             # Default mode: always retrieve (routing_decision stays None)
             routing_decision = ROUTING_RETRIEVE
 
-        # 2. Retrieve quality context
+        # 2. Retrieve quality context (use DB setting if not specified in request)
+        max_chunks = request.max_context_chunks or self.retrieval_top_k
         context_chunks = await self.get_quality_context(
             query=request.query,
             user_tags=request.user_tags,
             tenant_id=request.tenant_id,
-            max_chunks=request.max_context_chunks,
+            max_chunks=max_chunks,
         )
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -1102,7 +1138,7 @@ class RAGService:
             llm = ChatOllama(
                 base_url=self.ollama_url,
                 model=model,
-                temperature=self.settings.rag_temperature,
+                temperature=self.rag_temperature,
                 timeout=self.settings.rag_timeout_seconds,
             )
 

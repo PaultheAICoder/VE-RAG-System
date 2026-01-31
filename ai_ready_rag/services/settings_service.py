@@ -8,6 +8,47 @@ from sqlalchemy.orm import Session
 
 from ai_ready_rag.db.models import AdminSetting, SettingsAudit
 
+# Default values for RAG settings
+RAG_SETTINGS_DEFAULTS = {
+    # Retrieval settings
+    "retrieval_top_k": 5,
+    "retrieval_min_score": 0.3,
+    "retrieval_enable_expansion": True,
+    # LLM settings
+    "llm_temperature": 0.1,
+    "llm_max_response_tokens": 2048,
+    "llm_confidence_threshold": 40,
+}
+
+
+def get_rag_setting(key: str, default: Any = None) -> Any:
+    """Get a RAG setting from database with fallback to default.
+
+    This is a standalone function that creates its own db session,
+    suitable for use from the RAG service which may not have a session.
+
+    Args:
+        key: Setting key (e.g., 'retrieval_top_k', 'llm_temperature')
+        default: Default value if not found in database
+
+    Returns:
+        Setting value from database, or default if not found
+    """
+    from ai_ready_rag.db.database import SessionLocal
+
+    # Use provided default or look up in our defaults dict
+    if default is None:
+        default = RAG_SETTINGS_DEFAULTS.get(key)
+
+    db = SessionLocal()
+    try:
+        setting = db.query(AdminSetting).filter(AdminSetting.key == key).first()
+        if setting is not None:
+            return json.loads(setting.value)
+        return default
+    finally:
+        db.close()
+
 
 class SettingsService:
     """Service for admin settings CRUD operations."""
