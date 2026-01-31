@@ -4,3 +4,6 @@ export { Card } from './Card';
 export { Badge } from './Badge';
 export { Alert } from './Alert';
 export { Select } from './Select';
+export { Modal } from './Modal';
+export { Checkbox } from './Checkbox';
+export { Pagination } from './Pagination';
