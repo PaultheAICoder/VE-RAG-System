@@ -39,6 +39,7 @@ export function ReindexStatusCard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [statusChecked, setStatusChecked] = useState(false);
 
   // Modal states
   const [showAbortConfirm, setShowAbortConfirm] = useState(false);
@@ -48,9 +49,11 @@ export function ReindexStatusCard() {
   const fetchStatus = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setStatusChecked(false);
     try {
       const data = await getReindexStatus();
       setJob(data);
+      setStatusChecked(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch status');
     } finally {
@@ -58,10 +61,15 @@ export function ReindexStatusCard() {
     }
   }, []);
 
-  // Auto-refresh when job is running
+  // Fetch status on mount
   useEffect(() => {
-    if (job?.status === 'running') {
-      const interval = setInterval(fetchStatus, 3000);
+    fetchStatus();
+  }, [fetchStatus]);
+
+  // Auto-refresh when job is active (pending or running)
+  useEffect(() => {
+    if (job?.status === 'running' || job?.status === 'pending') {
+      const interval = setInterval(fetchStatus, 2000);
       return () => clearInterval(interval);
     }
   }, [job?.status, fetchStatus]);
@@ -144,10 +152,16 @@ export function ReindexStatusCard() {
         </Alert>
       )}
 
-      {!job && !loading && (
+      {!job && !loading && !statusChecked && (
         <p className="text-gray-500 dark:text-gray-400 text-sm">
           No active reindex job. Click "Check Status" to refresh.
         </p>
+      )}
+
+      {!job && !loading && statusChecked && (
+        <Alert variant="success" onClose={() => setStatusChecked(false)}>
+          No active reindex job found. The system is idle.
+        </Alert>
       )}
 
       {job && (
