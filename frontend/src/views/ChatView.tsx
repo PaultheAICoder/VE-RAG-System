@@ -105,13 +105,35 @@ export function ChatView() {
     }
   };
 
-  const handleNewSession = async () => {
+  const handleNewSession = useCallback(async () => {
     const sessionId = await createSession();
     if (sessionId) {
       setActiveSessionId(sessionId);
       setMessages([]);
     }
-  };
+  }, []);
+
+  // Handle Cmd/Ctrl + N keyboard shortcut for new session in chat view
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isMod = e.metaKey || e.ctrlKey;
+      const target = e.target as HTMLElement;
+      const tagName = target.tagName.toLowerCase();
+      const isInputField =
+        tagName === 'input' ||
+        tagName === 'textarea' ||
+        target.isContentEditable;
+
+      // Cmd/Ctrl + N: New session (only when not in input field)
+      if (isMod && e.key === 'n' && !isInputField) {
+        e.preventDefault();
+        handleNewSession();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [handleNewSession]);
 
   const handleSelectSession = useCallback((sessionId: string) => {
     setActiveSessionId(sessionId);
