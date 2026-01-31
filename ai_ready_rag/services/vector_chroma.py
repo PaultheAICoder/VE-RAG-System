@@ -251,6 +251,76 @@ class ChromaVectorService:
                 "details": {"error": str(e)},
             }
 
+    async def get_extended_stats(self) -> dict[str, Any]:
+        """Get extended collection statistics.
+
+        Returns:
+            dict with:
+            - total_chunks: int
+            - unique_files: int
+            - collection_name: str
+            - collection_size_bytes: int (estimated from persist dir)
+            - files: list[dict] with document_id, filename, chunk_count
+        """
+        import os
+
+        try:
+            total_chunks = self.collection.count()
+
+            # Estimate storage size from persist directory
+            collection_size_bytes = 0
+            if os.path.exists(self.persist_dir):
+                for dirpath, _dirnames, filenames in os.walk(self.persist_dir):
+                    for filename in filenames:
+                        filepath = os.path.join(dirpath, filename)
+                        try:
+                            collection_size_bytes += os.path.getsize(filepath)
+                        except OSError:
+                            pass
+
+            # Get all documents to aggregate stats
+            file_stats: dict[str, dict] = {}
+
+            if total_chunks > 0:
+                # Fetch all records to get document info
+                results = self.collection.get(
+                    include=["metadatas"],
+                    limit=10000,  # Reasonable limit
+                )
+
+                if results["metadatas"]:
+                    for meta in results["metadatas"]:
+                        doc_id = meta.get("document_id", "")
+                        doc_name = meta.get("document_name", "")
+                        if doc_id:
+                            if doc_id not in file_stats:
+                                file_stats[doc_id] = {
+                                    "document_id": doc_id,
+                                    "filename": doc_name,
+                                    "chunk_count": 0,
+                                }
+                            file_stats[doc_id]["chunk_count"] += 1
+
+            files_list = list(file_stats.values())
+
+            return {
+                "total_chunks": total_chunks,
+                "unique_files": len(files_list),
+                "collection_name": self.collection_name,
+                "collection_size_bytes": collection_size_bytes,
+                "files": files_list,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get extended collection stats: {e}")
+            return {
+                "total_chunks": 0,
+                "unique_files": 0,
+                "collection_name": self.collection_name,
+                "collection_size_bytes": 0,
+                "files": [],
+            }
+
     async def clear_collection(self) -> bool:
         """Clear all vectors from collection."""
         try:
