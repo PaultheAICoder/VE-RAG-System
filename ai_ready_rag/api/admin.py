@@ -1112,3 +1112,333 @@ async def get_detailed_health(
         uptime_seconds=uptime_seconds,
         last_checked=datetime.now(UTC),
     )
+
+
+# =============================================================================
+# RAG Tuning Settings - Retrieval and LLM Response Configuration
+# =============================================================================
+
+# Default values for RAG tuning settings
+RETRIEVAL_DEFAULTS = {
+    "retrieval_top_k": 5,  # Number of chunks to retrieve
+    "retrieval_min_score": 0.3,  # Minimum similarity score (0.0-1.0)
+    "retrieval_enable_expansion": True,  # Enable query expansion
+}
+
+LLM_DEFAULTS = {
+    "llm_temperature": 0.1,  # LLM temperature (0.0-1.0)
+    "llm_max_response_tokens": 2048,  # Max tokens in response
+    "llm_confidence_threshold": 40,  # Confidence threshold (0-100)
+}
+
+
+class RetrievalSettingsRequest(BaseModel):
+    """Request model for updating retrieval settings."""
+
+    retrieval_top_k: int | None = None
+    retrieval_min_score: float | None = None
+    retrieval_enable_expansion: bool | None = None
+
+
+class RetrievalSettingsResponse(BaseModel):
+    """Response model for retrieval settings."""
+
+    retrieval_top_k: int
+    retrieval_min_score: float
+    retrieval_enable_expansion: bool
+
+
+class LLMSettingsRequest(BaseModel):
+    """Request model for updating LLM settings."""
+
+    llm_temperature: float | None = None
+    llm_max_response_tokens: int | None = None
+    llm_confidence_threshold: int | None = None
+
+
+class LLMSettingsResponse(BaseModel):
+    """Response model for LLM settings."""
+
+    llm_temperature: float
+    llm_max_response_tokens: int
+    llm_confidence_threshold: int
+
+
+class SettingsAuditEntry(BaseModel):
+    """Response model for settings audit entry."""
+
+    id: str
+    setting_key: str
+    old_value: str | None
+    new_value: str
+    changed_by: str | None
+    changed_at: datetime
+    change_reason: str | None
+
+
+class SettingsAuditResponse(BaseModel):
+    """Response model for settings audit list."""
+
+    entries: list[SettingsAuditEntry]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.get("/settings/retrieval", response_model=RetrievalSettingsResponse)
+async def get_retrieval_settings(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get current retrieval settings for RAG tuning.
+
+    Returns settings with fallback to environment variables, then defaults.
+    Admin only.
+    """
+    service = SettingsService(db)
+
+    return RetrievalSettingsResponse(
+        retrieval_top_k=service.get_with_env_fallback(
+            "retrieval_top_k",
+            "RAG_TOP_K",
+            RETRIEVAL_DEFAULTS["retrieval_top_k"],
+        ),
+        retrieval_min_score=service.get_with_env_fallback(
+            "retrieval_min_score",
+            "RAG_MIN_SCORE",
+            RETRIEVAL_DEFAULTS["retrieval_min_score"],
+        ),
+        retrieval_enable_expansion=service.get_with_env_fallback(
+            "retrieval_enable_expansion",
+            "RAG_ENABLE_EXPANSION",
+            RETRIEVAL_DEFAULTS["retrieval_enable_expansion"],
+        ),
+    )
+
+
+@router.put("/settings/retrieval", response_model=RetrievalSettingsResponse)
+async def update_retrieval_settings(
+    request: RetrievalSettingsRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Update retrieval settings for RAG tuning.
+
+    Only updates fields that are provided (not None).
+    All changes are recorded in the audit log.
+    Admin only.
+    """
+    service = SettingsService(db)
+
+    # Validate and update only provided fields
+    if request.retrieval_top_k is not None:
+        if not (3 <= request.retrieval_top_k <= 20):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="retrieval_top_k must be between 3 and 20",
+            )
+        service.set_with_audit(
+            "retrieval_top_k",
+            request.retrieval_top_k,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    if request.retrieval_min_score is not None:
+        if not (0.1 <= request.retrieval_min_score <= 0.9):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="retrieval_min_score must be between 0.1 and 0.9",
+            )
+        service.set_with_audit(
+            "retrieval_min_score",
+            request.retrieval_min_score,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    if request.retrieval_enable_expansion is not None:
+        service.set_with_audit(
+            "retrieval_enable_expansion",
+            request.retrieval_enable_expansion,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    logger.info(
+        f"Admin {current_user.email} updated retrieval settings: "
+        f"{request.model_dump(exclude_none=True)}"
+    )
+
+    # Return current state
+    return RetrievalSettingsResponse(
+        retrieval_top_k=service.get_with_env_fallback(
+            "retrieval_top_k",
+            "RAG_TOP_K",
+            RETRIEVAL_DEFAULTS["retrieval_top_k"],
+        ),
+        retrieval_min_score=service.get_with_env_fallback(
+            "retrieval_min_score",
+            "RAG_MIN_SCORE",
+            RETRIEVAL_DEFAULTS["retrieval_min_score"],
+        ),
+        retrieval_enable_expansion=service.get_with_env_fallback(
+            "retrieval_enable_expansion",
+            "RAG_ENABLE_EXPANSION",
+            RETRIEVAL_DEFAULTS["retrieval_enable_expansion"],
+        ),
+    )
+
+
+@router.get("/settings/llm", response_model=LLMSettingsResponse)
+async def get_llm_settings(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get current LLM response settings for RAG tuning.
+
+    Returns settings with fallback to environment variables, then defaults.
+    Admin only.
+    """
+    service = SettingsService(db)
+
+    return LLMSettingsResponse(
+        llm_temperature=service.get_with_env_fallback(
+            "llm_temperature",
+            "RAG_TEMPERATURE",
+            LLM_DEFAULTS["llm_temperature"],
+        ),
+        llm_max_response_tokens=service.get_with_env_fallback(
+            "llm_max_response_tokens",
+            "RAG_MAX_RESPONSE_TOKENS",
+            LLM_DEFAULTS["llm_max_response_tokens"],
+        ),
+        llm_confidence_threshold=service.get_with_env_fallback(
+            "llm_confidence_threshold",
+            "RAG_CONFIDENCE_THRESHOLD",
+            LLM_DEFAULTS["llm_confidence_threshold"],
+        ),
+    )
+
+
+@router.put("/settings/llm", response_model=LLMSettingsResponse)
+async def update_llm_settings(
+    request: LLMSettingsRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Update LLM response settings for RAG tuning.
+
+    Only updates fields that are provided (not None).
+    All changes are recorded in the audit log.
+    Admin only.
+    """
+    service = SettingsService(db)
+
+    # Validate and update only provided fields
+    if request.llm_temperature is not None:
+        if not (0.0 <= request.llm_temperature <= 1.0):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="llm_temperature must be between 0.0 and 1.0",
+            )
+        service.set_with_audit(
+            "llm_temperature",
+            request.llm_temperature,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    if request.llm_max_response_tokens is not None:
+        if not (256 <= request.llm_max_response_tokens <= 4096):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="llm_max_response_tokens must be between 256 and 4096",
+            )
+        service.set_with_audit(
+            "llm_max_response_tokens",
+            request.llm_max_response_tokens,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    if request.llm_confidence_threshold is not None:
+        if not (0 <= request.llm_confidence_threshold <= 100):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="llm_confidence_threshold must be between 0 and 100",
+            )
+        service.set_with_audit(
+            "llm_confidence_threshold",
+            request.llm_confidence_threshold,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    logger.info(
+        f"Admin {current_user.email} updated LLM settings: {request.model_dump(exclude_none=True)}"
+    )
+
+    # Return current state
+    return LLMSettingsResponse(
+        llm_temperature=service.get_with_env_fallback(
+            "llm_temperature",
+            "RAG_TEMPERATURE",
+            LLM_DEFAULTS["llm_temperature"],
+        ),
+        llm_max_response_tokens=service.get_with_env_fallback(
+            "llm_max_response_tokens",
+            "RAG_MAX_RESPONSE_TOKENS",
+            LLM_DEFAULTS["llm_max_response_tokens"],
+        ),
+        llm_confidence_threshold=service.get_with_env_fallback(
+            "llm_confidence_threshold",
+            "RAG_CONFIDENCE_THRESHOLD",
+            LLM_DEFAULTS["llm_confidence_threshold"],
+        ),
+    )
+
+
+@router.get("/settings/audit", response_model=SettingsAuditResponse)
+async def get_settings_audit(
+    key: str | None = Query(None, description="Filter by setting key"),
+    limit: int = Query(50, ge=1, le=100, description="Maximum entries to return"),
+    offset: int = Query(0, ge=0, description="Number of entries to skip"),
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get settings change audit history.
+
+    Returns a paginated list of all settings changes, with optional filtering by key.
+    Admin only.
+    """
+    service = SettingsService(db)
+
+    # Get audit entries
+    entries = service.get_audit_history(key=key, limit=limit, offset=offset)
+
+    # Get total count for pagination
+    from ai_ready_rag.db.models import SettingsAudit
+
+    query = db.query(SettingsAudit)
+    if key:
+        query = query.filter(SettingsAudit.setting_key == key)
+    total = query.count()
+
+    return SettingsAuditResponse(
+        entries=[
+            SettingsAuditEntry(
+                id=e.id,
+                setting_key=e.setting_key,
+                old_value=e.old_value,
+                new_value=e.new_value,
+                changed_by=e.changed_by,
+                changed_at=e.changed_at,
+                change_reason=e.change_reason,
+            )
+            for e in entries
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )

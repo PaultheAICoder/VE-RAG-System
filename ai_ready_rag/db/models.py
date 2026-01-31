@@ -166,3 +166,17 @@ class SystemSetup(Base):
     setup_completed_at = Column(DateTime, nullable=True)
     setup_completed_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SettingsAudit(Base):
+    """Tracks all admin settings changes for audit trail."""
+
+    __tablename__ = "settings_audit"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    setting_key = Column(String, nullable=False, index=True)
+    old_value = Column(Text, nullable=True)  # JSON encoded
+    new_value = Column(Text, nullable=False)  # JSON encoded
+    changed_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    changed_at = Column(DateTime, default=datetime.utcnow)
+    change_reason = Column(String, nullable=True)

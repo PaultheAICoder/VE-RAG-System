@@ -310,3 +310,33 @@ export interface DetailedHealthResponse {
   uptime_seconds: number;
   last_checked: string;
 }
+
+// RAG Tuning Settings
+export interface RetrievalSettings {
+  retrieval_top_k: number;
+  retrieval_min_score: number;
+  retrieval_enable_expansion: boolean;
+}
+
+export interface LLMSettings {
+  llm_temperature: number;
+  llm_max_response_tokens: number;
+  llm_confidence_threshold: number;
+}
+
+export interface SettingsAuditEntry {
+  id: string;
+  setting_key: string;
+  old_value: string | null;
+  new_value: string;
+  changed_by: string | null;
+  changed_at: string;
+  change_reason: string | null;
+}
+
+export interface SettingsAuditResponse {
+  entries: SettingsAuditEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
