@@ -3,7 +3,7 @@ import { Card } from '../../ui';
 
 interface HealthCardProps {
   title: string;
-  status: 'healthy' | 'unhealthy' | 'unknown';
+  status: 'healthy' | 'unhealthy' | 'degraded' | 'unknown';
   icon: ReactNode;
   details: { label: string; value: string }[];
 }
@@ -12,12 +12,14 @@ export function HealthCard({ title, status, icon, details }: HealthCardProps) {
   const statusColors = {
     healthy: 'text-green-500',
     unhealthy: 'text-red-500',
+    degraded: 'text-yellow-500',
     unknown: 'text-gray-400',
   };
 
   const statusIndicator = {
     healthy: 'bg-green-500',
     unhealthy: 'bg-red-500',
+    degraded: 'bg-yellow-500',
     unknown: 'bg-gray-400',
   };
 
