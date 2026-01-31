@@ -17,6 +17,12 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "rag_max_history_tokens": 600,
         "rag_max_response_tokens": 512,
         "rag_enable_hallucination_check": False,  # Faster dev
+        # Database pool - modest for laptop hardware
+        "db_pool_size": 5,
+        "db_pool_max_overflow": 10,
+        "db_pool_timeout": 30,
+        # Concurrent processing - limited for laptop
+        "max_concurrent_processing": 3,
     },
     "spark": {
         "vector_backend": "qdrant",
@@ -28,6 +34,12 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "rag_max_history_tokens": 1500,
         "rag_max_response_tokens": 2048,
         "rag_enable_hallucination_check": True,  # Full quality
+        # Database pool - larger for DGX Spark hardware
+        "db_pool_size": 10,
+        "db_pool_max_overflow": 20,
+        "db_pool_timeout": 60,
+        # Concurrent processing - more for Spark
+        "max_concurrent_processing": 8,
     },
 }
 
@@ -44,6 +56,12 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "sqlite:///./data/ai_ready_rag.db"
+    db_pool_size: int | None = None  # None = use profile default
+    db_pool_max_overflow: int | None = None  # None = use profile default
+    db_pool_timeout: int | None = None  # None = use profile default
+
+    # Processing concurrency
+    max_concurrent_processing: int | None = None  # None = use profile default
 
     # JWT
     jwt_secret_key: str = "dev-secret-key-change-in-production"

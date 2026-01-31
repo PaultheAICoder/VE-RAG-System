@@ -1,5 +1,6 @@
 """Document management endpoints."""
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Annotated
@@ -26,6 +27,22 @@ from ai_ready_rag.services.document_service import DocumentService
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Semaphore to limit concurrent document processing
+# Initialized lazily to use profile-specific settings
+_processing_semaphore: asyncio.Semaphore | None = None
+
+
+def get_processing_semaphore() -> asyncio.Semaphore:
+    """Get or create the processing semaphore with profile-specific limit."""
+    global _processing_semaphore
+    if _processing_semaphore is None:
+        settings = get_settings()
+        _processing_semaphore = asyncio.Semaphore(settings.max_concurrent_processing)
+        logger.info(
+            f"Processing semaphore initialized with limit: {settings.max_concurrent_processing}"
+        )
+    return _processing_semaphore
+
 
 async def process_document_task(
     document_id: str,
@@ -34,6 +51,7 @@ async def process_document_task(
     """Background task to process a document.
 
     Creates its own db session to avoid session lifecycle issues.
+    Uses a semaphore to limit concurrent processing based on hardware profile.
 
     Args:
         document_id: Document ID to process.
@@ -42,56 +60,59 @@ async def process_document_task(
     from ai_ready_rag.services.factory import get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingOptions, ProcessingService
 
-    settings = get_settings()
-    db = SessionLocal()
+    # Acquire semaphore to limit concurrent processing
+    semaphore = get_processing_semaphore()
+    async with semaphore:
+        settings = get_settings()
+        db = SessionLocal()
 
-    # Reconstruct ProcessingOptions if provided
-    processing_options = None
-    if processing_options_dict:
-        processing_options = ProcessingOptions(**processing_options_dict)
+        # Reconstruct ProcessingOptions if provided
+        processing_options = None
+        if processing_options_dict:
+            processing_options = ProcessingOptions(**processing_options_dict)
 
-    try:
-        # Get the document
-        document = db.query(Document).filter(Document.id == document_id).first()
-        if not document:
-            logger.error(f"Document {document_id} not found for processing")
-            return
-
-        # Create services using factory (respects vector_backend setting)
-        vector_service = get_vector_service(settings)
-        await vector_service.initialize()
-
-        processing_service = ProcessingService(
-            vector_service=vector_service,
-            settings=settings,
-        )
-
-        # Process the document with optional per-upload options
-        result = await processing_service.process_document(
-            document, db, processing_options=processing_options
-        )
-
-        if result.success:
-            logger.info(
-                f"Document {document_id} processed successfully: "
-                f"{result.chunk_count} chunks in {result.processing_time_ms}ms"
-            )
-        else:
-            logger.warning(f"Document {document_id} processing failed: {result.error_message}")
-
-    except Exception as e:
-        logger.exception(f"Unexpected error processing document {document_id}: {e}")
-        # Try to mark as failed
         try:
+            # Get the document
             document = db.query(Document).filter(Document.id == document_id).first()
-            if document:
-                document.status = "failed"
-                document.error_message = f"Unexpected error: {e}"
-                db.commit()
-        except Exception:
-            logger.exception("Failed to update document status after error")
-    finally:
-        db.close()
+            if not document:
+                logger.error(f"Document {document_id} not found for processing")
+                return
+
+            # Create services using factory (respects vector_backend setting)
+            vector_service = get_vector_service(settings)
+            await vector_service.initialize()
+
+            processing_service = ProcessingService(
+                vector_service=vector_service,
+                settings=settings,
+            )
+
+            # Process the document with optional per-upload options
+            result = await processing_service.process_document(
+                document, db, processing_options=processing_options
+            )
+
+            if result.success:
+                logger.info(
+                    f"Document {document_id} processed successfully: "
+                    f"{result.chunk_count} chunks in {result.processing_time_ms}ms"
+                )
+            else:
+                logger.warning(f"Document {document_id} processing failed: {result.error_message}")
+
+        except Exception as e:
+            logger.exception(f"Unexpected error processing document {document_id}: {e}")
+            # Try to mark as failed
+            try:
+                document = db.query(Document).filter(Document.id == document_id).first()
+                if document:
+                    document.status = "failed"
+                    document.error_message = f"Unexpected error: {e}"
+                    db.commit()
+            except Exception:
+                logger.exception("Failed to update document status after error")
+        finally:
+            db.close()
 
 
 class TagInfo(BaseModel):

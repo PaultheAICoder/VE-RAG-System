@@ -5,6 +5,7 @@ from collections.abc import Generator
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from sqlalchemy.pool import QueuePool
 
 from ai_ready_rag.config import get_settings
 
@@ -13,9 +14,17 @@ settings = get_settings()
 # Ensure data directory exists
 os.makedirs("data", exist_ok=True)
 
-# Create engine
+# Create engine with profile-based pool settings
+# Pool size scales based on hardware capabilities (laptop vs spark)
 engine = create_engine(
-    settings.database_url, connect_args={"check_same_thread": False}, echo=settings.debug
+    settings.database_url,
+    connect_args={"check_same_thread": False},
+    echo=settings.debug,
+    poolclass=QueuePool,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_pool_max_overflow,
+    pool_timeout=settings.db_pool_timeout,
+    pool_pre_ping=True,  # Verify connections are alive before using
 )
 
 
