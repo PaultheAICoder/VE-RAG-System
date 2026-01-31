@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
-from ai_ready_rag.core.dependencies import require_admin
+from ai_ready_rag.core.dependencies import require_system_admin
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import User
 from ai_ready_rag.services.document_service import DocumentService
@@ -212,7 +212,7 @@ def _get_docling_version() -> str:
 @router.post("/documents/recover-stuck", response_model=RecoverResponse)
 async def recover_stuck_documents(
     max_age_hours: int = Query(2, ge=1, le=168, description="Maximum age in hours"),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
     """Recover documents stuck in processing state.
@@ -241,7 +241,7 @@ async def recover_stuck_documents(
 
 @router.get("/knowledge-base/stats", response_model=KnowledgeBaseStatsResponse)
 async def get_knowledge_base_stats(
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
     """Get knowledge base statistics including per-file details.
@@ -293,7 +293,7 @@ async def get_knowledge_base_stats(
 @router.delete("/knowledge-base", response_model=ClearKnowledgeBaseResponse)
 async def clear_knowledge_base(
     request: ClearKnowledgeBaseRequest,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
     """Clear all vectors from the knowledge base.
@@ -397,7 +397,7 @@ def _get_setting_value(service: SettingsService, key: str, default: any) -> any:
 
 @router.get("/processing-options", response_model=ProcessingOptionsResponse)
 async def get_processing_options(
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
     """Get current processing options.
@@ -436,7 +436,7 @@ async def get_processing_options(
 @router.patch("/processing-options", response_model=ProcessingOptionsResponse)
 async def update_processing_options(
     options: ProcessingOptionsRequest,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
     """Update processing options.
@@ -507,7 +507,7 @@ async def update_processing_options(
 
 @router.get("/architecture", response_model=ArchitectureInfoResponse)
 async def get_architecture_info(
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_system_admin),
 ):
     """Get comprehensive system architecture information.
 
@@ -675,7 +675,7 @@ class ChangeEmbeddingResponse(BaseModel):
 
 @router.get("/models", response_model=ModelsResponse)
 async def get_models(
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
     """Get available Ollama models and current selection.
@@ -737,7 +737,7 @@ async def get_models(
 @router.patch("/models/chat", response_model=ChangeModelResponse)
 async def change_chat_model(
     request: ChangeModelRequest,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
     """Change the active chat model.
@@ -795,7 +795,7 @@ async def change_chat_model(
 @router.patch("/models/embedding", response_model=ChangeEmbeddingResponse)
 async def change_embedding_model(
     request: ChangeEmbeddingRequest,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
     """Change the embedding model used for vectorization.
