@@ -1,7 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Save, AlertTriangle, RefreshCw } from 'lucide-react';
 import { Button, Alert, Card, Select, Checkbox, Slider } from '../components/ui';
-import { ConfirmModal, ReindexStatusCard } from '../components/features/admin';
+import {
+  ConfirmModal,
+  ReindexStatusCard,
+  CacheSettingsCard,
+  CacheStatsCard,
+  CacheTopQueriesCard,
+  CacheWarmingCard,
+  ClearCacheModal,
+} from '../components/features/admin';
 import {
   getProcessingOptions,
   updateProcessingOptions,
@@ -15,12 +23,23 @@ import {
   getAdvancedSettings,
   updateAdvancedSettings,
 } from '../api/admin';
+import {
+  getCacheSettings,
+  updateCacheSettings,
+  getCacheStats,
+  clearCache,
+  getTopQueries,
+  warmCache,
+} from '../api/cache';
 import type {
   ProcessingOptions,
   ModelsResponse,
   RetrievalSettings,
   LLMSettings,
   AdvancedSettings,
+  CacheSettings,
+  CacheStats,
+  TopCachedQuery,
 } from '../types';
 
 const OCR_LANGUAGE_OPTIONS = [
@@ -66,6 +85,15 @@ export function SettingsView() {
   const [formChunkOverlap, setFormChunkOverlap] = useState(64);
   const [isDirty, setIsDirty] = useState(false);
 
+  // Cache state
+  const [cacheSettings, setCacheSettings] = useState<CacheSettings | null>(null);
+  const [formCacheSettings, setFormCacheSettings] = useState<CacheSettings | null>(null);
+  const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
+  const [topQueries, setTopQueries] = useState<TopCachedQuery[]>([]);
+  const [showClearCacheModal, setShowClearCacheModal] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+  const [isWarming, setIsWarming] = useState(false);
+
   // Modal state
   const [showEmbeddingWarning, setShowEmbeddingWarning] = useState(false);
   const [pendingEmbeddingModel, setPendingEmbeddingModel] = useState('');
@@ -76,12 +104,15 @@ export function SettingsView() {
     setLoading(true);
     setError(null);
     try {
-      const [optionsData, modelsData, retrievalData, llmData, advancedData] = await Promise.all([
+      const [optionsData, modelsData, retrievalData, llmData, advancedData, cacheSettingsData, cacheStatsData, topQueriesData] = await Promise.all([
         getProcessingOptions(),
         getModels(),
         getRetrievalSettings(),
         getLLMSettings(),
         getAdvancedSettings(),
+        getCacheSettings(),
+        getCacheStats(),
+        getTopQueries(10),
       ]);
       setOptions(optionsData);
       setFormOptions(optionsData);
@@ -95,6 +126,10 @@ export function SettingsView() {
       setAdvancedSettings(advancedData);
       setFormChunkSize(advancedData.chunk_size);
       setFormChunkOverlap(advancedData.chunk_overlap);
+      setCacheSettings(cacheSettingsData);
+      setFormCacheSettings(cacheSettingsData);
+      setCacheStats(cacheStatsData);
+      setTopQueries(topQueriesData.queries);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
@@ -148,7 +183,18 @@ export function SettingsView() {
       (formChunkSize !== advancedSettings.chunk_size ||
         formChunkOverlap !== advancedSettings.chunk_overlap);
 
-    setIsDirty(optionsDirty || modelsDirty || !!retrievalDirty || !!llmDirty || !!chunkingDirty);
+    const cacheDirty =
+      formCacheSettings &&
+      cacheSettings &&
+      (formCacheSettings.cache_enabled !== cacheSettings.cache_enabled ||
+        formCacheSettings.cache_ttl_hours !== cacheSettings.cache_ttl_hours ||
+        formCacheSettings.cache_max_entries !== cacheSettings.cache_max_entries ||
+        floatsDiffer(formCacheSettings.cache_semantic_threshold, cacheSettings.cache_semantic_threshold) ||
+        formCacheSettings.cache_min_confidence !== cacheSettings.cache_min_confidence ||
+        formCacheSettings.cache_auto_warm_enabled !== cacheSettings.cache_auto_warm_enabled ||
+        formCacheSettings.cache_auto_warm_count !== cacheSettings.cache_auto_warm_count);
+
+    setIsDirty(optionsDirty || modelsDirty || !!retrievalDirty || !!llmDirty || !!chunkingDirty || !!cacheDirty);
   }, [
     formOptions,
     options,
@@ -162,6 +208,8 @@ export function SettingsView() {
     advancedSettings,
     formChunkSize,
     formChunkOverlap,
+    formCacheSettings,
+    cacheSettings,
   ]);
 
   // Handle form changes
@@ -184,6 +232,38 @@ export function SettingsView() {
     setSelectedEmbeddingModel(pendingEmbeddingModel);
     setShowEmbeddingWarning(false);
     setPendingEmbeddingModel('');
+  };
+
+  // Handle clear cache
+  const handleClearCache = async () => {
+    setIsClearing(true);
+    try {
+      const result = await clearCache();
+      setSuccess(`Cleared ${result.cleared_entries} cache entries`);
+      // Refresh stats
+      const newStats = await getCacheStats();
+      setCacheStats(newStats);
+      const newTopQueries = await getTopQueries(10);
+      setTopQueries(newTopQueries.queries);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to clear cache');
+    } finally {
+      setIsClearing(false);
+      setShowClearCacheModal(false);
+    }
+  };
+
+  // Handle warm cache
+  const handleWarmCache = async (queries: string[]) => {
+    setIsWarming(true);
+    try {
+      const result = await warmCache(queries);
+      setSuccess(`Queued ${result.queued} queries for warming`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to warm cache');
+    } finally {
+      setIsWarming(false);
+    }
   };
 
   // Handle save
@@ -265,6 +345,21 @@ export function SettingsView() {
         );
       }
 
+      // Save cache settings if changed
+      if (
+        formCacheSettings &&
+        cacheSettings &&
+        (formCacheSettings.cache_enabled !== cacheSettings.cache_enabled ||
+          formCacheSettings.cache_ttl_hours !== cacheSettings.cache_ttl_hours ||
+          formCacheSettings.cache_max_entries !== cacheSettings.cache_max_entries ||
+          floatsDiffer(formCacheSettings.cache_semantic_threshold, cacheSettings.cache_semantic_threshold) ||
+          formCacheSettings.cache_min_confidence !== cacheSettings.cache_min_confidence ||
+          formCacheSettings.cache_auto_warm_enabled !== cacheSettings.cache_auto_warm_enabled ||
+          formCacheSettings.cache_auto_warm_count !== cacheSettings.cache_auto_warm_count)
+      ) {
+        await updateCacheSettings(formCacheSettings);
+      }
+
       setSuccess('Settings saved successfully');
       await fetchData(); // Refresh to get updated state
     } catch (err) {
@@ -287,6 +382,7 @@ export function SettingsView() {
       setFormChunkSize(advancedSettings.chunk_size);
       setFormChunkOverlap(advancedSettings.chunk_overlap);
     }
+    if (cacheSettings) setFormCacheSettings(cacheSettings);
     setIsDirty(false);
   };
 
@@ -600,6 +696,28 @@ export function SettingsView() {
         </div>
       </Card>
 
+      {/* Cache Settings Section */}
+      {formCacheSettings && (
+        <CacheSettingsCard
+          settings={formCacheSettings}
+          onChange={setFormCacheSettings}
+          disabled={saving}
+        />
+      )}
+
+      {/* Cache Statistics Section */}
+      <CacheStatsCard
+        stats={cacheStats}
+        onClear={() => setShowClearCacheModal(true)}
+        isClearing={isClearing}
+      />
+
+      {/* Top Cached Queries */}
+      <CacheTopQueriesCard queries={topQueries} />
+
+      {/* Cache Warming */}
+      <CacheWarmingCard onWarm={handleWarmCache} isWarming={isWarming} />
+
       {/* Reindex Status Section */}
       <ReindexStatusCard />
 
@@ -625,6 +743,15 @@ export function SettingsView() {
         message="Changing the embedding model will invalidate all existing vectors. You will need to re-index all documents for search to work correctly. Are you sure you want to proceed?"
         confirmLabel="Yes, Change Model"
         variant="warning"
+      />
+
+      {/* Clear Cache Modal */}
+      <ClearCacheModal
+        isOpen={showClearCacheModal}
+        onClose={() => setShowClearCacheModal(false)}
+        onConfirm={handleClearCache}
+        isLoading={isClearing}
+        entryCount={cacheStats?.total_entries}
       />
     </div>
   );

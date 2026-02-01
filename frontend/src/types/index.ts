@@ -460,3 +460,55 @@ export interface UploadResult {
   error?: string;
   documentId?: string;
 }
+
+// =============================================================================
+// Cache Settings Types (RAG Response Caching)
+// =============================================================================
+
+export interface CacheSettings {
+  cache_enabled: boolean;
+  cache_ttl_hours: number;
+  cache_max_entries: number;
+  cache_semantic_threshold: number;
+  cache_min_confidence: number;
+  cache_auto_warm_enabled: boolean;
+  cache_auto_warm_count: number;
+}
+
+export interface CacheStats {
+  enabled: boolean;
+  total_entries: number;
+  memory_entries: number;
+  sqlite_entries: number;
+  hit_count: number;
+  miss_count: number;
+  hit_rate: number;
+  avg_response_time_cached_ms: number;
+  avg_response_time_uncached_ms: number;
+  storage_size_bytes: number;
+  oldest_entry: string | null;
+  newest_entry: string | null;
+}
+
+export interface HitRateTrendPoint {
+  date: string;
+  hit_rate: number;
+  hits: number;
+  misses: number;
+}
+
+export interface TopCachedQuery {
+  query_text: string;
+  hit_count: number;
+  last_hit: string;
+}
+
+export interface ClearCacheResponse {
+  cleared_entries: number;
+  message: string;
+}
+
+export interface WarmCacheResponse {
+  queued: number;
+  message: string;
+}

@@ -9,3 +9,8 @@ export { ConfirmModal } from './ConfirmModal';
 export { ClearKBModal } from './ClearKBModal';
 export { ReindexStatusCard } from './ReindexStatusCard';
 export { ReindexFailuresModal } from './ReindexFailuresModal';
+export { CacheSettingsCard } from './CacheSettingsCard';
+export { CacheStatsCard } from './CacheStatsCard';
+export { CacheTopQueriesCard } from './CacheTopQueriesCard';
+export { CacheWarmingCard } from './CacheWarmingCard';
+export { ClearCacheModal } from './ClearCacheModal';
