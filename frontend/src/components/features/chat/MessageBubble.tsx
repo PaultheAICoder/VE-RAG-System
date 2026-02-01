@@ -86,10 +86,14 @@ export function MessageBubble({ message, isLoading = false }: MessageBubbleProps
               <CitationCard sources={message.sources} />
             )}
 
-            {/* Confidence badge */}
+            {/* Confidence badge with breakdown and response time */}
             {message.confidence && (
               <div className="flex items-center gap-2">
-                <ConfidenceBadge confidence={message.confidence} />
+                <ConfidenceBadge
+                  confidence={message.confidence}
+                  generationTimeMs={message.generation_time_ms}
+                  showBreakdown
+                />
               </div>
             )}
 

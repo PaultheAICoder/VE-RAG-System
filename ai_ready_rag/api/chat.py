@@ -128,6 +128,7 @@ class MessageResponse(BaseModel):
     content: str
     sources: list[SourceInfo] | None = None
     confidence: ConfidenceInfo | None = None
+    generation_time_ms: float | None = None
     was_routed: bool = False
     routed_to: str | None = None
     route_reason: str | None = None
@@ -423,20 +424,21 @@ async def get_messages(
                 sources = None
 
         # Build confidence info if present
-        # Note: The model only stores overall confidence as a float
-        # Full ConfidenceInfo would need additional fields stored
         confidence = None
         if msg.confidence is not None:
-            # For now, we store only overall confidence in the model
-            # Create ConfidenceInfo with overall value, others default to same
             confidence_int = (
                 int(msg.confidence * 100) if msg.confidence <= 1 else int(msg.confidence)
             )
+            # Use stored breakdown values if available, else fall back to overall
             confidence = ConfidenceInfo(
                 overall=confidence_int,
-                retrieval=confidence_int,
-                coverage=confidence_int,
-                llm=confidence_int,
+                retrieval=int(msg.confidence_retrieval * 100)
+                if msg.confidence_retrieval
+                else confidence_int,
+                coverage=int(msg.confidence_coverage * 100)
+                if msg.confidence_coverage
+                else confidence_int,
+                llm=msg.confidence_llm if msg.confidence_llm else confidence_int,
             )
 
         messages.append(
@@ -446,6 +448,7 @@ async def get_messages(
                 content=msg.content,
                 sources=sources,
                 confidence=confidence,
+                generation_time_ms=msg.generation_time_ms,
                 was_routed=msg.was_routed,
                 routed_to=msg.routed_to,
                 route_reason=msg.route_reason,
@@ -608,6 +611,10 @@ async def send_message(
         content=response.answer,
         sources=sources_json,
         confidence=response.confidence.overall,
+        confidence_retrieval=response.confidence.retrieval_score,
+        confidence_coverage=response.confidence.coverage_score,
+        confidence_llm=response.confidence.llm_score,
+        generation_time_ms=response.generation_time_ms,
         was_routed=(response.action == "ROUTE"),
         routed_to=response.route_to.owner_email if response.route_to else None,
         route_reason=response.route_to.reason if response.route_to else None,
@@ -647,6 +654,7 @@ async def send_message(
             content=msg.content,
             sources=sources,
             confidence=confidence,
+            generation_time_ms=msg.generation_time_ms,
             was_routed=msg.was_routed,
             routed_to=msg.routed_to,
             route_reason=msg.route_reason,

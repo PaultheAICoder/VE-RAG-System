@@ -98,6 +98,7 @@ export interface ChatMessage {
   content: string;
   sources?: SourceInfo[];
   confidence?: ConfidenceInfo;
+  generation_time_ms?: number;
   was_routed?: boolean;
   routed_to?: string;
   route_reason?: string;
