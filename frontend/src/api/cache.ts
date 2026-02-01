@@ -1,4 +1,5 @@
 import { apiClient } from './client';
+import { useAuthStore } from '../stores/authStore';
 import type {
   CacheSettings,
   CacheStats,
@@ -6,6 +7,7 @@ import type {
   TopCachedQuery,
   ClearCacheResponse,
   WarmCacheResponse,
+  WarmFileResponse,
 } from '../types';
 
 /**
@@ -66,4 +68,78 @@ export async function getHitRateTrend(days?: number): Promise<{ trend: HitRateTr
  */
 export async function warmCache(queries: string[]): Promise<WarmCacheResponse> {
   return apiClient.post<WarmCacheResponse>('/api/admin/cache/warm', { queries });
+}
+
+/**
+ * Upload a file to warm cache with progress tracking via SSE.
+ * Returns job_id and SSE URL for progress monitoring.
+ * @param file - Text file (.txt or .csv) containing queries
+ */
+export async function warmCacheFromFile(file: File): Promise<WarmFileResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const token = useAuthStore.getState().token;
+  const response = await fetch('/api/admin/cache/warm-file', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+/**
+ * Retry specific failed queries from a previous warming job.
+ * @param queries - Array of failed queries to retry
+ */
+export async function retryWarmCache(queries: string[]): Promise<WarmFileResponse> {
+  const token = useAuthStore.getState().token;
+  const response = await fetch('/api/admin/cache/warm-retry', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ queries }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Retry failed' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+/**
+ * Get SSE URL for warming progress.
+ * Note: Token passed as query param for EventSource compatibility.
+ * @param jobId - The warming job ID
+ */
+export function getWarmProgressUrl(jobId: string): string {
+  const token = useAuthStore.getState().token;
+  return `/api/admin/cache/warm-progress/${jobId}?token=${token}`;
+}
+
+/**
+ * Get current status of a warming job.
+ * @param jobId - The warming job ID
+ */
+export async function getWarmStatus(jobId: string): Promise<{
+  job_id: string;
+  status: string;
+  total: number;
+  processed: number;
+  success_count: number;
+  failed_queries: string[];
+  started_at: string | null;
+  completed_at: string | null;
+}> {
+  return apiClient.get(`/api/admin/cache/warm-status/${jobId}`);
 }
