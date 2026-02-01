@@ -655,3 +655,204 @@ class TestDocumentReprocess:
         data = response.json()
         assert data["status"] == "pending"
         assert data["error_message"] is None
+
+
+class TestCheckDuplicates:
+    """Tests for duplicate check endpoint."""
+
+    def test_check_duplicates_requires_admin(self, client, user_headers):
+        """Test that only admins can check duplicates."""
+        response = client.post(
+            "/api/documents/check-duplicates",
+            json={"filenames": ["test.pdf"]},
+            headers=user_headers,
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_check_duplicates_requires_auth(self, client):
+        """Test that check duplicates requires authentication."""
+        response = client.post(
+            "/api/documents/check-duplicates",
+            json={"filenames": ["test.pdf"]},
+        )
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_check_duplicates_finds_existing(self, client, admin_headers, test_document):
+        """Test that existing filenames are identified as duplicates."""
+        response = client.post(
+            "/api/documents/check-duplicates",
+            json={"filenames": [test_document.original_filename, "unique.pdf"]},
+            headers=admin_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert len(data["duplicates"]) == 1
+        assert data["duplicates"][0]["filename"] == test_document.original_filename
+        assert data["duplicates"][0]["existing_id"] == test_document.id
+        assert "unique.pdf" in data["unique"]
+
+    def test_check_duplicates_all_unique(self, client, admin_headers):
+        """Test when no duplicates are found."""
+        response = client.post(
+            "/api/documents/check-duplicates",
+            json={"filenames": ["new_file.pdf", "another_new.txt"]},
+            headers=admin_headers,
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert len(data["duplicates"]) == 0
+        assert len(data["unique"]) == 2
+
+    def test_check_duplicates_empty_filenames(self, client, admin_headers):
+        """Test that empty filenames array returns 422."""
+        response = client.post(
+            "/api/documents/check-duplicates",
+            json={"filenames": []},
+            headers=admin_headers,
+        )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+class TestUploadReplace:
+    """Tests for upload with replace parameter."""
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_upload_replace_overwrites_existing(
+        self, mock_task, client, admin_headers, test_tag, test_document, db, tmp_path
+    ):
+        """Test that replace=true deletes existing and uploads new."""
+        # Create a file with unique content (different from test_document)
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("Test document content for replace test")
+
+        # Mock vector service for delete
+        with patch("ai_ready_rag.services.factory.get_vector_service") as mock_factory:
+            mock_vector_instance = AsyncMock()
+            mock_vector_instance.delete_document = AsyncMock(return_value=True)
+            mock_factory.return_value = mock_vector_instance
+
+            with open(test_file, "rb") as f:
+                response = client.post(
+                    "/api/documents/upload?replace=true",
+                    files={"file": ("test.txt", f, "text/plain")},
+                    data={"tag_ids": [test_tag.id]},
+                    headers=admin_headers,
+                )
+
+            # Should succeed since it's a unique file
+            assert response.status_code == status.HTTP_201_CREATED
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_upload_replace_false_returns_409(
+        self, mock_task, client, admin_headers, test_tag, tmp_path
+    ):
+        """Test that replace=false (default) returns 409 on duplicate."""
+        import shutil
+        from pathlib import Path
+
+        # First upload a document
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        test_file = tmp_path / "duplicate_test.txt"
+        test_file.write_text("Duplicate content for 409 test unique-1")
+
+        with open(test_file, "rb") as f:
+            response1 = client.post(
+                "/api/documents/upload",
+                files={"file": ("duplicate_test.txt", f, "text/plain")},
+                data={"tag_ids": [test_tag.id]},
+                headers=admin_headers,
+            )
+
+        assert response1.status_code == status.HTTP_201_CREATED
+        doc1_id = response1.json()["id"]
+
+        try:
+            # Try uploading same file again without replace
+            test_file2 = tmp_path / "duplicate_test2.txt"
+            test_file2.write_text("Duplicate content for 409 test unique-1")  # Same content
+
+            with open(test_file2, "rb") as f:
+                response2 = client.post(
+                    "/api/documents/upload",
+                    files={"file": ("duplicate_test2.txt", f, "text/plain")},
+                    data={"tag_ids": [test_tag.id]},
+                    headers=admin_headers,
+                )
+
+            assert response2.status_code == status.HTTP_409_CONFLICT
+            data = response2.json()
+            # Check for structured error response
+            assert "detail" in data
+            detail = data["detail"]
+            assert detail["error_code"] == "DUPLICATE_FILE"
+            assert detail["existing_id"] == doc1_id
+        finally:
+            # Cleanup
+            doc_dir = upload_dir / doc1_id
+            if doc_dir.exists():
+                shutil.rmtree(doc_dir)
+
+
+class TestEnhanced409Response:
+    """Tests for enhanced 409 response format."""
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_409_returns_structured_detail(
+        self, mock_task, client, admin_headers, test_tag, tmp_path
+    ):
+        """Test that 409 response includes structured error details."""
+        import shutil
+        from pathlib import Path
+
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        # Upload first document
+        test_file = tmp_path / "structured_test.txt"
+        test_file.write_text("Content for structured 409 test unique-2")
+
+        with open(test_file, "rb") as f:
+            response1 = client.post(
+                "/api/documents/upload",
+                files={"file": ("structured_test.txt", f, "text/plain")},
+                data={"tag_ids": [test_tag.id]},
+                headers=admin_headers,
+            )
+
+        assert response1.status_code == status.HTTP_201_CREATED
+        doc1_data = response1.json()
+        doc1_id = doc1_data["id"]
+
+        try:
+            # Upload duplicate
+            test_file2 = tmp_path / "structured_test2.txt"
+            test_file2.write_text("Content for structured 409 test unique-2")  # Same content
+
+            with open(test_file2, "rb") as f:
+                response2 = client.post(
+                    "/api/documents/upload",
+                    files={"file": ("different_name.txt", f, "text/plain")},
+                    data={"tag_ids": [test_tag.id]},
+                    headers=admin_headers,
+                )
+
+            assert response2.status_code == status.HTTP_409_CONFLICT
+            data = response2.json()
+            detail = data["detail"]
+
+            # Verify all required fields in structured response
+            assert detail["detail"] == "Duplicate file detected"
+            assert detail["error_code"] == "DUPLICATE_FILE"
+            assert detail["existing_id"] == doc1_id
+            assert detail["existing_filename"] == "structured_test.txt"
+            assert "uploaded_at" in detail
+        finally:
+            # Cleanup
+            doc_dir = upload_dir / doc1_id
+            if doc_dir.exists():
+                shutil.rmtree(doc_dir)

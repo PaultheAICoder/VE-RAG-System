@@ -185,6 +185,73 @@ class DocumentListResponse(BaseModel):
     offset: int
 
 
+# Duplicate check models
+class CheckDuplicatesRequest(BaseModel):
+    """Request for pre-upload duplicate check."""
+
+    filenames: list[str]
+
+    @property
+    def validated_filenames(self) -> list[str]:
+        """Ensure at least one filename provided."""
+        if not self.filenames:
+            raise ValueError("At least one filename required")
+        return self.filenames
+
+
+class DuplicateInfo(BaseModel):
+    """Information about a duplicate file."""
+
+    filename: str
+    existing_id: str
+    existing_filename: str
+    uploaded_at: datetime
+
+
+class CheckDuplicatesResponse(BaseModel):
+    """Response from duplicate check."""
+
+    duplicates: list[DuplicateInfo]
+    unique: list[str]
+
+
+class DuplicateErrorDetail(BaseModel):
+    """Structured 409 error response."""
+
+    detail: str
+    error_code: str = "DUPLICATE_FILE"
+    existing_id: str
+    existing_filename: str
+    uploaded_at: datetime
+
+
+@router.post("/check-duplicates", response_model=CheckDuplicatesResponse)
+async def check_duplicates(
+    request: CheckDuplicatesRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Pre-upload duplicate check by filename (admin only).
+
+    Checks which filenames already exist in the database.
+    """
+    if not request.filenames:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one filename required",
+        )
+
+    settings = get_settings()
+    service = DocumentService(db, settings)
+
+    duplicates, unique = service.check_duplicates_by_filename(request.filenames)
+
+    return CheckDuplicatesResponse(
+        duplicates=[DuplicateInfo(**d) for d in duplicates],
+        unique=unique,
+    )
+
+
 @router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile,
@@ -197,6 +264,7 @@ async def upload_document(
     ocr_language: str | None = Form(None),
     table_extraction_mode: str | None = Form(None),
     include_image_descriptions: bool | None = Form(None),
+    replace: bool = Query(False, description="Replace existing duplicate if found"),
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -211,7 +279,11 @@ async def upload_document(
     - ocr_language: OCR language code (e.g., 'eng', 'fra')
     - table_extraction_mode: 'accurate' or 'fast'
     - include_image_descriptions: Include AI-generated image descriptions
+
+    Query parameters:
+    - replace: If true and a duplicate is found, replace the existing document
     """
+    from ai_ready_rag.services.factory import get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingOptions
 
     # Validate table_extraction_mode if provided
@@ -224,12 +296,19 @@ async def upload_document(
     settings = get_settings()
     service = DocumentService(db, settings)
 
+    # Get vector service for replace mode
+    vector_service = None
+    if replace:
+        vector_service = get_vector_service(settings)
+
     document = await service.upload(
         file=file,
         tag_ids=tag_ids,
         uploaded_by=current_user.id,
         title=title,
         description=description,
+        replace=replace,
+        vector_service=vector_service,
     )
 
     # Build processing options if any are provided

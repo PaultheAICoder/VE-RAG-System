@@ -5,5 +5,8 @@ export { BulkActions } from './BulkActions';
 export { UploadDropZone } from './UploadDropZone';
 export { UploadQueue, type QueuedFile, type UploadStatus } from './UploadQueue';
 export { UploadModal } from './UploadModal';
+export { UploadSummaryModal } from './UploadSummaryModal';
+export { UploadResultsModal } from './UploadResultsModal';
+export { UploadErrorMessage, getErrorMessage } from './UploadErrorMessage';
 export { TagEditModal } from './TagEditModal';
 export { ConfirmModal } from './ConfirmModal';

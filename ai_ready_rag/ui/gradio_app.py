@@ -520,7 +520,6 @@ def create_app() -> gr.Blocks:
                                     datatype=["str", "str", "str", "str"],
                                     interactive=False,
                                     wrap=True,
-                                    height=200,
                                 )
 
                                 # Per-document retry section (#74)
