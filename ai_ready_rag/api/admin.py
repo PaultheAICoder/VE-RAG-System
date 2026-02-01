@@ -1655,6 +1655,25 @@ async def update_advanced_settings(
     service = SettingsService(db)
     settings = get_settings()
 
+    # Validate chunk_overlap < chunk_size
+    # Get effective values (requested or current or default)
+    effective_chunk_size = (
+        request.chunk_size
+        if request.chunk_size is not None
+        else (service.get("chunk_size") or ADVANCED_DEFAULTS["chunk_size"])
+    )
+    effective_chunk_overlap = (
+        request.chunk_overlap
+        if request.chunk_overlap is not None
+        else (service.get("chunk_overlap") or ADVANCED_DEFAULTS["chunk_overlap"])
+    )
+    if effective_chunk_overlap >= effective_chunk_size:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"chunk_overlap ({effective_chunk_overlap}) must be less than "
+            f"chunk_size ({effective_chunk_size})",
+        )
+
     # Update only provided settings with audit trail
     if request.embedding_model is not None:
         service.set_with_audit(

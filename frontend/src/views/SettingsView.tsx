@@ -12,8 +12,16 @@ import {
   updateRetrievalSettings,
   getLLMSettings,
   updateLLMSettings,
+  getAdvancedSettings,
+  updateAdvancedSettings,
 } from '../api/admin';
-import type { ProcessingOptions, ModelsResponse, RetrievalSettings, LLMSettings } from '../types';
+import type {
+  ProcessingOptions,
+  ModelsResponse,
+  RetrievalSettings,
+  LLMSettings,
+  AdvancedSettings,
+} from '../types';
 
 const OCR_LANGUAGE_OPTIONS = [
   { value: 'eng', label: 'English' },
@@ -53,6 +61,9 @@ export function SettingsView() {
     null
   );
   const [formLlmSettings, setFormLlmSettings] = useState<LLMSettings | null>(null);
+  const [advancedSettings, setAdvancedSettings] = useState<AdvancedSettings | null>(null);
+  const [formChunkSize, setFormChunkSize] = useState(256);
+  const [formChunkOverlap, setFormChunkOverlap] = useState(64);
   const [isDirty, setIsDirty] = useState(false);
 
   // Modal state
@@ -65,11 +76,12 @@ export function SettingsView() {
     setLoading(true);
     setError(null);
     try {
-      const [optionsData, modelsData, retrievalData, llmData] = await Promise.all([
+      const [optionsData, modelsData, retrievalData, llmData, advancedData] = await Promise.all([
         getProcessingOptions(),
         getModels(),
         getRetrievalSettings(),
         getLLMSettings(),
+        getAdvancedSettings(),
       ]);
       setOptions(optionsData);
       setFormOptions(optionsData);
@@ -80,6 +92,9 @@ export function SettingsView() {
       setFormRetrievalSettings(retrievalData);
       setLlmSettings(llmData);
       setFormLlmSettings(llmData);
+      setAdvancedSettings(advancedData);
+      setFormChunkSize(advancedData.chunk_size);
+      setFormChunkOverlap(advancedData.chunk_overlap);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
@@ -90,6 +105,9 @@ export function SettingsView() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Helper for float comparison with epsilon
+  const floatsDiffer = (a: number, b: number, epsilon = 0.001) => Math.abs(a - b) > epsilon;
 
   // Track dirty state
   useEffect(() => {
@@ -111,18 +129,26 @@ export function SettingsView() {
       formRetrievalSettings &&
       retrievalSettings &&
       (formRetrievalSettings.retrieval_top_k !== retrievalSettings.retrieval_top_k ||
-        formRetrievalSettings.retrieval_min_score !== retrievalSettings.retrieval_min_score ||
+        floatsDiffer(
+          formRetrievalSettings.retrieval_min_score,
+          retrievalSettings.retrieval_min_score
+        ) ||
         formRetrievalSettings.retrieval_enable_expansion !==
           retrievalSettings.retrieval_enable_expansion);
 
     const llmDirty =
       formLlmSettings &&
       llmSettings &&
-      (formLlmSettings.llm_temperature !== llmSettings.llm_temperature ||
+      (floatsDiffer(formLlmSettings.llm_temperature, llmSettings.llm_temperature) ||
         formLlmSettings.llm_max_response_tokens !== llmSettings.llm_max_response_tokens ||
         formLlmSettings.llm_confidence_threshold !== llmSettings.llm_confidence_threshold);
 
-    setIsDirty(optionsDirty || modelsDirty || !!retrievalDirty || !!llmDirty);
+    const chunkingDirty =
+      advancedSettings &&
+      (formChunkSize !== advancedSettings.chunk_size ||
+        formChunkOverlap !== advancedSettings.chunk_overlap);
+
+    setIsDirty(optionsDirty || modelsDirty || !!retrievalDirty || !!llmDirty || !!chunkingDirty);
   }, [
     formOptions,
     options,
@@ -133,6 +159,9 @@ export function SettingsView() {
     retrievalSettings,
     formLlmSettings,
     llmSettings,
+    advancedSettings,
+    formChunkSize,
+    formChunkOverlap,
   ]);
 
   // Handle form changes
@@ -160,6 +189,13 @@ export function SettingsView() {
   // Handle save
   const handleSave = async () => {
     if (!formOptions || !models) return;
+
+    // Validate chunking settings before saving
+    if (formChunkOverlap >= formChunkSize) {
+      setError('Chunk overlap must be less than chunk size');
+      return;
+    }
+
     setSaving(true);
     setError(null);
     setSuccess(null);
@@ -188,27 +224,45 @@ export function SettingsView() {
         await changeEmbeddingModel(selectedEmbeddingModel, true);
       }
 
-      // Save retrieval settings if changed
+      // Save retrieval settings if changed (use epsilon comparison for floats)
       if (
         formRetrievalSettings &&
         retrievalSettings &&
         (formRetrievalSettings.retrieval_top_k !== retrievalSettings.retrieval_top_k ||
-          formRetrievalSettings.retrieval_min_score !== retrievalSettings.retrieval_min_score ||
+          floatsDiffer(
+            formRetrievalSettings.retrieval_min_score,
+            retrievalSettings.retrieval_min_score
+          ) ||
           formRetrievalSettings.retrieval_enable_expansion !==
             retrievalSettings.retrieval_enable_expansion)
       ) {
         await updateRetrievalSettings(formRetrievalSettings);
       }
 
-      // Save LLM settings if changed
+      // Save LLM settings if changed (use epsilon comparison for floats)
       if (
         formLlmSettings &&
         llmSettings &&
-        (formLlmSettings.llm_temperature !== llmSettings.llm_temperature ||
+        (floatsDiffer(formLlmSettings.llm_temperature, llmSettings.llm_temperature) ||
           formLlmSettings.llm_max_response_tokens !== llmSettings.llm_max_response_tokens ||
           formLlmSettings.llm_confidence_threshold !== llmSettings.llm_confidence_threshold)
       ) {
         await updateLLMSettings(formLlmSettings);
+      }
+
+      // Save chunking settings if changed
+      if (
+        advancedSettings &&
+        (formChunkSize !== advancedSettings.chunk_size ||
+          formChunkOverlap !== advancedSettings.chunk_overlap)
+      ) {
+        await updateAdvancedSettings(
+          {
+            chunk_size: formChunkSize,
+            chunk_overlap: formChunkOverlap,
+          },
+          true // confirm_reindex required for advanced settings
+        );
       }
 
       setSuccess('Settings saved successfully');
@@ -229,6 +283,10 @@ export function SettingsView() {
     }
     if (retrievalSettings) setFormRetrievalSettings(retrievalSettings);
     if (llmSettings) setFormLlmSettings(llmSettings);
+    if (advancedSettings) {
+      setFormChunkSize(advancedSettings.chunk_size);
+      setFormChunkOverlap(advancedSettings.chunk_overlap);
+    }
     setIsDirty(false);
   };
 
@@ -504,6 +562,46 @@ export function SettingsView() {
               })
             }
           />
+        </div>
+      </Card>
+
+      {/* Chunking Settings Section */}
+      <Card>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+          Chunking Settings
+        </h2>
+        <div className="mb-6">
+          <Alert variant="warning">
+            Changes to chunking settings require document reprocessing to take effect.
+          </Alert>
+        </div>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+          Configure how documents are split into chunks for embedding and retrieval.
+        </p>
+        <div className="space-y-6">
+          <Slider
+            label="Chunk Size"
+            description="Maximum number of tokens per chunk"
+            value={formChunkSize}
+            min={128}
+            max={512}
+            step={16}
+            onChange={(e) => setFormChunkSize(parseInt(e.target.value, 10))}
+          />
+          <Slider
+            label="Chunk Overlap"
+            description="Number of overlapping tokens between consecutive chunks"
+            value={formChunkOverlap}
+            min={20}
+            max={128}
+            step={4}
+            onChange={(e) => setFormChunkOverlap(parseInt(e.target.value, 10))}
+          />
+          {formChunkOverlap >= formChunkSize && (
+            <Alert variant="danger">
+              Chunk overlap must be less than chunk size.
+            </Alert>
+          )}
         </div>
       </Card>
 

@@ -63,6 +63,50 @@ class TestUpdateAdvancedSettings:
         )
         assert response.status_code == 403
 
+    def test_rejects_overlap_greater_than_size(self, client, admin_headers):
+        """PUT rejects chunk_overlap >= chunk_size."""
+        response = client.put(
+            "/api/admin/settings/advanced",
+            headers=admin_headers,
+            json={
+                "chunk_size": 200,
+                "chunk_overlap": 250,  # Invalid: overlap > size
+                "confirm_reindex": True,
+            },
+        )
+        assert response.status_code == 400
+        assert "chunk_overlap" in response.json()["detail"].lower()
+
+    def test_rejects_overlap_equal_to_size(self, client, admin_headers):
+        """PUT rejects chunk_overlap == chunk_size."""
+        response = client.put(
+            "/api/admin/settings/advanced",
+            headers=admin_headers,
+            json={
+                "chunk_size": 200,
+                "chunk_overlap": 200,  # Invalid: overlap == size
+                "confirm_reindex": True,
+            },
+        )
+        assert response.status_code == 400
+        assert "chunk_overlap" in response.json()["detail"].lower()
+
+    def test_accepts_valid_overlap(self, client, admin_headers):
+        """PUT accepts chunk_overlap < chunk_size."""
+        response = client.put(
+            "/api/admin/settings/advanced",
+            headers=admin_headers,
+            json={
+                "chunk_size": 256,
+                "chunk_overlap": 64,  # Valid: overlap < size
+                "confirm_reindex": True,
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["chunk_size"] == 256
+        assert data["chunk_overlap"] == 64
+
 
 class TestReindexEstimate:
     """Tests for GET /api/admin/reindex/estimate."""
