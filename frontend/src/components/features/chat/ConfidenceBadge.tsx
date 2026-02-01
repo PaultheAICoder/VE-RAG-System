@@ -24,18 +24,12 @@ export function ConfidenceBadge({ confidence, generationTimeMs, showBreakdown = 
   if (showBreakdown) {
     return (
       <div className="flex flex-col gap-1">
-        <div className="flex items-center gap-2">
-          <Badge variant={variant}>{overall}% confident</Badge>
-          {generationTimeMs && (
-            <span className="text-xs text-gray-500 dark:text-gray-400">
-              {formatTime(generationTimeMs)}
-            </span>
-          )}
-        </div>
+        <Badge variant={variant}>{overall}% confident</Badge>
         <div className="text-xs text-gray-500 dark:text-gray-400 space-y-0.5">
           <div>Retrieval: {confidence.retrieval}%</div>
           <div>Coverage: {confidence.coverage}%</div>
           <div>LLM: {confidence.llm}%</div>
+          {generationTimeMs && <div>Response: {formatTime(generationTimeMs)}</div>}
         </div>
       </div>
     );
