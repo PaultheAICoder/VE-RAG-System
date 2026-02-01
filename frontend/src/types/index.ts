@@ -418,3 +418,44 @@ export interface ReindexFailuresResponse {
   failures: ReindexFailureInfo[];
   total_failures: number;
 }
+
+// Duplicate check types
+export interface DuplicateInfo {
+  filename: string;
+  existing_id: string;
+  existing_filename: string;
+  uploaded_at: string; // ISO 8601
+}
+
+export interface CheckDuplicatesResponse {
+  duplicates: DuplicateInfo[];
+  unique: string[];
+}
+
+// Structured 409 error response for duplicates
+export interface DuplicateErrorDetail {
+  detail: string;
+  error_code: string;
+  existing_id: string;
+  existing_filename: string;
+  uploaded_at: string; // ISO 8601
+}
+
+// Standard error response structure
+export interface UploadErrorResponse {
+  detail: string;
+  error_code?: string;
+  existing_id?: string;
+  existing_filename?: string;
+  uploaded_at?: string;
+}
+
+// Upload results for modal
+export type UploadResultStatus = 'success' | 'failed' | 'replaced' | 'skipped';
+
+export interface UploadResult {
+  filename: string;
+  status: UploadResultStatus;
+  error?: string;
+  documentId?: string;
+}

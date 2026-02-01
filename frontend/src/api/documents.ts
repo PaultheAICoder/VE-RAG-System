@@ -4,6 +4,8 @@ import type {
   DocumentListResponse,
   DocumentListParams,
   BulkDeleteResponse,
+  CheckDuplicatesResponse,
+  UploadErrorResponse,
 } from '../types';
 
 const getAuthHeaders = (): HeadersInit => {
@@ -66,12 +68,63 @@ export async function getDocument(id: string): Promise<Document> {
 }
 
 /**
+ * Check for duplicate files before upload.
+ */
+export async function checkDuplicates(
+  filenames: string[]
+): Promise<CheckDuplicatesResponse> {
+  const response = await fetch('/api/documents/check-duplicates', {
+    method: 'POST',
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ filenames }),
+  });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      useAuthStore.getState().logout();
+    }
+    const error = await response.json().catch(() => ({ detail: 'Check failed' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Parse upload error response for structured duplicate info.
+ */
+export function parseUploadError(errorResponse: string | object): UploadErrorResponse {
+  if (typeof errorResponse === 'string') {
+    try {
+      const parsed = JSON.parse(errorResponse);
+      // Handle nested detail object
+      if (typeof parsed.detail === 'object') {
+        return parsed.detail;
+      }
+      return parsed;
+    } catch {
+      return { detail: errorResponse };
+    }
+  }
+  // Handle nested detail object
+  if (typeof (errorResponse as { detail?: unknown }).detail === 'object') {
+    return (errorResponse as { detail: UploadErrorResponse }).detail;
+  }
+  return errorResponse as UploadErrorResponse;
+}
+
+/**
  * Upload a document with tags and optional progress tracking.
+ * @param replace If true, replace existing duplicate
  */
 export async function uploadDocument(
   file: File,
   tagIds: string[],
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  replace?: boolean
 ): Promise<Document> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -104,7 +157,13 @@ export async function uploadDocument(
       } else {
         try {
           const error = JSON.parse(xhr.responseText);
-          reject(new Error(error.detail || `Upload failed: ${xhr.status}`));
+          // Pass the full error for structured error handling
+          const parsed = parseUploadError(error);
+          const err = new Error(
+            typeof parsed.detail === 'string' ? parsed.detail : `Upload failed: ${xhr.status}`
+          );
+          (err as Error & { response?: UploadErrorResponse }).response = parsed;
+          reject(err);
         } catch {
           reject(new Error(`Upload failed: ${xhr.status}`));
         }
@@ -119,7 +178,10 @@ export async function uploadDocument(
       reject(new Error('Upload cancelled'));
     });
 
-    xhr.open('POST', '/api/documents/upload');
+    const url = replace
+      ? '/api/documents/upload?replace=true'
+      : '/api/documents/upload';
+    xhr.open('POST', url);
 
     const token = useAuthStore.getState().token;
     if (token) {

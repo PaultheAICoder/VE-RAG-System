@@ -24,6 +24,38 @@ class DocumentService:
         self.settings = settings
         self.storage_path = Path(settings.upload_dir)
 
+    def check_duplicates_by_filename(self, filenames: list[str]) -> tuple[list[dict], list[str]]:
+        """Check which filenames already exist in the database.
+
+        Args:
+            filenames: List of filenames to check
+
+        Returns:
+            Tuple of (duplicates list, unique filenames list)
+            Each duplicate is a dict with: filename, existing_id, existing_filename, uploaded_at
+        """
+        duplicates = []
+        unique = []
+
+        for filename in filenames:
+            existing = (
+                self.db.query(Document).filter(Document.original_filename == filename).first()
+            )
+
+            if existing:
+                duplicates.append(
+                    {
+                        "filename": filename,
+                        "existing_id": existing.id,
+                        "existing_filename": existing.original_filename,
+                        "uploaded_at": existing.uploaded_at,
+                    }
+                )
+            else:
+                unique.append(filename)
+
+        return duplicates, unique
+
     async def upload(
         self,
         file: UploadFile,
@@ -31,6 +63,8 @@ class DocumentService:
         uploaded_by: str,
         title: str | None = None,
         description: str | None = None,
+        replace: bool = False,
+        vector_service=None,
     ) -> Document:
         """Upload and store a document.
 
@@ -147,13 +181,45 @@ class DocumentService:
             .first()
         )
         if existing:
-            # Clean up saved file
-            shutil.rmtree(doc_dir)
-            self.db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Duplicate file. Existing document ID: {existing.id}",
-            )
+            if replace and vector_service is not None:
+                # Replace mode: delete existing document atomically
+                try:
+                    # Delete vectors from vector store
+                    await vector_service.delete_document(existing.id)
+                except Exception:
+                    # Continue even if vector deletion fails
+                    pass
+
+                # Delete existing file from storage
+                existing_dir = self.storage_path / existing.id
+                if existing_dir.exists():
+                    shutil.rmtree(existing_dir)
+
+                # Delete existing database record
+                self.db.delete(existing)
+                self.db.flush()
+            else:
+                # Capture existing doc info before cleanup
+                existing_id = existing.id
+                existing_filename = existing.original_filename
+                existing_uploaded_at = existing.uploaded_at.isoformat()
+
+                # Clean up saved file
+                shutil.rmtree(doc_dir)
+
+                # Expunge the pending document from session (don't rollback - let caller handle)
+                self.db.expunge(document)
+
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "detail": "Duplicate file detected",
+                        "error_code": "DUPLICATE_FILE",
+                        "existing_id": existing_id,
+                        "existing_filename": existing_filename,
+                        "uploaded_at": existing_uploaded_at,
+                    },
+                )
 
         # Update document with file info
         document.filename = stored_filename
