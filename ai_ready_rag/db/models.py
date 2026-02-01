@@ -215,3 +215,49 @@ class ReindexJob(Base):
     paused_at = Column(DateTime, nullable=True)  # When job was paused
     paused_reason = Column(String, nullable=True)  # 'failure' or 'user_request'
     auto_skip_failures = Column(Boolean, default=False)  # Skip-all mode
+
+
+class ResponseCache(Base):
+    """Cached RAG responses for fast retrieval."""
+
+    __tablename__ = "response_cache"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    query_hash = Column(String, unique=True, nullable=False, index=True)
+    query_text = Column(Text, nullable=False)
+    query_embedding = Column(Text, nullable=False)  # JSON-encoded float array
+    answer = Column(Text, nullable=False)
+    sources = Column(Text, nullable=False)  # JSON-encoded citations
+    confidence_overall = Column(Integer, nullable=False)
+    confidence_retrieval = Column(Float, nullable=False)
+    confidence_coverage = Column(Float, nullable=False)
+    confidence_llm = Column(Integer, nullable=False)
+    generation_time_ms = Column(Float, nullable=False)
+    model_used = Column(String, nullable=False)
+    document_ids = Column(Text, nullable=False)  # JSON-encoded list[str]
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    last_accessed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    access_count = Column(Integer, default=1)
+
+
+class EmbeddingCache(Base):
+    """Cached query embeddings to skip Ollama embed calls."""
+
+    __tablename__ = "embedding_cache"
+
+    query_hash = Column(String, primary_key=True)
+    query_text = Column(Text, nullable=False)
+    embedding = Column(Text, nullable=False)  # JSON-encoded float array
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CacheAccessLog(Base):
+    """Tracks cache hit/miss for query frequency analysis."""
+
+    __tablename__ = "cache_access_log"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    query_hash = Column(String, nullable=False, index=True)
+    query_text = Column(Text, nullable=False)
+    was_hit = Column(Boolean, nullable=False)
+    accessed_at = Column(DateTime, default=datetime.utcnow, index=True)

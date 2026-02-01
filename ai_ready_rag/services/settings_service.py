@@ -20,6 +20,46 @@ RAG_SETTINGS_DEFAULTS = {
     "llm_confidence_threshold": 40,
 }
 
+# Default values for cache settings
+CACHE_SETTINGS_DEFAULTS = {
+    "cache_enabled": True,
+    "cache_ttl_hours": 24,
+    "cache_max_entries": 1000,
+    "cache_semantic_threshold": 0.95,
+    "cache_min_confidence": 40,
+    "cache_auto_warm_enabled": True,
+    "cache_auto_warm_count": 20,
+}
+
+
+def get_cache_setting(key: str, default: Any = None) -> Any:
+    """Get a cache setting from database with fallback to default.
+
+    This is a standalone function that creates its own db session,
+    suitable for use from services which may not have a session.
+
+    Args:
+        key: Setting key (e.g., 'cache_enabled', 'cache_ttl_hours')
+        default: Default value if not found in database
+
+    Returns:
+        Setting value from database, or default if not found
+    """
+    from ai_ready_rag.db.database import SessionLocal
+
+    # Use provided default or look up in our defaults dict
+    if default is None:
+        default = CACHE_SETTINGS_DEFAULTS.get(key)
+
+    db = SessionLocal()
+    try:
+        setting = db.query(AdminSetting).filter(AdminSetting.key == key).first()
+        if setting is not None:
+            return json.loads(setting.value)
+        return default
+    finally:
+        db.close()
+
 
 def get_rag_setting(key: str, default: Any = None) -> Any:
     """Get a RAG setting from database with fallback to default.

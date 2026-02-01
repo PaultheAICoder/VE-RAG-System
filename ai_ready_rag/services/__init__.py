@@ -1,5 +1,11 @@
 # Services package
 
+from ai_ready_rag.services.cache_service import (
+    CacheEntry,
+    CacheService,
+    CacheStats,
+    UploadBatchContext,
+)
 from ai_ready_rag.services.rag_constants import MODEL_LIMITS, STOPWORDS
 from ai_ready_rag.services.rag_service import (
     ChatMessage,
@@ -27,6 +33,11 @@ from ai_ready_rag.services.vector_utils import (
 )
 
 __all__ = [
+    # Cache Service
+    "CacheService",
+    "CacheEntry",
+    "CacheStats",
+    "UploadBatchContext",
     # Vector Service
     "VectorService",
     "CollectionStats",
