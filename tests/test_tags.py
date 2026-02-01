@@ -6,7 +6,7 @@ class TestListTags:
 
     def test_list_tags_authenticated(self, client, user_headers, sample_tag):
         """Test listing tags as authenticated user."""
-        response = client.get("/api/tags/", headers=user_headers)
+        response = client.get("/api/tags", headers=user_headers)
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, list)
@@ -14,7 +14,7 @@ class TestListTags:
 
     def test_list_tags_unauthenticated(self, client):
         """Test listing tags without auth."""
-        response = client.get("/api/tags/")
+        response = client.get("/api/tags")
         assert response.status_code == 401
 
 
@@ -24,7 +24,7 @@ class TestCreateTag:
     def test_create_tag_as_admin(self, client, admin_headers):
         """Test creating tag as admin."""
         response = client.post(
-            "/api/tags/",
+            "/api/tags",
             headers=admin_headers,
             json={
                 "name": "finance",
@@ -42,7 +42,7 @@ class TestCreateTag:
     def test_create_tag_duplicate_name(self, client, admin_headers, sample_tag):
         """Test creating tag with duplicate name."""
         response = client.post(
-            "/api/tags/",
+            "/api/tags",
             headers=admin_headers,
             json={"name": sample_tag.name, "display_name": "Duplicate HR"},
         )
@@ -52,14 +52,14 @@ class TestCreateTag:
     def test_create_tag_as_regular_user(self, client, user_headers):
         """Test creating tag as regular user (should fail)."""
         response = client.post(
-            "/api/tags/", headers=user_headers, json={"name": "legal", "display_name": "Legal"}
+            "/api/tags", headers=user_headers, json={"name": "legal", "display_name": "Legal"}
         )
         assert response.status_code == 403
 
     def test_create_tag_minimal(self, client, admin_headers):
         """Test creating tag with minimal fields."""
         response = client.post(
-            "/api/tags/", headers=admin_headers, json={"name": "it", "display_name": "IT Support"}
+            "/api/tags", headers=admin_headers, json={"name": "it", "display_name": "IT Support"}
         )
         assert response.status_code == 201
         data = response.json()

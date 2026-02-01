@@ -5,7 +5,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -122,9 +122,9 @@ if FRONTEND_DIR.exists():
     @app.get("/{path:path}")
     async def serve_spa(path: str):
         """Catch-all for SPA client-side routing."""
-        # Don't intercept API or Gradio routes
+        # Don't intercept API or Gradio routes - return proper 404
         if path.startswith("api/") or path.startswith("app/"):
-            return {"detail": "Not Found"}
+            raise HTTPException(status_code=404, detail="Not Found")
 
         # Serve static files if they exist
         file_path = FRONTEND_DIR / path

@@ -18,7 +18,7 @@ class TestRoleNormalization:
 
     def test_legacy_admin_can_manage_users(self, client, admin_headers):
         """Test that legacy 'admin' role can manage users."""
-        response = client.get("/api/users/", headers=admin_headers)
+        response = client.get("/api/users", headers=admin_headers)
         assert response.status_code == 200
 
 
@@ -27,13 +27,13 @@ class TestCustomerAdminAccess:
 
     def test_customer_admin_can_list_users(self, client, customer_admin_headers):
         """Customer admin can list users."""
-        response = client.get("/api/users/", headers=customer_admin_headers)
+        response = client.get("/api/users", headers=customer_admin_headers)
         assert response.status_code == 200
 
     def test_customer_admin_can_create_user(self, client, customer_admin_headers):
         """Customer admin can create users."""
         response = client.post(
-            "/api/users/",
+            "/api/users",
             headers=customer_admin_headers,
             json={
                 "email": "newuser_by_customer_admin@test.com",
@@ -46,13 +46,13 @@ class TestCustomerAdminAccess:
 
     def test_customer_admin_can_list_tags(self, client, customer_admin_headers):
         """Customer admin can list tags."""
-        response = client.get("/api/tags/", headers=customer_admin_headers)
+        response = client.get("/api/tags", headers=customer_admin_headers)
         assert response.status_code == 200
 
     def test_customer_admin_can_create_tag(self, client, customer_admin_headers):
         """Customer admin can create tags."""
         response = client.post(
-            "/api/tags/",
+            "/api/tags",
             headers=customer_admin_headers,
             json={
                 "name": "customer_admin_tag",
@@ -98,12 +98,12 @@ class TestSystemAdminAccess:
 
     def test_system_admin_can_list_users(self, client, system_admin_headers):
         """System admin can list users."""
-        response = client.get("/api/users/", headers=system_admin_headers)
+        response = client.get("/api/users", headers=system_admin_headers)
         assert response.status_code == 200
 
     def test_system_admin_can_list_tags(self, client, system_admin_headers):
         """System admin can list tags."""
-        response = client.get("/api/tags/", headers=system_admin_headers)
+        response = client.get("/api/tags", headers=system_admin_headers)
         assert response.status_code == 200
 
 
@@ -112,13 +112,13 @@ class TestRegularUserAccess:
 
     def test_user_cannot_list_users(self, client, user_headers):
         """Regular user cannot list users."""
-        response = client.get("/api/users/", headers=user_headers)
+        response = client.get("/api/users", headers=user_headers)
         assert response.status_code == 403
 
     def test_user_cannot_create_tag(self, client, user_headers):
         """Regular user cannot create tags."""
         response = client.post(
-            "/api/tags/",
+            "/api/tags",
             headers=user_headers,
             json={"name": "user_tag", "display_name": "User Tag"},
         )
@@ -131,7 +131,7 @@ class TestRegularUserAccess:
 
     def test_user_can_list_tags(self, client, user_headers):
         """Regular user can list tags (read-only access)."""
-        response = client.get("/api/tags/", headers=user_headers)
+        response = client.get("/api/tags", headers=user_headers)
         assert response.status_code == 200
 
 

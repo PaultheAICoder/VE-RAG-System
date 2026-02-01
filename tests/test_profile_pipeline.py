@@ -20,22 +20,24 @@ class TestProfileSettings:
 
     def test_laptop_profile_defaults(self):
         """Laptop profile applies correct defaults."""
-        with patch.dict(
-            os.environ,
-            {"ENV_PROFILE": "laptop"},
-            clear=False,
-        ):
-            # Clear lru_cache to ensure fresh settings
-            from ai_ready_rag.config import Settings, get_settings
+        from ai_ready_rag.config import Settings, get_settings
 
-            get_settings.cache_clear()
-            settings = Settings()
+        get_settings.cache_clear()
+        # Create settings with explicit profile and None for overridable fields
+        # This tests the profile default logic without .env interference
+        settings = Settings(
+            env_profile="laptop",
+            vector_backend=None,
+            chunker_backend=None,
+            enable_ocr=None,
+            chat_model=None,
+        )
 
-            assert settings.env_profile == "laptop"
-            assert settings.vector_backend == "chroma"
-            assert settings.chunker_backend == "simple"
-            assert settings.enable_ocr is False
-            assert settings.chat_model == "llama3.2:latest"
+        assert settings.env_profile == "laptop"
+        assert settings.vector_backend == "chroma"
+        assert settings.chunker_backend == "simple"
+        assert settings.enable_ocr is False
+        assert settings.chat_model == "llama3.2:latest"
 
     def test_spark_profile_defaults(self):
         """Spark profile applies correct defaults."""

@@ -6,7 +6,7 @@ class TestListUsers:
 
     def test_list_users_as_admin(self, client, admin_headers, admin_user):
         """Test listing users as admin."""
-        response = client.get("/api/users/", headers=admin_headers)
+        response = client.get("/api/users", headers=admin_headers)
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, list)
@@ -15,12 +15,12 @@ class TestListUsers:
 
     def test_list_users_as_regular_user(self, client, user_headers):
         """Test listing users as regular user (should fail)."""
-        response = client.get("/api/users/", headers=user_headers)
+        response = client.get("/api/users", headers=user_headers)
         assert response.status_code == 403
 
     def test_list_users_unauthenticated(self, client):
         """Test listing users without auth."""
-        response = client.get("/api/users/")
+        response = client.get("/api/users")
         assert response.status_code == 401
 
 
@@ -30,7 +30,7 @@ class TestCreateUser:
     def test_create_user_as_admin(self, client, admin_headers):
         """Test creating user as admin."""
         response = client.post(
-            "/api/users/",
+            "/api/users",
             headers=admin_headers,
             json={
                 "email": "newuser@test.com",
@@ -47,7 +47,7 @@ class TestCreateUser:
     def test_create_admin_as_admin(self, client, admin_headers):
         """Test creating another admin."""
         response = client.post(
-            "/api/users/",
+            "/api/users",
             headers=admin_headers,
             json={
                 "email": "admin2@test.com",
@@ -62,7 +62,7 @@ class TestCreateUser:
     def test_create_user_duplicate_email(self, client, admin_headers, admin_user):
         """Test creating user with duplicate email."""
         response = client.post(
-            "/api/users/",
+            "/api/users",
             headers=admin_headers,
             json={
                 "email": admin_user.email,
@@ -76,7 +76,7 @@ class TestCreateUser:
     def test_create_user_as_regular_user(self, client, user_headers):
         """Test creating user as regular user (should fail)."""
         response = client.post(
-            "/api/users/",
+            "/api/users",
             headers=user_headers,
             json={
                 "email": "another@test.com",
