@@ -2261,28 +2261,43 @@ async def warm_cache_task(queries: list[str], triggered_by: str) -> None:
     """Background task to warm cache with queries.
 
     Runs each query through RAG pipeline and caches response.
-    Uses empty user_tags (admin context) for warming.
+    Uses empty user_tags (admin context) for warming - this allows
+    the cache to be populated with responses that can then be filtered
+    by access control on retrieval.
 
-    Note: This is a placeholder implementation. Full RAG integration
-    will be completed in issue #87.
+    Args:
+        queries: List of query strings to warm
+        triggered_by: User ID who triggered the warming
     """
+    from ai_ready_rag.config import get_settings
     from ai_ready_rag.db.database import SessionLocal
+    from ai_ready_rag.services.rag_service import RAGRequest, RAGService
 
+    settings = get_settings()
     db = SessionLocal()
 
     try:
+        rag_service = RAGService(settings)
         warmed = 0
+
         for query in queries:
             try:
-                # TODO (Issue #87): Integrate with RAGService for actual warming
-                # For now, log the warming attempt
-                logger.debug(f"Would warm cache for query: {query[:50]}...")
+                request = RAGRequest(
+                    query=query,
+                    user_tags=[],  # Admin context - responses cached without tag restriction
+                    tenant_id="default",
+                )
+                # Run query through RAG pipeline (will cache result)
+                await rag_service.generate(request, db)
                 warmed += 1
-
+                logger.debug(f"Warmed cache for query: {query[:50]}...")
             except Exception as e:
                 logger.warning(f"Failed to warm cache for query '{query[:50]}...': {e}")
 
-        logger.info(f"Cache warming complete: {warmed}/{len(queries)} queries processed")
+        logger.info(
+            f"Cache warming complete: {warmed}/{len(queries)} queries processed "
+            f"(triggered by: {triggered_by})"
+        )
 
     except Exception as e:
         logger.error(f"Cache warming task failed: {e}")

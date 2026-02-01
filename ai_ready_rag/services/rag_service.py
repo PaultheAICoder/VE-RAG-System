@@ -24,6 +24,7 @@ from ai_ready_rag.core.exceptions import (
     RAGServiceError,
     TokenBudgetExceededError,
 )
+from ai_ready_rag.services.cache_service import CacheEntry, CacheService
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.services.rag_constants import (
     MODEL_LIMITS,
@@ -412,6 +413,8 @@ class RAGService:
         self.chunk_overlap_threshold = settings.rag_chunk_overlap_threshold
         self.dedup_candidates_cap = settings.rag_dedup_candidates_cap
         self.enable_hallucination_check = settings.rag_enable_hallucination_check
+        # Cache service (lazy-loaded)
+        self._cache_service: CacheService | None = None
 
     # -------------------------------------------------------------------------
     # Dynamic settings from database (single source of truth)
@@ -500,6 +503,77 @@ class RAGService:
         if self._vector_service is None:
             self._vector_service = get_vector_service(self.settings)
         return self._vector_service
+
+    @property
+    def cache(self) -> CacheService | None:
+        """Get cache service, creating lazily if needed."""
+        if self._cache_service is None:
+            from ai_ready_rag.db.database import SessionLocal
+
+            db = SessionLocal()
+            self._cache_service = CacheService(db)
+        return self._cache_service
+
+    def _cache_entry_to_response(self, entry: CacheEntry, elapsed_ms: float) -> RAGResponse:
+        """Convert CacheEntry to RAGResponse.
+
+        Args:
+            entry: Cached response entry
+            elapsed_ms: Time elapsed for cache lookup
+
+        Returns:
+            RAGResponse constructed from cached data
+        """
+        citations = [
+            Citation(
+                source_id=src.get("document_id", "") + ":0",
+                document_id=src.get("document_id", ""),
+                document_name=src.get("document_name", ""),
+                chunk_index=0,
+                page_number=src.get("page_number"),
+                section=src.get("section"),
+                relevance_score=1.0,  # Cached, no new retrieval
+                snippet=src.get("excerpt", "")[:200],
+                snippet_full=src.get("excerpt", "")[:1000],
+            )
+            for src in entry.sources
+        ]
+
+        return RAGResponse(
+            answer=entry.answer,
+            confidence=ConfidenceScore(
+                overall=entry.confidence_overall,
+                retrieval_score=entry.confidence_retrieval,
+                coverage_score=entry.confidence_coverage,
+                llm_score=entry.confidence_llm,
+            ),
+            citations=citations,
+            action="CITE" if entry.confidence_overall >= self.confidence_threshold else "ROUTE",
+            route_to=None,
+            model_used=entry.model_used,
+            context_chunks_used=len(citations),
+            context_tokens_used=0,  # Not tracked in cache
+            generation_time_ms=elapsed_ms,
+            grounded=len(citations) > 0,
+            routing_decision=None,  # Not tracked in cache
+        )
+
+    async def _get_or_embed_query(self, query: str) -> list[float]:
+        """Get embedding from cache or compute new one.
+
+        Args:
+            query: The query text
+
+        Returns:
+            Query embedding vector
+        """
+        if self.cache:
+            cached_embedding = await self.cache.get_embedding(query)
+            if cached_embedding:
+                return cached_embedding
+
+        # Compute embedding via vector service
+        return await self.vector_service.embed_query(query)
 
     async def validate_model(self, model: str) -> str:
         """Validate model is allowed and available.
@@ -1105,6 +1179,23 @@ class RAGService:
         model = request.model or self.default_model
         await self.validate_model(model)
 
+        # 1.25 Check cache first (if enabled)
+        if self.cache and self.cache.enabled:
+            try:
+                # Get embedding for semantic cache lookup
+                query_embedding = await self.cache.get_embedding(request.query)
+                cached = await self.cache.get(
+                    query=request.query,
+                    user_tags=request.user_tags,
+                    query_embedding=query_embedding,
+                )
+                if cached:
+                    elapsed_ms = (time.perf_counter() - start_time) * 1000
+                    logger.info(f"Cache HIT for query: {request.query[:50]}...")
+                    return self._cache_entry_to_response(cached, elapsed_ms)
+            except Exception as e:
+                logger.warning(f"Cache lookup failed, proceeding without cache: {e}")
+
         # 1.5 Run query router (if retrieve_and_direct mode enabled)
         routing_decision: str | None = None
         settings_service = SettingsService(db)
@@ -1235,7 +1326,7 @@ class RAGService:
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-        return RAGResponse(
+        response = RAGResponse(
             answer=answer,
             confidence=confidence,
             citations=citations,
@@ -1248,6 +1339,18 @@ class RAGService:
             grounded=grounded,
             routing_decision=routing_decision,
         )
+
+        # 9. Store in cache before returning (if enabled and high enough confidence)
+        if self.cache and self.cache.enabled:
+            try:
+                # Get or compute embedding for cache storage
+                query_embedding = await self._get_or_embed_query(request.query)
+                await self.cache.put(request.query, query_embedding, response)
+                await self.cache.put_embedding(request.query, query_embedding)
+            except Exception as e:
+                logger.warning(f"Failed to cache response: {e}")
+
+        return response
 
     async def health_check(self) -> dict:
         """Check Ollama connectivity and model availability.
