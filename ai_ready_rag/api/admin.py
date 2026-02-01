@@ -2139,6 +2139,57 @@ class CacheWarmResponse(BaseModel):
     message: str
 
 
+# Cache Settings Models
+class CacheSettingsResponse(BaseModel):
+    """Response model for cache settings."""
+
+    cache_enabled: bool
+    cache_ttl_hours: int
+    cache_max_entries: int
+    cache_semantic_threshold: float
+    cache_min_confidence: int
+    cache_auto_warm_enabled: bool
+    cache_auto_warm_count: int
+
+
+class CacheSettingsRequest(BaseModel):
+    """Request model for updating cache settings."""
+
+    cache_enabled: bool | None = None
+    cache_ttl_hours: int | None = None
+    cache_max_entries: int | None = None
+    cache_semantic_threshold: float | None = None
+    cache_min_confidence: int | None = None
+    cache_auto_warm_enabled: bool | None = None
+    cache_auto_warm_count: int | None = None
+
+
+# Cache Statistics Models
+class CacheStatsResponse(BaseModel):
+    """Response model for cache statistics."""
+
+    enabled: bool
+    total_entries: int
+    memory_entries: int
+    sqlite_entries: int
+    hit_count: int
+    miss_count: int
+    hit_rate: float
+    avg_response_time_cached_ms: float | None = None
+    avg_response_time_uncached_ms: float | None = None
+    storage_size_bytes: int | None = None
+    oldest_entry: datetime | None = None
+    newest_entry: datetime | None = None
+
+
+# Cache Clear Models
+class CacheClearResponse(BaseModel):
+    """Response after clearing cache."""
+
+    cleared_entries: int
+    message: str
+
+
 @router.get("/cache/top-queries", response_model=TopQueryResponse)
 async def get_top_queries(
     limit: int = Query(20, ge=1, le=100, description="Maximum queries to return"),
@@ -2237,3 +2288,217 @@ async def warm_cache_task(queries: list[str], triggered_by: str) -> None:
         logger.error(f"Cache warming task failed: {e}")
     finally:
         db.close()
+
+
+# =============================================================================
+# Cache Admin Endpoints (Phase 4)
+# =============================================================================
+
+
+@router.get("/cache/settings", response_model=CacheSettingsResponse)
+async def get_cache_settings(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get current cache settings.
+
+    Returns all cache configuration options with current values.
+    Admin only.
+    """
+    from ai_ready_rag.services.settings_service import (
+        CACHE_SETTINGS_DEFAULTS,
+        SettingsService,
+    )
+
+    service = SettingsService(db)
+
+    return CacheSettingsResponse(
+        cache_enabled=_get_setting_value(
+            service, "cache_enabled", CACHE_SETTINGS_DEFAULTS["cache_enabled"]
+        ),
+        cache_ttl_hours=_get_setting_value(
+            service, "cache_ttl_hours", CACHE_SETTINGS_DEFAULTS["cache_ttl_hours"]
+        ),
+        cache_max_entries=_get_setting_value(
+            service, "cache_max_entries", CACHE_SETTINGS_DEFAULTS["cache_max_entries"]
+        ),
+        cache_semantic_threshold=_get_setting_value(
+            service, "cache_semantic_threshold", CACHE_SETTINGS_DEFAULTS["cache_semantic_threshold"]
+        ),
+        cache_min_confidence=_get_setting_value(
+            service, "cache_min_confidence", CACHE_SETTINGS_DEFAULTS["cache_min_confidence"]
+        ),
+        cache_auto_warm_enabled=_get_setting_value(
+            service, "cache_auto_warm_enabled", CACHE_SETTINGS_DEFAULTS["cache_auto_warm_enabled"]
+        ),
+        cache_auto_warm_count=_get_setting_value(
+            service, "cache_auto_warm_count", CACHE_SETTINGS_DEFAULTS["cache_auto_warm_count"]
+        ),
+    )
+
+
+@router.put("/cache/settings", response_model=CacheSettingsResponse)
+async def update_cache_settings(
+    request: CacheSettingsRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Update cache settings.
+
+    Only updates fields that are provided (not None).
+    Settings persist to admin_settings table.
+    Admin only.
+    """
+    from ai_ready_rag.services.settings_service import (
+        CACHE_SETTINGS_DEFAULTS,
+        SettingsService,
+    )
+
+    service = SettingsService(db)
+
+    # Validate and update only provided fields
+    if request.cache_enabled is not None:
+        service.set("cache_enabled", request.cache_enabled, updated_by=current_user.id)
+
+    if request.cache_ttl_hours is not None:
+        if not (1 <= request.cache_ttl_hours <= 168):  # 1 hour to 7 days
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="cache_ttl_hours must be between 1 and 168",
+            )
+        service.set("cache_ttl_hours", request.cache_ttl_hours, updated_by=current_user.id)
+
+    if request.cache_max_entries is not None:
+        if not (100 <= request.cache_max_entries <= 10000):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="cache_max_entries must be between 100 and 10000",
+            )
+        service.set("cache_max_entries", request.cache_max_entries, updated_by=current_user.id)
+
+    if request.cache_semantic_threshold is not None:
+        if not (0.85 <= request.cache_semantic_threshold <= 0.99):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="cache_semantic_threshold must be between 0.85 and 0.99",
+            )
+        service.set(
+            "cache_semantic_threshold", request.cache_semantic_threshold, updated_by=current_user.id
+        )
+
+    if request.cache_min_confidence is not None:
+        if not (0 <= request.cache_min_confidence <= 100):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="cache_min_confidence must be between 0 and 100",
+            )
+        service.set(
+            "cache_min_confidence", request.cache_min_confidence, updated_by=current_user.id
+        )
+
+    if request.cache_auto_warm_enabled is not None:
+        service.set(
+            "cache_auto_warm_enabled", request.cache_auto_warm_enabled, updated_by=current_user.id
+        )
+
+    if request.cache_auto_warm_count is not None:
+        if not (5 <= request.cache_auto_warm_count <= 50):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="cache_auto_warm_count must be between 5 and 50",
+            )
+        service.set(
+            "cache_auto_warm_count", request.cache_auto_warm_count, updated_by=current_user.id
+        )
+
+    logger.info(
+        f"Admin {current_user.email} updated cache settings: {request.model_dump(exclude_none=True)}"
+    )
+
+    # Return current state (same as GET)
+    return CacheSettingsResponse(
+        cache_enabled=_get_setting_value(
+            service, "cache_enabled", CACHE_SETTINGS_DEFAULTS["cache_enabled"]
+        ),
+        cache_ttl_hours=_get_setting_value(
+            service, "cache_ttl_hours", CACHE_SETTINGS_DEFAULTS["cache_ttl_hours"]
+        ),
+        cache_max_entries=_get_setting_value(
+            service, "cache_max_entries", CACHE_SETTINGS_DEFAULTS["cache_max_entries"]
+        ),
+        cache_semantic_threshold=_get_setting_value(
+            service, "cache_semantic_threshold", CACHE_SETTINGS_DEFAULTS["cache_semantic_threshold"]
+        ),
+        cache_min_confidence=_get_setting_value(
+            service, "cache_min_confidence", CACHE_SETTINGS_DEFAULTS["cache_min_confidence"]
+        ),
+        cache_auto_warm_enabled=_get_setting_value(
+            service, "cache_auto_warm_enabled", CACHE_SETTINGS_DEFAULTS["cache_auto_warm_enabled"]
+        ),
+        cache_auto_warm_count=_get_setting_value(
+            service, "cache_auto_warm_count", CACHE_SETTINGS_DEFAULTS["cache_auto_warm_count"]
+        ),
+    )
+
+
+@router.get("/cache/stats", response_model=CacheStatsResponse)
+async def get_cache_stats(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get cache statistics.
+
+    Returns hit/miss counts, entry counts, and storage information.
+    Admin only.
+    """
+    from sqlalchemy import func
+
+    from ai_ready_rag.db.models import ResponseCache
+    from ai_ready_rag.services.cache_service import CacheService
+
+    cache_service = CacheService(db)
+    stats = cache_service.get_stats()
+
+    # Get oldest and newest entries
+    oldest = db.query(func.min(ResponseCache.created_at)).scalar()
+    newest = db.query(func.max(ResponseCache.created_at)).scalar()
+
+    # Estimate storage size (rough calculation)
+    # Each entry: ~10KB average (query_text + answer + embedding + sources)
+    storage_bytes = stats.sqlite_entries * 10240 if stats.sqlite_entries else None
+
+    return CacheStatsResponse(
+        enabled=stats.enabled,
+        total_entries=stats.total_entries,
+        memory_entries=stats.memory_entries,
+        sqlite_entries=stats.sqlite_entries,
+        hit_count=stats.hit_count,
+        miss_count=stats.miss_count,
+        hit_rate=stats.hit_rate,
+        storage_size_bytes=storage_bytes,
+        oldest_entry=oldest,
+        newest_entry=newest,
+    )
+
+
+@router.post("/cache/clear", response_model=CacheClearResponse)
+async def clear_cache(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Clear all cache entries.
+
+    Removes all entries from both memory and SQLite cache.
+    Admin only.
+    """
+    from ai_ready_rag.services.cache_service import CacheService
+
+    cache_service = CacheService(db)
+    cleared = cache_service.invalidate_all(reason=f"admin_clear_by_{current_user.email}")
+
+    logger.warning(f"Admin {current_user.email} cleared cache: {cleared} entries removed")
+
+    return CacheClearResponse(
+        cleared_entries=cleared,
+        message="Cache cleared successfully",
+    )
