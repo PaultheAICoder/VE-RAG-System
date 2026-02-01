@@ -570,11 +570,6 @@ export function SettingsView() {
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
           Chunking Settings
         </h2>
-        <div className="mb-6">
-          <Alert variant="warning">
-            Changes to chunking settings require document reprocessing to take effect.
-          </Alert>
-        </div>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
           Configure how documents are split into chunks for embedding and retrieval.
         </p>
@@ -613,7 +608,7 @@ export function SettingsView() {
         <Button variant="secondary" onClick={handleCancel} disabled={!isDirty || saving}>
           Cancel
         </Button>
-        <Button icon={Save} onClick={handleSave} disabled={!isDirty || saving}>
+        <Button icon={Save} onClick={handleSave} disabled={!isDirty || saving || formChunkOverlap >= formChunkSize}>
           {saving ? 'Saving...' : 'Save Changes'}
         </Button>
       </div>

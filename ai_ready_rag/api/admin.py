@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -1761,6 +1761,7 @@ async def get_reindex_estimate(
 )
 async def start_reindex(
     request: StartReindexRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
@@ -1780,6 +1781,7 @@ async def start_reindex(
         )
 
     from ai_ready_rag.services.reindex_service import ReindexService
+    from ai_ready_rag.services.reindex_worker import run_reindex_job
 
     service = ReindexService(db)
 
@@ -1803,9 +1805,8 @@ async def start_reindex(
 
     logger.info(f"Admin {current_user.email} started reindex job {job.id}")
 
-    # Note: Actual reindex is started via background task
-    # For now, job is created in 'pending' state
-    # A background worker would pick it up
+    # Start background worker
+    background_tasks.add_task(run_reindex_job, job.id)
 
     return _job_to_response(job)
 

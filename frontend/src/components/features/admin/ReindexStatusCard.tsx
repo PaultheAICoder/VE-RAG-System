@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   RefreshCw,
+  Play,
   Pause,
   XCircle,
   SkipForward,
@@ -16,6 +17,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { ReindexFailuresModal } from './ReindexFailuresModal';
 import {
   getReindexStatus,
+  startReindex,
   pauseReindex,
   resumeReindex,
   abortReindex,
@@ -42,6 +44,7 @@ export function ReindexStatusCard() {
   const [statusChecked, setStatusChecked] = useState(false);
 
   // Modal states
+  const [showStartConfirm, setShowStartConfirm] = useState(false);
   const [showAbortConfirm, setShowAbortConfirm] = useState(false);
   const [showSkipAllConfirm, setShowSkipAllConfirm] = useState(false);
   const [showFailuresModal, setShowFailuresModal] = useState(false);
@@ -73,6 +76,20 @@ export function ReindexStatusCard() {
       return () => clearInterval(interval);
     }
   }, [job?.status, fetchStatus]);
+
+  const handleStart = async () => {
+    setShowStartConfirm(false);
+    setActionLoading('start');
+    try {
+      const newJob = await startReindex();
+      setJob(newJob);
+      setStatusChecked(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start reindex');
+    } finally {
+      setActionLoading(null);
+    }
+  };
 
   const handlePause = async () => {
     setActionLoading('pause');
@@ -159,9 +176,19 @@ export function ReindexStatusCard() {
       )}
 
       {!job && !loading && statusChecked && (
-        <Alert variant="success" onClose={() => setStatusChecked(false)}>
-          No active reindex job found. The system is idle.
-        </Alert>
+        <div className="space-y-4">
+          <Alert variant="success" onClose={() => setStatusChecked(false)}>
+            No active reindex job found. The system is idle.
+          </Alert>
+          <Button
+            variant="primary"
+            icon={Play}
+            onClick={() => setShowStartConfirm(true)}
+            disabled={actionLoading !== null}
+          >
+            {actionLoading === 'start' ? 'Starting...' : 'Start Reindex'}
+          </Button>
+        </div>
       )}
 
       {job && (
@@ -257,6 +284,18 @@ export function ReindexStatusCard() {
 
           {/* Action Buttons */}
           <div className="flex flex-wrap gap-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+            {job.status === 'pending' && (
+              <Button
+                variant="danger"
+                size="sm"
+                icon={XCircle}
+                onClick={() => setShowAbortConfirm(true)}
+                disabled={actionLoading !== null}
+              >
+                Abort
+              </Button>
+            )}
+
             {job.status === 'running' && (
               <>
                 <Button
@@ -330,6 +369,18 @@ export function ReindexStatusCard() {
           )}
         </div>
       )}
+
+      {/* Start Reindex Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showStartConfirm}
+        onClose={() => setShowStartConfirm(false)}
+        onConfirm={handleStart}
+        title="Start Full Reindex"
+        message="This will reprocess ALL documents with current settings. The existing index remains active until the new index is complete (atomic swap). This may take a while depending on the number of documents."
+        confirmLabel="Start Reindex"
+        variant="warning"
+        isLoading={actionLoading === 'start'}
+      />
 
       {/* Abort Confirmation Modal */}
       <ConfirmModal
