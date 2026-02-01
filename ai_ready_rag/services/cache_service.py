@@ -14,6 +14,20 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Calculate cosine similarity between two vectors.
+
+    Returns a value between -1.0 and 1.0.
+    Returns 0.0 if either vector is zero-length (no division error).
+    """
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
 @dataclass
 class CacheEntry:
     """Cached RAG response."""
@@ -75,6 +89,31 @@ class MemoryCache:
             entry.last_accessed_at = datetime.utcnow()
             entry.access_count += 1
             return entry
+
+    def get_semantic(self, embedding: list[float], threshold: float) -> CacheEntry | None:
+        """Get entry by semantic similarity (Layer 2).
+
+        Scans all cached embeddings and returns the best match
+        if similarity > threshold.
+        """
+        with self._lock:
+            best_entry: CacheEntry | None = None
+            best_similarity = threshold  # Must exceed threshold
+
+            for entry in self.cache.values():
+                similarity = cosine_similarity(embedding, entry.query_embedding)
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_entry = entry
+
+            if best_entry is not None:
+                # Move to MRU and update stats
+                self.cache.move_to_end(best_entry.query_hash)
+                best_entry.last_accessed_at = datetime.utcnow()
+                best_entry.access_count += 1
+                logger.debug(f"Semantic cache hit: similarity={best_similarity:.3f}")
+
+            return best_entry
 
     def put(self, entry: CacheEntry) -> None:
         """Add entry to cache, evicting LRU if needed."""
@@ -186,11 +225,25 @@ class CacheService:
 
         return get_cache_setting("cache_min_confidence", 40)
 
+    @property
+    def semantic_threshold(self) -> float:
+        from ai_ready_rag.services.settings_service import get_cache_setting
+
+        return get_cache_setting("cache_semantic_threshold", 0.95)
+
     # ----- Core Operations -----
 
-    async def get(self, query: str, user_tags: list[str]) -> CacheEntry | None:
+    async def get(
+        self,
+        query: str,
+        user_tags: list[str],
+        query_embedding: list[float] | None = None,
+    ) -> CacheEntry | None:
         """
-        Try exact match cache lookup (Layer 1).
+        Try cache lookup with Layer 1 (exact) and Layer 2 (semantic).
+
+        Layer 1: Exact hash match (O(1))
+        Layer 2: Semantic similarity match (O(n)) - only if query_embedding provided
 
         Verifies user has access to all cited documents.
         Returns None if cache miss or access denied.
@@ -200,7 +253,7 @@ class CacheService:
 
         query_hash = self._hash_query(query)
 
-        # Try memory cache first
+        # Layer 1: Try memory cache (exact hash match)
         entry = self.memory.get(query_hash)
         if entry:
             if await self.verify_access(entry, user_tags):
@@ -212,7 +265,16 @@ class CacheService:
             self._miss_count += 1
             return None
 
-        # Try SQLite fallback
+        # Layer 2: Semantic similarity lookup (if embedding provided)
+        if query_embedding is not None:
+            entry = self.memory.get_semantic(query_embedding, self.semantic_threshold)
+            if entry and await self.verify_access(entry, user_tags):
+                self._log_access(query_hash, query, was_hit=True)
+                self._hit_count += 1
+                return entry
+            # Access denied or no match - continue to SQLite fallback
+
+        # Try SQLite fallback (Layer 1 only - no semantic in SQLite for perf)
         entry = self._get_from_sqlite(query_hash)
         if entry:
             if await self.verify_access(entry, user_tags):

@@ -12,6 +12,7 @@ from ai_ready_rag.services.cache_service import (
     CacheService,
     MemoryCache,
     UploadBatchContext,
+    cosine_similarity,
 )
 
 # =============================================================================
@@ -80,6 +81,65 @@ def sample_documents(db, admin_user, sample_tag):
     db.flush()
 
     return [doc]
+
+
+# =============================================================================
+# Cosine Similarity Tests
+# =============================================================================
+
+
+class TestCosineSimilarity:
+    def test_identical_vectors_return_one(self):
+        """Identical vectors have cosine similarity 1.0."""
+        vec = [0.5, 0.5, 0.5]
+        assert cosine_similarity(vec, vec) == pytest.approx(1.0)
+
+    def test_orthogonal_vectors_return_zero(self):
+        """Orthogonal vectors have cosine similarity 0.0."""
+        a = [1.0, 0.0, 0.0]
+        b = [0.0, 1.0, 0.0]
+        assert cosine_similarity(a, b) == pytest.approx(0.0)
+
+    def test_similar_vectors_high_similarity(self):
+        """Slightly different vectors have high similarity."""
+        a = [1.0, 0.0, 0.0]
+        b = [0.9, 0.1, 0.0]
+        sim = cosine_similarity(a, b)
+        assert sim > 0.9  # High similarity
+
+    def test_opposite_vectors_negative_similarity(self):
+        """Opposite vectors have similarity -1.0."""
+        a = [1.0, 0.0, 0.0]
+        b = [-1.0, 0.0, 0.0]
+        assert cosine_similarity(a, b) == pytest.approx(-1.0)
+
+    def test_zero_vector_first_returns_zero(self):
+        """Zero first vector returns 0.0 (no division error)."""
+        a = [0.0, 0.0, 0.0]
+        b = [1.0, 1.0, 1.0]
+        assert cosine_similarity(a, b) == 0.0
+
+    def test_zero_vector_second_returns_zero(self):
+        """Zero second vector returns 0.0 (no division error)."""
+        a = [1.0, 1.0, 1.0]
+        b = [0.0, 0.0, 0.0]
+        assert cosine_similarity(a, b) == 0.0
+
+    def test_both_zero_vectors_returns_zero(self):
+        """Both zero vectors return 0.0."""
+        a = [0.0, 0.0, 0.0]
+        b = [0.0, 0.0, 0.0]
+        assert cosine_similarity(a, b) == 0.0
+
+    def test_negative_values_computed_correctly(self):
+        """Negative vector components handled correctly."""
+        a = [-0.5, 0.5]
+        b = [0.5, 0.5]
+        # Dot product: -0.25 + 0.25 = 0
+        # norm_a = sqrt(0.25 + 0.25) = sqrt(0.5)
+        # norm_b = sqrt(0.25 + 0.25) = sqrt(0.5)
+        # similarity = 0 / (sqrt(0.5) * sqrt(0.5)) = 0
+        assert cosine_similarity(a, b) == pytest.approx(0.0)
 
 
 # =============================================================================
@@ -227,6 +287,173 @@ class TestMemoryCache:
 
 
 # =============================================================================
+# Semantic Cache Tests
+# =============================================================================
+
+
+class TestSemanticCache:
+    def test_get_semantic_exact_embedding_match(self, sample_entry):
+        """Exact embedding match returns entry."""
+        cache = MemoryCache()
+        cache.put(sample_entry)
+
+        # Same embedding should match
+        result = cache.get_semantic(sample_entry.query_embedding, threshold=0.95)
+        assert result is not None
+        assert result.query_hash == sample_entry.query_hash
+
+    def test_get_semantic_similar_above_threshold(self, sample_entry):
+        """Similar embedding above threshold returns entry."""
+        cache = MemoryCache()
+        cache.put(sample_entry)
+
+        # Slightly different embedding (should still exceed 0.95 threshold)
+        similar_embedding = [v + 0.001 for v in sample_entry.query_embedding]
+        result = cache.get_semantic(similar_embedding, threshold=0.95)
+        assert result is not None
+
+    def test_get_semantic_below_threshold_returns_none(self, sample_entry):
+        """Embedding below threshold returns None."""
+        cache = MemoryCache()
+        cache.put(sample_entry)
+
+        # Completely different embedding (alternating pattern)
+        different = [0.9 if i % 2 == 0 else 0.1 for i in range(768)]
+        result = cache.get_semantic(different, threshold=0.95)
+        assert result is None
+
+    def test_get_semantic_empty_cache_returns_none(self):
+        """Empty cache returns None."""
+        cache = MemoryCache()
+        result = cache.get_semantic([0.5] * 768, threshold=0.95)
+        assert result is None
+
+    def test_get_semantic_multiple_entries_returns_best(self, sample_entry):
+        """With multiple entries, returns highest similarity match."""
+        cache = MemoryCache(max_size=10)
+
+        # Entry 1: low similarity (orthogonal-ish)
+        entry_low = CacheEntry(
+            query_hash="low",
+            query_text="low similarity",
+            query_embedding=[0.9 if i % 2 == 0 else -0.9 for i in range(768)],
+            answer="low",
+            sources=[],
+            confidence_overall=75,
+            confidence_retrieval=0.85,
+            confidence_coverage=0.80,
+            confidence_llm=70,
+            generation_time_ms=34000.0,
+            model_used="llama3.2",
+            created_at=datetime.utcnow(),
+            last_accessed_at=datetime.utcnow(),
+            access_count=1,
+            document_ids=[],
+        )
+
+        # Entry 2: high similarity (close to query)
+        query_embedding = [0.1] * 768
+        entry_high = CacheEntry(
+            query_hash="high",
+            query_text="high similarity",
+            query_embedding=[v + 0.0001 for v in query_embedding],  # Very close
+            answer="high",
+            sources=[],
+            confidence_overall=75,
+            confidence_retrieval=0.85,
+            confidence_coverage=0.80,
+            confidence_llm=70,
+            generation_time_ms=34000.0,
+            model_used="llama3.2",
+            created_at=datetime.utcnow(),
+            last_accessed_at=datetime.utcnow(),
+            access_count=1,
+            document_ids=[],
+        )
+
+        cache.put(entry_low)
+        cache.put(entry_high)
+
+        result = cache.get_semantic(query_embedding, threshold=0.95)
+        assert result is not None
+        assert result.query_hash == "high"  # Best match
+
+    def test_get_semantic_updates_access_count(self, sample_entry):
+        """Semantic hit increments access_count."""
+        cache = MemoryCache()
+        cache.put(sample_entry)
+        initial_count = sample_entry.access_count
+
+        result = cache.get_semantic(sample_entry.query_embedding, threshold=0.95)
+        assert result.access_count > initial_count
+
+    def test_get_semantic_updates_last_accessed_at(self, sample_entry):
+        """Semantic hit updates last_accessed_at."""
+        cache = MemoryCache()
+        # Set old time
+        old_time = datetime.utcnow() - timedelta(hours=1)
+        sample_entry.last_accessed_at = old_time
+        cache.put(sample_entry)
+
+        result = cache.get_semantic(sample_entry.query_embedding, threshold=0.95)
+        assert result.last_accessed_at > old_time
+
+    def test_get_semantic_moves_to_mru(self, sample_entry):
+        """Semantic hit moves entry to MRU position."""
+        cache = MemoryCache(max_size=2)
+
+        # Create entry_b with orthogonal embedding (won't match sample_entry semantically)
+        entry_b = CacheEntry(
+            query_hash="bbb",
+            query_text="other query",
+            query_embedding=[1.0 if i % 2 == 0 else -1.0 for i in range(768)],  # Orthogonal
+            answer="other answer",
+            sources=[],
+            confidence_overall=75,
+            confidence_retrieval=0.85,
+            confidence_coverage=0.80,
+            confidence_llm=70,
+            generation_time_ms=34000.0,
+            model_used="llama3.2",
+            created_at=datetime.utcnow(),
+            last_accessed_at=datetime.utcnow(),
+            access_count=1,
+            document_ids=[],
+        )
+
+        cache.put(sample_entry)  # sample_entry is LRU
+        cache.put(entry_b)  # entry_b is MRU
+
+        # Access sample_entry via semantic search -> moves to MRU
+        cache.get_semantic(sample_entry.query_embedding, threshold=0.95)
+
+        # Now add third entry with orthogonal embedding -> should evict entry_b (now LRU)
+        entry_c = CacheEntry(
+            query_hash="ccc",
+            query_text="third query",
+            query_embedding=[1.0 if i % 3 == 0 else -1.0 for i in range(768)],  # Orthogonal
+            answer="third answer",
+            sources=[],
+            confidence_overall=75,
+            confidence_retrieval=0.85,
+            confidence_coverage=0.80,
+            confidence_llm=70,
+            generation_time_ms=34000.0,
+            model_used="llama3.2",
+            created_at=datetime.utcnow(),
+            last_accessed_at=datetime.utcnow(),
+            access_count=1,
+            document_ids=[],
+        )
+        cache.put(entry_c)
+
+        # sample_entry should still be in cache (was accessed, now MRU)
+        assert cache.get(sample_entry.query_hash) is not None
+        # entry_b should be evicted
+        assert cache.get("bbb") is None
+
+
+# =============================================================================
 # CacheService Core Tests
 # =============================================================================
 
@@ -260,6 +487,72 @@ class TestCacheServiceCore:
         hash2 = CacheService._hash_query("test query")
         hash3 = CacheService._hash_query("  TEST QUERY  ")
         assert hash1 == hash2 == hash3
+
+    def test_semantic_threshold_default(self, db):
+        """Default semantic threshold is 0.95."""
+        service = CacheService(db)
+        assert service.semantic_threshold == 0.95
+
+    @pytest.mark.asyncio
+    async def test_semantic_fallback_on_layer1_miss(self, db, mock_response):
+        """CacheService tries semantic match when exact hash misses."""
+        service = CacheService(db)
+        embedding = [0.1] * 768
+
+        # Store response with original query
+        await service.put("original query", embedding, mock_response)
+
+        # Different query text but similar embedding should hit semantically
+        similar_embedding = [v + 0.001 for v in embedding]
+        result = await service.get("different query text", [], query_embedding=similar_embedding)
+
+        assert result is not None
+        assert result.answer == mock_response.answer
+
+    @pytest.mark.asyncio
+    async def test_semantic_skipped_without_embedding(self, db, mock_response):
+        """CacheService skips Layer 2 when query_embedding not provided."""
+        service = CacheService(db)
+        embedding = [0.1] * 768
+
+        # Store response
+        await service.put("original query", embedding, mock_response)
+
+        # Different query text without embedding -> Layer 2 skipped -> miss
+        result = await service.get("different query text", [])
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_semantic_hit_verifies_access(
+        self, db, mock_response, sample_documents, sample_tag, admin_user
+    ):
+        """Semantic hit still respects access verification."""
+        # Mock response with citation to doc-1 (requires hr tag)
+        mock_response.citations = [MagicMock()]
+        mock_response.citations[0].document_id = "doc-1"
+        mock_response.citations[0].document_name = "test.pdf"
+        mock_response.citations[0].page_number = 1
+        mock_response.citations[0].section = "Section 1"
+        mock_response.citations[0].excerpt = "Test excerpt"
+
+        service = CacheService(db)
+        embedding = [0.1] * 768
+
+        # Store response
+        await service.put("original query", embedding, mock_response)
+
+        # Try to access with wrong tag -> access denied
+        similar_embedding = [v + 0.001 for v in embedding]
+        result = await service.get(
+            "different query text", ["finance"], query_embedding=similar_embedding
+        )
+        assert result is None  # Access denied
+
+        # Try with correct tag -> access granted
+        result = await service.get(
+            "different query text", ["hr"], query_embedding=similar_embedding
+        )
+        assert result is not None
 
 
 # =============================================================================
@@ -596,6 +889,30 @@ class TestThreadSafety:
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             list(executor.map(lambda _: get_entry(), range(50)))
 
+        # All results should be non-None
+        assert all(r is not None for r in results)
+        assert len(results) == 50
+
+    def test_concurrent_semantic_gets(self, sample_entry):
+        """Multiple concurrent semantic gets don't corrupt cache."""
+        cache = MemoryCache()
+        cache.put(sample_entry)
+
+        results = []
+        exceptions = []
+
+        def get_semantic():
+            try:
+                result = cache.get_semantic(sample_entry.query_embedding, threshold=0.95)
+                results.append(result)
+            except Exception as e:
+                exceptions.append(e)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            list(executor.map(lambda _: get_semantic(), range(50)))
+
+        # No exceptions
+        assert len(exceptions) == 0
         # All results should be non-None
         assert all(r is not None for r in results)
         assert len(results) == 50
