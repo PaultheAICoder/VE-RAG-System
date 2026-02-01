@@ -2105,3 +2105,135 @@ async def retry_reindex_document(
     )
 
     return _job_to_response(job)
+
+
+# =============================================================================
+# Cache Warming Endpoints
+# =============================================================================
+
+
+class TopQueryItem(BaseModel):
+    """Single query with access frequency data."""
+
+    query_text: str
+    access_count: int
+    last_accessed: datetime | None = None
+
+
+class TopQueryResponse(BaseModel):
+    """Response containing top queries for warming."""
+
+    queries: list[TopQueryItem]
+
+
+class CacheWarmRequest(BaseModel):
+    """Request to warm cache with specific queries."""
+
+    queries: list[str]
+
+
+class CacheWarmResponse(BaseModel):
+    """Response after starting cache warming."""
+
+    queued: int
+    message: str
+
+
+@router.get("/cache/top-queries", response_model=TopQueryResponse)
+async def get_top_queries(
+    limit: int = Query(20, ge=1, le=100, description="Maximum queries to return"),
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get most frequently accessed queries for cache warming.
+
+    Returns queries sorted by access count (descending), useful for
+    manual cache warming decisions.
+
+    Admin only.
+    """
+    from ai_ready_rag.services.cache_service import CacheService
+
+    cache_service = CacheService(db)
+    top_queries = cache_service.get_top_queries(limit)
+
+    return TopQueryResponse(
+        queries=[
+            TopQueryItem(
+                query_text=q["query_text"],
+                access_count=q["access_count"],
+                last_accessed=q["last_accessed"],
+            )
+            for q in top_queries
+        ]
+    )
+
+
+@router.post("/cache/warm", response_model=CacheWarmResponse, status_code=status.HTTP_202_ACCEPTED)
+async def warm_cache(
+    request: CacheWarmRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Warm cache with specified queries.
+
+    Runs each query through the RAG pipeline and caches the response.
+    Executes in background, returns immediately with 202 Accepted.
+
+    Admin only.
+    """
+    if not request.queries:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one query is required.",
+        )
+
+    # Start background warming
+    background_tasks.add_task(
+        warm_cache_task,
+        queries=request.queries,
+        triggered_by=current_user.id,
+    )
+
+    logger.info(
+        f"Admin {current_user.email} started cache warming with {len(request.queries)} queries"
+    )
+
+    return CacheWarmResponse(
+        queued=len(request.queries),
+        message="Cache warming started in background",
+    )
+
+
+async def warm_cache_task(queries: list[str], triggered_by: str) -> None:
+    """Background task to warm cache with queries.
+
+    Runs each query through RAG pipeline and caches response.
+    Uses empty user_tags (admin context) for warming.
+
+    Note: This is a placeholder implementation. Full RAG integration
+    will be completed in issue #87.
+    """
+    from ai_ready_rag.db.database import SessionLocal
+
+    db = SessionLocal()
+
+    try:
+        warmed = 0
+        for query in queries:
+            try:
+                # TODO (Issue #87): Integrate with RAGService for actual warming
+                # For now, log the warming attempt
+                logger.debug(f"Would warm cache for query: {query[:50]}...")
+                warmed += 1
+
+            except Exception as e:
+                logger.warning(f"Failed to warm cache for query '{query[:50]}...': {e}")
+
+        logger.info(f"Cache warming complete: {warmed}/{len(queries)} queries processed")
+
+    except Exception as e:
+        logger.error(f"Cache warming task failed: {e}")
+    finally:
+        db.close()

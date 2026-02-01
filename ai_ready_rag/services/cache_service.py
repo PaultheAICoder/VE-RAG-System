@@ -231,6 +231,18 @@ class CacheService:
 
         return get_cache_setting("cache_semantic_threshold", 0.95)
 
+    @property
+    def auto_warm_enabled(self) -> bool:
+        from ai_ready_rag.services.settings_service import get_cache_setting
+
+        return get_cache_setting("cache_auto_warm_enabled", True)
+
+    @property
+    def auto_warm_count(self) -> int:
+        from ai_ready_rag.services.settings_service import get_cache_setting
+
+        return get_cache_setting("cache_auto_warm_count", 20)
+
     # ----- Core Operations -----
 
     async def get(
@@ -514,6 +526,45 @@ class CacheService:
         )
         self.db.add(log)
         self.db.commit()
+
+    # ----- Cache Warming -----
+
+    def get_top_queries(self, limit: int = 20) -> list[dict]:
+        """Get most frequently accessed queries for cache warming.
+
+        Returns queries sorted by access count (descending), which can be
+        used for manual cache warming or auto-warming after invalidation.
+
+        Args:
+            limit: Maximum number of queries to return (default: 20)
+
+        Returns:
+            List of dicts with query_text, access_count, and last_accessed
+        """
+        from sqlalchemy import func
+
+        from ai_ready_rag.db.models import CacheAccessLog
+
+        results = (
+            self.db.query(
+                CacheAccessLog.query_text,
+                func.count().label("access_count"),
+                func.max(CacheAccessLog.accessed_at).label("last_accessed"),
+            )
+            .group_by(CacheAccessLog.query_hash)
+            .order_by(func.count().desc())
+            .limit(limit)
+            .all()
+        )
+
+        return [
+            {
+                "query_text": r.query_text,
+                "access_count": r.access_count,
+                "last_accessed": r.last_accessed,
+            }
+            for r in results
+        ]
 
     # ----- Batch Context -----
 

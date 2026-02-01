@@ -940,3 +940,164 @@ class TestDatabaseTables:
 
         count = db.query(CacheAccessLog).count()
         assert count >= 0
+
+
+# =============================================================================
+# Cache Warming Tests
+# =============================================================================
+
+
+class TestCacheWarming:
+    def test_get_top_queries_empty(self, db):
+        """Empty access log returns empty list."""
+        service = CacheService(db)
+        result = service.get_top_queries(limit=10)
+        assert result == []
+
+    def test_get_top_queries_returns_sorted(self, db):
+        """Queries returned in descending order by access count."""
+        from ai_ready_rag.db.models import CacheAccessLog
+
+        # Insert access logs with different counts
+        # 5 accesses for "popular query"
+        for _ in range(5):
+            log = CacheAccessLog(
+                query_hash="hash_popular",
+                query_text="popular query",
+                was_hit=True,
+            )
+            db.add(log)
+
+        # 2 accesses for "less popular query"
+        for _ in range(2):
+            log = CacheAccessLog(
+                query_hash="hash_less",
+                query_text="less popular query",
+                was_hit=True,
+            )
+            db.add(log)
+
+        db.commit()
+
+        service = CacheService(db)
+        result = service.get_top_queries(limit=10)
+
+        assert len(result) == 2
+        assert result[0]["query_text"] == "popular query"
+        assert result[0]["access_count"] == 5
+        assert result[1]["query_text"] == "less popular query"
+        assert result[1]["access_count"] == 2
+
+    def test_get_top_queries_respects_limit(self, db):
+        """Limit parameter restricts result count."""
+        from ai_ready_rag.db.models import CacheAccessLog
+
+        # Insert 5 different queries
+        for i in range(5):
+            log = CacheAccessLog(
+                query_hash=f"hash_{i}",
+                query_text=f"query {i}",
+                was_hit=True,
+            )
+            db.add(log)
+        db.commit()
+
+        service = CacheService(db)
+        result = service.get_top_queries(limit=3)
+
+        assert len(result) == 3
+
+    def test_get_top_queries_limit_exceeds_data(self, db):
+        """Limit > available queries returns all available."""
+        from ai_ready_rag.db.models import CacheAccessLog
+
+        # Insert 2 different queries
+        for i in range(2):
+            log = CacheAccessLog(
+                query_hash=f"hash_{i}",
+                query_text=f"query {i}",
+                was_hit=True,
+            )
+            db.add(log)
+        db.commit()
+
+        service = CacheService(db)
+        result = service.get_top_queries(limit=10)
+
+        assert len(result) == 2
+
+    def test_get_top_queries_includes_last_accessed(self, db):
+        """Result includes last_accessed timestamp."""
+        from ai_ready_rag.db.models import CacheAccessLog
+
+        log = CacheAccessLog(
+            query_hash="hash_test",
+            query_text="test query",
+            was_hit=True,
+        )
+        db.add(log)
+        db.commit()
+
+        service = CacheService(db)
+        result = service.get_top_queries(limit=10)
+
+        assert len(result) == 1
+        assert result[0]["last_accessed"] is not None
+        assert isinstance(result[0]["last_accessed"], datetime)
+
+    def test_get_top_queries_counts_hits_and_misses(self, db):
+        """Both hits and misses contribute to access_count."""
+        from ai_ready_rag.db.models import CacheAccessLog
+
+        # Insert 3 hits + 2 misses for same query_hash
+        for _ in range(3):
+            log = CacheAccessLog(
+                query_hash="hash_mixed",
+                query_text="mixed query",
+                was_hit=True,
+            )
+            db.add(log)
+
+        for _ in range(2):
+            log = CacheAccessLog(
+                query_hash="hash_mixed",
+                query_text="mixed query",
+                was_hit=False,
+            )
+            db.add(log)
+
+        db.commit()
+
+        service = CacheService(db)
+        result = service.get_top_queries(limit=10)
+
+        assert len(result) == 1
+        assert result[0]["access_count"] == 5  # 3 hits + 2 misses
+
+    def test_auto_warm_enabled_property_default(self, db):
+        """auto_warm_enabled returns True by default."""
+        service = CacheService(db)
+        assert service.auto_warm_enabled is True
+
+    def test_auto_warm_count_property_default(self, db):
+        """auto_warm_count returns 20 by default."""
+        service = CacheService(db)
+        assert service.auto_warm_count == 20
+
+    def test_auto_warm_enabled_property_overridden(self, db):
+        """auto_warm_enabled respects settings override."""
+        with patch(
+            "ai_ready_rag.services.settings_service.get_cache_setting",
+            return_value=False,
+        ):
+            service = CacheService(db)
+            assert service.auto_warm_enabled is False
+
+    def test_auto_warm_count_property_overridden(self, db):
+        """auto_warm_count respects settings override."""
+        with patch(
+            "ai_ready_rag.services.settings_service.get_cache_setting",
+            return_value=50,
+        ):
+            service = CacheService(db)
+            assert service.auto_warm_count == 50
