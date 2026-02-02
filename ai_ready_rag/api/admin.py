@@ -2912,23 +2912,30 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
             tenant_id=settings.default_tenant_id,
         )
         await vector_service.initialize()
+        print("[WARM-DEBUG] Vector service initialized", flush=True)
 
         rag_service = RAGService(settings, vector_service)
+        print("[WARM-DEBUG] RAG service created", flush=True)
 
         # Get admin user's tags for proper access control
         admin_user = db.query(User).filter(User.id == triggered_by).first()
         admin_tags = [t.name for t in admin_user.tags] if admin_user and admin_user.tags else []
+        print(f"[WARM-DEBUG] Admin tags: {admin_tags}", flush=True)
 
         # Resume from processed_index (supports crash recovery)
+        print(f"[WARM-DEBUG] Starting loop from {job.processed_index} to {job.total}", flush=True)
         for i in range(job.processed_index, job.total):
             query = job.queries[i]
+            print(f"[WARM-DEBUG] Processing query {i + 1}/{job.total}: {query[:50]}...", flush=True)
             try:
                 rag_request = RAGRequest(
                     query=query,
                     user_tags=admin_tags,
                     tenant_id="default",
                 )
+                print("[WARM-DEBUG] Calling rag_service.generate()...", flush=True)
                 await rag_service.generate(rag_request, db)  # Triggers caching
+                print("[WARM-DEBUG] rag_service.generate() completed", flush=True)
 
                 # Record success
                 job.results.append(
@@ -2944,6 +2951,7 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
 
             except Exception as e:
                 # Record failure by index
+                print(f"[WARM-DEBUG] Query {i + 1} FAILED: {e}", flush=True)
                 error_msg = str(e)[:200]
                 job.results.append(
                     {
@@ -2968,6 +2976,10 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
                 await asyncio.sleep(settings.warming_delay_seconds)
 
         # Complete the job
+        print(
+            f"[WARM-DEBUG] Completing job - success={job.success_count}, total={job.total}",
+            flush=True,
+        )
         queue_service.complete_job(job)
 
         logger.info(
@@ -2981,8 +2993,13 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
 
         # Delete job file on success (or archive if configured)
         queue_service.delete_job(job_id)
+        print(f"[WARM-DEBUG] Job {job_id} deleted", flush=True)
 
     except Exception as e:
+        print(f"[WARM-DEBUG] EXCEPTION in warming task: {e}", flush=True)
+        import traceback
+
+        traceback.print_exc()
         queue_service.fail_job(job, str(e))
         logger.error(f"Cache warming job {job_id} failed: {e}")
     finally:
