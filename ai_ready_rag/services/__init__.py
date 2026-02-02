@@ -31,6 +31,11 @@ from ai_ready_rag.services.vector_utils import (
     validate_tag,
     validate_tags_for_ingestion,
 )
+from ai_ready_rag.services.warming_queue import (
+    InvalidStateTransition,
+    WarmingJob,
+    WarmingQueueService,
+)
 
 __all__ = [
     # Cache Service
@@ -62,4 +67,8 @@ __all__ = [
     "RESERVED_TAGS",
     "MODEL_LIMITS",
     "STOPWORDS",
+    # Warming Queue Service
+    "WarmingJob",
+    "WarmingQueueService",
+    "InvalidStateTransition",
 ]

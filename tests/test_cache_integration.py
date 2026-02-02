@@ -386,6 +386,7 @@ class TestCacheWarming:
             patch("ai_ready_rag.services.rag_service.RAGService") as mock_rag_class,
         ):
             mock_settings = MagicMock()
+            mock_settings.warming_delay_seconds = 0  # Disable delay in tests
             mock_get_settings.return_value = mock_settings
 
             mock_db = MagicMock()
@@ -417,6 +418,7 @@ class TestCacheWarming:
             patch("ai_ready_rag.services.rag_service.RAGService") as mock_rag_class,
         ):
             mock_settings = MagicMock()
+            mock_settings.warming_delay_seconds = 0  # Disable delay in tests
             mock_get_settings.return_value = mock_settings
 
             mock_db = MagicMock()
@@ -479,57 +481,61 @@ class TestCacheEntryToResponse:
 
     def test_action_determined_by_confidence(self, mock_settings):
         """Action is CITE if confidence >= threshold, ROUTE otherwise."""
-        # Arrange
-        service = RAGService(
-            settings=mock_settings,
-            vector_service=AsyncMock(),
-        )
+        # Arrange - mock get_rag_setting to return the default threshold (60)
+        with patch(
+            "ai_ready_rag.services.rag_service.get_rag_setting",
+            side_effect=lambda key, default: default,
+        ):
+            service = RAGService(
+                settings=mock_settings,
+                vector_service=AsyncMock(),
+            )
 
-        # High confidence entry (75 >= 60 threshold)
-        high_conf_entry = CacheEntry(
-            query_hash="abc123",
-            query_text="Test query",
-            query_embedding=[0.1] * 768,
-            answer="High confidence answer",
-            sources=[],
-            confidence_overall=75,
-            confidence_retrieval=0.85,
-            confidence_coverage=0.80,
-            confidence_llm=70,
-            generation_time_ms=100.0,
-            model_used="llama3.2",
-            created_at=datetime.utcnow(),
-            last_accessed_at=datetime.utcnow(),
-            access_count=1,
-            document_ids=[],
-        )
+            # High confidence entry (75 >= 60 threshold)
+            high_conf_entry = CacheEntry(
+                query_hash="abc123",
+                query_text="Test query",
+                query_embedding=[0.1] * 768,
+                answer="High confidence answer",
+                sources=[],
+                confidence_overall=75,
+                confidence_retrieval=0.85,
+                confidence_coverage=0.80,
+                confidence_llm=70,
+                generation_time_ms=100.0,
+                model_used="llama3.2",
+                created_at=datetime.utcnow(),
+                last_accessed_at=datetime.utcnow(),
+                access_count=1,
+                document_ids=[],
+            )
 
-        # Low confidence entry (50 < 60 threshold)
-        low_conf_entry = CacheEntry(
-            query_hash="def456",
-            query_text="Test query 2",
-            query_embedding=[0.1] * 768,
-            answer="Low confidence answer",
-            sources=[],
-            confidence_overall=50,
-            confidence_retrieval=0.5,
-            confidence_coverage=0.5,
-            confidence_llm=50,
-            generation_time_ms=100.0,
-            model_used="llama3.2",
-            created_at=datetime.utcnow(),
-            last_accessed_at=datetime.utcnow(),
-            access_count=1,
-            document_ids=[],
-        )
+            # Low confidence entry (50 < 60 threshold)
+            low_conf_entry = CacheEntry(
+                query_hash="def456",
+                query_text="Test query 2",
+                query_embedding=[0.1] * 768,
+                answer="Low confidence answer",
+                sources=[],
+                confidence_overall=50,
+                confidence_retrieval=0.5,
+                confidence_coverage=0.5,
+                confidence_llm=50,
+                generation_time_ms=100.0,
+                model_used="llama3.2",
+                created_at=datetime.utcnow(),
+                last_accessed_at=datetime.utcnow(),
+                access_count=1,
+                document_ids=[],
+            )
 
-        # Act
-        high_response = service._cache_entry_to_response(high_conf_entry, 50.0)
-        low_response = service._cache_entry_to_response(low_conf_entry, 50.0)
+            # Act
+            high_response = service._cache_entry_to_response(high_conf_entry, 50.0)
+            low_response = service._cache_entry_to_response(low_conf_entry, 50.0)
 
-        # Assert
-        assert high_response.action == "CITE"
-        assert low_response.action == "ROUTE"
+            # Assert
+            assert high_response.action == "CITE"
+            assert low_response.action == "ROUTE"
 
 
 class TestCacheStats:

@@ -133,6 +133,14 @@ class Settings(BaseSettings):
 
     # Cache Warming
     warming_delay_seconds: float = 2.0  # Delay between warming queries to reduce Ollama contention
+    warming_queue_dir: str = "data/warming_queue"  # Directory for persistent job files
+    warming_scan_interval_seconds: int = 60  # Folder watcher polling interval
+    warming_failed_job_retention_days: int = 7  # Auto-delete failed jobs after N days
+    warming_lock_timeout_minutes: int = 30  # Reclaim stale locks after N minutes
+    warming_max_file_size_mb: float = 10.0  # Max uploaded file size for CLI drops
+    warming_allowed_extensions: list[str] = [".txt", ".csv"]  # Allowed CLI file types
+    warming_archive_completed: bool = False  # Archive completed jobs for audit
+    warming_checkpoint_interval: int = 1  # Save progress every N queries
 
     # Document Management
     upload_dir: str = "./data/uploads"
