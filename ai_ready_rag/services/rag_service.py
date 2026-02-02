@@ -1172,7 +1172,6 @@ class RAGService:
             TokenBudgetExceededError: Token budget exceeded
             RAGServiceError: Other generation errors
         """
-        print(f"[RAG-DEBUG] generate() ENTERED for query: {request.query[:50]}...", flush=True)
         start_time = time.perf_counter()
         from ai_ready_rag.services.settings_service import SettingsService
 
@@ -1181,10 +1180,6 @@ class RAGService:
         await self.validate_model(model)
 
         # 1.25 Check cache first (if enabled)
-        print(
-            f"[RAG-DEBUG] Checking cache - cache={self.cache is not None}, enabled={self.cache.enabled if self.cache else 'N/A'}",
-            flush=True,
-        )
         if self.cache and self.cache.enabled:
             try:
                 # Get embedding for semantic cache lookup
@@ -1196,12 +1191,9 @@ class RAGService:
                 )
                 if cached:
                     elapsed_ms = (time.perf_counter() - start_time) * 1000
-                    print("[RAG-DEBUG] Cache HIT - returning early", flush=True)
                     logger.info(f"Cache HIT for query: {request.query[:50]}...")
                     return self._cache_entry_to_response(cached, elapsed_ms)
-                print("[RAG-DEBUG] Cache MISS - proceeding", flush=True)
             except Exception as e:
-                print(f"[RAG-DEBUG] Cache lookup FAILED: {e}", flush=True)
                 logger.warning(f"Cache lookup failed, proceeding without cache: {e}")
 
         # 1.5 Run query router (if retrieve_and_direct mode enabled)
@@ -1242,14 +1234,9 @@ class RAGService:
         )
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        print(f"[RAG-DEBUG] Retrieved {len(context_chunks)} context chunks", flush=True)
 
         # Early exit: no context (zero-context short-circuit)
         if not context_chunks:
-            print(
-                "[RAG-DEBUG] NO CONTEXT - returning insufficient_context_response (NOT CACHED)",
-                flush=True,
-            )
             return self._insufficient_context_response(model, elapsed_ms, routing_decision)
 
         # 3. Apply token budget
@@ -1354,23 +1341,14 @@ class RAGService:
         )
 
         # 9. Store in cache before returning (if enabled and high enough confidence)
-        print(
-            f"[RAG-DEBUG] cache={self.cache is not None}, enabled={self.cache.enabled if self.cache else 'N/A'}",
-            flush=True,
-        )
         if self.cache and self.cache.enabled:
             try:
-                print("[RAG-DEBUG] Storing in cache...", flush=True)
                 # Get or compute embedding for cache storage
                 query_embedding = await self._get_or_embed_query(request.query)
                 await self.cache.put(request.query, query_embedding, response)
                 await self.cache.put_embedding(request.query, query_embedding)
-                print("[RAG-DEBUG] Cache store completed", flush=True)
             except Exception as e:
-                print(f"[RAG-DEBUG] Cache store FAILED: {e}", flush=True)
                 logger.warning(f"[RAG] Failed to cache response: {e}")
-        else:
-            print("[RAG-DEBUG] Cache disabled or not available", flush=True)
 
         return response
 

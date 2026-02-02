@@ -2651,16 +2651,13 @@ async def warm_cache_from_file(
     def run_warming():
         import asyncio
 
-        print(f"[WARM-DEBUG] run_warming() called for job {job.id}", flush=True)
         try:
             asyncio.run(_warm_file_task(job.id, current_user.id))
         except Exception as e:
-            print(f"[WARM-DEBUG] run_warming() FAILED: {e}", flush=True)
             logger.error(f"Cache warming job {job.id} failed: {e}")
 
     background_tasks.add_task(run_warming)
 
-    print(f"[WARM-DEBUG] Created job {job.id} with {len(questions)} questions", flush=True)
     logger.info(
         f"Admin {current_user.email} started file cache warming: "
         f"{len(questions)} questions, job_id={job.id}"
@@ -2881,7 +2878,6 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
     from ai_ready_rag.db.database import SessionLocal
     from ai_ready_rag.services.rag_service import RAGRequest, RAGService
 
-    print(f"[WARM-DEBUG] _warm_file_task() ENTERED for job {job_id}", flush=True)
     logger.info(f"[WARM] Starting warming task for job {job_id}")
     queue_service = get_warming_queue()
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
@@ -2889,11 +2885,9 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
     # Acquire job with lock
     job = queue_service.acquire_job(job_id, worker_id)
     if not job:
-        print(f"[WARM-DEBUG] Could not acquire job {job_id}", flush=True)
         logger.warning(f"[WARM] Could not acquire warming job {job_id}")
         return
 
-    print(f"[WARM-DEBUG] Acquired job {job_id} with {job.total} queries", flush=True)
     logger.info(f"[WARM] Acquired job {job_id} with {job.total} queries")
     settings = get_settings()
     db = SessionLocal()
@@ -2912,30 +2906,23 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
             tenant_id=settings.default_tenant_id,
         )
         await vector_service.initialize()
-        print("[WARM-DEBUG] Vector service initialized", flush=True)
 
         rag_service = RAGService(settings, vector_service)
-        print("[WARM-DEBUG] RAG service created", flush=True)
 
         # Get admin user's tags for proper access control
         admin_user = db.query(User).filter(User.id == triggered_by).first()
         admin_tags = [t.name for t in admin_user.tags] if admin_user and admin_user.tags else []
-        print(f"[WARM-DEBUG] Admin tags: {admin_tags}", flush=True)
 
         # Resume from processed_index (supports crash recovery)
-        print(f"[WARM-DEBUG] Starting loop from {job.processed_index} to {job.total}", flush=True)
         for i in range(job.processed_index, job.total):
             query = job.queries[i]
-            print(f"[WARM-DEBUG] Processing query {i + 1}/{job.total}: {query[:50]}...", flush=True)
             try:
                 rag_request = RAGRequest(
                     query=query,
                     user_tags=admin_tags,
                     tenant_id="default",
                 )
-                print("[WARM-DEBUG] Calling rag_service.generate()...", flush=True)
                 await rag_service.generate(rag_request, db)  # Triggers caching
-                print("[WARM-DEBUG] rag_service.generate() completed", flush=True)
 
                 # Record success
                 job.results.append(
@@ -2951,7 +2938,6 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
 
             except Exception as e:
                 # Record failure by index
-                print(f"[WARM-DEBUG] Query {i + 1} FAILED: {e}", flush=True)
                 error_msg = str(e)[:200]
                 job.results.append(
                     {
@@ -2976,10 +2962,6 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
                 await asyncio.sleep(settings.warming_delay_seconds)
 
         # Complete the job
-        print(
-            f"[WARM-DEBUG] Completing job - success={job.success_count}, total={job.total}",
-            flush=True,
-        )
         queue_service.complete_job(job)
 
         logger.info(
@@ -2993,10 +2975,8 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
 
         # Delete job file on success (or archive if configured)
         queue_service.delete_job(job_id)
-        print(f"[WARM-DEBUG] Job {job_id} deleted", flush=True)
 
     except Exception as e:
-        print(f"[WARM-DEBUG] EXCEPTION in warming task: {e}", flush=True)
         import traceback
 
         traceback.print_exc()

@@ -363,27 +363,12 @@ class CacheService:
         response: Any,  # RAGResponse - avoid import
     ) -> None:
         """Store response in cache (memory + SQLite)."""
-        print(
-            f"[CACHE-DEBUG] put() called - enabled={self.enabled}, min_confidence={self.min_confidence}",
-            flush=True,
-        )
         if not self.enabled:
-            print("[CACHE-DEBUG] Caching disabled, skipping", flush=True)
             return
 
         # Skip low-confidence responses
-        print(f"[CACHE-DEBUG] Response confidence: {response.confidence.overall}%", flush=True)
         if response.confidence.overall < self.min_confidence:
-            print(
-                f"[CACHE-DEBUG] Skipping - confidence {response.confidence.overall}% < min {self.min_confidence}%",
-                flush=True,
-            )
             return
-
-        print(
-            f"[CACHE-DEBUG] Storing response with confidence {response.confidence.overall}%",
-            flush=True,
-        )
 
         from ai_ready_rag.db.models import ResponseCache
 
