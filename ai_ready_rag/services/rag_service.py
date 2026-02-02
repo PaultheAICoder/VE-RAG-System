@@ -1341,14 +1341,18 @@ class RAGService:
         )
 
         # 9. Store in cache before returning (if enabled and high enough confidence)
+        logger.info(
+            f"[RAG] Attempting cache store - cache={self.cache is not None}, enabled={self.cache.enabled if self.cache else 'N/A'}"
+        )
         if self.cache and self.cache.enabled:
             try:
                 # Get or compute embedding for cache storage
                 query_embedding = await self._get_or_embed_query(request.query)
                 await self.cache.put(request.query, query_embedding, response)
                 await self.cache.put_embedding(request.query, query_embedding)
+                logger.info("[RAG] Cache store completed")
             except Exception as e:
-                logger.warning(f"Failed to cache response: {e}")
+                logger.warning(f"[RAG] Failed to cache response: {e}")
 
         return response
 

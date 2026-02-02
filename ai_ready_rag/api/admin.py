@@ -2878,15 +2878,17 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
     from ai_ready_rag.db.database import SessionLocal
     from ai_ready_rag.services.rag_service import RAGRequest, RAGService
 
+    logger.info(f"[WARM] Starting warming task for job {job_id}")
     queue_service = get_warming_queue()
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
 
     # Acquire job with lock
     job = queue_service.acquire_job(job_id, worker_id)
     if not job:
-        logger.warning(f"Could not acquire warming job {job_id}")
+        logger.warning(f"[WARM] Could not acquire warming job {job_id}")
         return
 
+    logger.info(f"[WARM] Acquired job {job_id} with {job.total} queries")
     settings = get_settings()
     db = SessionLocal()
 
