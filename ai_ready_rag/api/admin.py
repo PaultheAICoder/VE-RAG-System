@@ -8,7 +8,6 @@ import shutil
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -35,8 +34,29 @@ from ai_ready_rag.services.document_service import DocumentService
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.services.model_service import ModelService, OllamaUnavailableError
 from ai_ready_rag.services.settings_service import SettingsService
+from ai_ready_rag.services.warming_queue import WarmingQueueService
 
 logger = logging.getLogger(__name__)
+
+# Module-level warming queue service (initialized lazily)
+_warming_queue: WarmingQueueService | None = None
+
+
+def get_warming_queue() -> WarmingQueueService:
+    """Get or create the warming queue service."""
+    global _warming_queue
+    if _warming_queue is None:
+        settings = get_settings()
+        queue_dir = settings.warming_queue_dir
+        _warming_queue = WarmingQueueService(
+            queue_dir=queue_dir,
+            lock_timeout_minutes=settings.warming_lock_timeout_minutes,
+            checkpoint_interval=settings.warming_checkpoint_interval,
+            archive_completed=settings.warming_archive_completed,
+        )
+    return _warming_queue
+
+
 router = APIRouter()
 
 
@@ -2169,45 +2189,9 @@ class WarmRetryRequest(BaseModel):
     queries: list[str]
 
 
-@dataclass
-class WarmingJob:
-    """Tracks state of a file-based cache warming job."""
-
-    id: str
-    queries: list[str]
-    total: int
-    status: str = "pending"  # pending, running, completed, failed
-    processed: int = 0
-    success_count: int = 0
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    results: list[dict] = field(default_factory=list)
-    failed_queries: list[str] = field(default_factory=list)
-
-
-# In-memory storage for warming jobs (cleared on restart)
-_warming_jobs: dict[str, WarmingJob] = {}
-
-
 def _strip_numbering(text: str) -> str:
     """Strip leading numbering from a question (e.g., '1. Question' -> 'Question')."""
     return re.sub(r"^\d+[\.\)\-\s]+", "", text.strip())
-
-
-def _cleanup_old_jobs(max_age_hours: int = 24) -> None:
-    """Remove completed/failed jobs older than max_age_hours."""
-    cutoff = datetime.now(UTC).replace(tzinfo=None) - __import__("datetime").timedelta(
-        hours=max_age_hours
-    )
-    to_remove = [
-        job_id
-        for job_id, job in _warming_jobs.items()
-        if job.status in ("completed", "failed")
-        and job.completed_at
-        and job.completed_at.replace(tzinfo=None) < cutoff
-    ]
-    for job_id in to_remove:
-        del _warming_jobs[job_id]
 
 
 # Cache Settings Models
@@ -2655,39 +2639,31 @@ async def warm_cache_from_file(
             detail="No valid questions found in file.",
         )
 
-    # Cleanup old jobs
-    _cleanup_old_jobs()
-
-    # Create job
-    job_id = str(uuid.uuid4())
-    job = WarmingJob(
-        id=job_id,
-        queries=questions,
-        total=len(questions),
-    )
-    _warming_jobs[job_id] = job
+    # Create job via queue service (persists to disk)
+    queue_service = get_warming_queue()
+    job = queue_service.create_job(questions, triggered_by=current_user.id)
 
     # Start background warming
     def run_warming():
         import asyncio
 
         try:
-            asyncio.run(_warm_file_task(job_id, current_user.id))
+            asyncio.run(_warm_file_task(job.id, current_user.id))
         except Exception as e:
-            logger.error(f"Cache warming job {job_id} failed: {e}")
+            logger.error(f"Cache warming job {job.id} failed: {e}")
 
     background_tasks.add_task(run_warming)
 
     logger.info(
         f"Admin {current_user.email} started file cache warming: "
-        f"{len(questions)} questions, job_id={job_id}"
+        f"{len(questions)} questions, job_id={job.id}"
     )
 
     return WarmFileResponse(
-        job_id=job_id,
+        job_id=job.id,
         queued=len(questions),
         message="Cache warming started. Connect to SSE for progress.",
-        sse_url=f"/api/admin/cache/warm-progress/{job_id}",
+        sse_url=f"/api/admin/cache/warm-progress/{job.id}",
     )
 
 
@@ -2705,7 +2681,9 @@ async def stream_warming_progress(
 
     Admin only.
     """
-    if job_id not in _warming_jobs:
+    queue_service = get_warming_queue()
+    job = queue_service.get_job(job_id)
+    if job is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job {job_id} not found.",
@@ -2742,39 +2720,31 @@ async def retry_warming_queries(
             detail="At least one query is required.",
         )
 
-    # Cleanup old jobs
-    _cleanup_old_jobs()
-
-    # Create new job for retry
-    job_id = str(uuid.uuid4())
-    job = WarmingJob(
-        id=job_id,
-        queries=request.queries,
-        total=len(request.queries),
-    )
-    _warming_jobs[job_id] = job
+    # Create new job for retry via queue service
+    queue_service = get_warming_queue()
+    job = queue_service.create_job(request.queries, triggered_by=current_user.id)
 
     # Start background warming
     def run_warming():
         import asyncio
 
         try:
-            asyncio.run(_warm_file_task(job_id, current_user.id))
+            asyncio.run(_warm_file_task(job.id, current_user.id))
         except Exception as e:
-            logger.error(f"Cache warming retry job {job_id} failed: {e}")
+            logger.error(f"Cache warming retry job {job.id} failed: {e}")
 
     background_tasks.add_task(run_warming)
 
     logger.info(
         f"Admin {current_user.email} started retry warming: "
-        f"{len(request.queries)} queries, job_id={job_id}"
+        f"{len(request.queries)} queries, job_id={job.id}"
     )
 
     return WarmFileResponse(
-        job_id=job_id,
+        job_id=job.id,
         queued=len(request.queries),
         message="Retry warming started. Connect to SSE for progress.",
-        sse_url=f"/api/admin/cache/warm-progress/{job_id}",
+        sse_url=f"/api/admin/cache/warm-progress/{job.id}",
     )
 
 
@@ -2789,7 +2759,8 @@ async def get_warming_status(
 
     Admin only.
     """
-    job = _warming_jobs.get(job_id)
+    queue_service = get_warming_queue()
+    job = queue_service.get_job(job_id)
     if not job:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2810,7 +2781,8 @@ async def get_warming_status(
 
 async def _sse_event_generator(job_id: str):
     """Generate SSE events for warming job progress."""
-    job = _warming_jobs.get(job_id)
+    queue_service = get_warming_queue()
+    job = queue_service.get_job(job_id)
     if not job:
         yield f"event: error\ndata: {json.dumps({'error': 'Job not found'})}\n\n"
         return
@@ -2819,7 +2791,7 @@ async def _sse_event_generator(job_id: str):
     last_results_count = 0
 
     while True:
-        job = _warming_jobs.get(job_id)
+        job = queue_service.get_job(job_id)
         if not job:
             break
 
@@ -2872,18 +2844,20 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
     """Background task to warm cache with queries from file.
 
     Updates job state as queries are processed for SSE streaming.
+    Persists progress to disk for crash recovery.
     """
     from ai_ready_rag.config import get_settings
     from ai_ready_rag.db.database import SessionLocal
     from ai_ready_rag.services.rag_service import RAGRequest, RAGService
 
-    job = _warming_jobs.get(job_id)
-    if not job:
-        logger.error(f"Warming job {job_id} not found")
-        return
+    queue_service = get_warming_queue()
+    worker_id = f"worker-{uuid.uuid4().hex[:8]}"
 
-    job.status = "running"
-    job.started_at = datetime.now(UTC)
+    # Acquire job with lock
+    job = queue_service.acquire_job(job_id, worker_id)
+    if not job:
+        logger.warning(f"Could not acquire warming job {job_id}")
+        return
 
     settings = get_settings()
     db = SessionLocal()
@@ -2909,7 +2883,9 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
         admin_user = db.query(User).filter(User.id == triggered_by).first()
         admin_tags = [t.name for t in admin_user.tags] if admin_user and admin_user.tags else []
 
-        for i, query in enumerate(job.queries):
+        # Resume from processed_index (supports crash recovery)
+        for i in range(job.processed_index, job.total):
+            query = job.queries[i]
             try:
                 rag_request = RAGRequest(
                     query=query,
@@ -2931,7 +2907,7 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
                 logger.info(f"[WARM] Completed query {i + 1}: {query[:50]}...")
 
             except Exception as e:
-                # Record failure
+                # Record failure by index
                 error_msg = str(e)[:200]
                 job.results.append(
                     {
@@ -2941,26 +2917,33 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
                         "error": error_msg,
                     }
                 )
-                job.failed_queries.append(query)
+                job.failed_indices.append(i)
                 logger.warning(f"Failed to warm cache for query '{query[:50]}...': {e}")
 
-            job.processed = i + 1
+            # Update processed index and persist to disk
+            job.processed_index = i + 1
+
+            # Checkpoint progress to disk (crash recovery)
+            if (i + 1) % queue_service.checkpoint_interval == 0 or i == job.total - 1:
+                queue_service.update_job(job)
 
             # Throttle to reduce Ollama contention
-            if i < len(job.queries) - 1 and settings.warming_delay_seconds > 0:
+            if i < job.total - 1 and settings.warming_delay_seconds > 0:
                 await asyncio.sleep(settings.warming_delay_seconds)
 
-        job.status = "completed"
-        job.completed_at = datetime.now(UTC)
+        # Complete the job
+        queue_service.complete_job(job)
 
         logger.info(
             f"File cache warming complete: {job.success_count}/{job.total} queries "
             f"(job_id={job_id}, triggered_by={triggered_by})"
         )
 
+        # Delete job file on success (or archive if configured)
+        queue_service.delete_job(job_id)
+
     except Exception as e:
-        job.status = "failed"
-        job.completed_at = datetime.now(UTC)
+        queue_service.fail_job(job, str(e))
         logger.error(f"Cache warming job {job_id} failed: {e}")
     finally:
         db.close()
