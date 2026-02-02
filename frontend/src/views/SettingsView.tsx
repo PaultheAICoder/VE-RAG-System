@@ -92,7 +92,6 @@ export function SettingsView() {
   const [topQueries, setTopQueries] = useState<TopCachedQuery[]>([]);
   const [showClearCacheModal, setShowClearCacheModal] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
-  const [isWarming, setIsWarming] = useState(false);
 
   // Modal state
   const [showEmbeddingWarning, setShowEmbeddingWarning] = useState(false);
@@ -253,18 +252,24 @@ export function SettingsView() {
     }
   };
 
-  // Handle warm cache
+  // Handle warm cache - just call the API, component manages state
   const handleWarmCache = async (queries: string[]) => {
-    setIsWarming(true);
-    try {
-      const result = await warmCache(queries);
-      setSuccess(`Queued ${result.queued} queries for warming`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to warm cache');
-    } finally {
-      setIsWarming(false);
-    }
+    await warmCache(queries);
   };
+
+  // Refresh cache stats after warming completes
+  const handleWarmingComplete = useCallback(async () => {
+    try {
+      const [statsData, queriesData] = await Promise.all([
+        getCacheStats(),
+        getTopQueries(10),
+      ]);
+      setCacheStats(statsData);
+      setTopQueries(queriesData.queries);
+    } catch {
+      // Silently fail - stats will refresh on next page load
+    }
+  }, []);
 
   // Handle save
   const handleSave = async () => {
@@ -716,7 +721,7 @@ export function SettingsView() {
       <CacheTopQueriesCard queries={topQueries} />
 
       {/* Cache Warming */}
-      <CacheWarmingCard onWarm={handleWarmCache} isWarming={isWarming} />
+      <CacheWarmingCard onWarm={handleWarmCache} onWarmingComplete={handleWarmingComplete} />
 
       {/* Reindex Status Section */}
       <ReindexStatusCard />

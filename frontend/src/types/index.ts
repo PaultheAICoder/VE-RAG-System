@@ -512,3 +512,10 @@ export interface WarmCacheResponse {
   queued: number;
   message: string;
 }
+
+export interface WarmFileResponse {
+  job_id: string;
+  queued: number;
+  message: string;
+  sse_url: string;
+}

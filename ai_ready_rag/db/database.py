@@ -19,7 +19,7 @@ os.makedirs("data", exist_ok=True)
 engine = create_engine(
     settings.database_url,
     connect_args={"check_same_thread": False},
-    echo=settings.debug,
+    echo=False,  # Set to True to see SQL statements for debugging
     poolclass=QueuePool,
     pool_size=settings.db_pool_size,
     max_overflow=settings.db_pool_max_overflow,

@@ -1,14 +1,29 @@
 """Admin endpoints for system management."""
 
+import asyncio
+import json
 import logging
+import re
 import shutil
 import subprocess
 import time
+import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -2139,6 +2154,62 @@ class CacheWarmResponse(BaseModel):
     message: str
 
 
+class WarmFileResponse(BaseModel):
+    """Response after starting file-based cache warming."""
+
+    job_id: str
+    queued: int
+    message: str
+    sse_url: str
+
+
+class WarmRetryRequest(BaseModel):
+    """Request to retry failed warming queries."""
+
+    queries: list[str]
+
+
+@dataclass
+class WarmingJob:
+    """Tracks state of a file-based cache warming job."""
+
+    id: str
+    queries: list[str]
+    total: int
+    status: str = "pending"  # pending, running, completed, failed
+    processed: int = 0
+    success_count: int = 0
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    results: list[dict] = field(default_factory=list)
+    failed_queries: list[str] = field(default_factory=list)
+
+
+# In-memory storage for warming jobs (cleared on restart)
+_warming_jobs: dict[str, WarmingJob] = {}
+
+
+def _strip_numbering(text: str) -> str:
+    """Strip leading numbering from a question (e.g., '1. Question' -> 'Question')."""
+    return re.sub(r"^\d+[\.\)\-\s]+", "", text.strip())
+
+
+def _cleanup_old_jobs(max_age_hours: int = 24) -> None:
+    """Remove completed/failed jobs older than max_age_hours."""
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - __import__("datetime").timedelta(
+        hours=max_age_hours
+    )
+    to_remove = [
+        job_id
+        for job_id, job in _warming_jobs.items()
+        if job.status in ("completed", "failed")
+        and job.completed_at
+        and job.completed_at.replace(tzinfo=None) < cutoff
+    ]
+    for job_id in to_remove:
+        del _warming_jobs[job_id]
+
+
 # Cache Settings Models
 class CacheSettingsResponse(BaseModel):
     """Response model for cache settings."""
@@ -2280,7 +2351,7 @@ async def warm_cache_task(queries: list[str], triggered_by: str) -> None:
         rag_service = RAGService(settings)
         warmed = 0
 
-        for query in queries:
+        for i, query in enumerate(queries):
             try:
                 request = RAGRequest(
                     query=query,
@@ -2293,6 +2364,10 @@ async def warm_cache_task(queries: list[str], triggered_by: str) -> None:
                 logger.debug(f"Warmed cache for query: {query[:50]}...")
             except Exception as e:
                 logger.warning(f"Failed to warm cache for query '{query[:50]}...': {e}")
+
+            # Throttle to reduce Ollama contention with live user requests
+            if i < len(queries) - 1 and settings.warming_delay_seconds > 0:
+                await asyncio.sleep(settings.warming_delay_seconds)
 
         logger.info(
             f"Cache warming complete: {warmed}/{len(queries)} queries processed "
@@ -2517,3 +2592,375 @@ async def clear_cache(
         cleared_entries=cleared,
         message="Cache cleared successfully",
     )
+
+
+# =============================================================================
+# File-based Cache Warming Endpoints
+# =============================================================================
+
+
+@router.post(
+    "/cache/warm-file", response_model=WarmFileResponse, status_code=status.HTTP_202_ACCEPTED
+)
+async def warm_cache_from_file(
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_system_admin),
+):
+    """Upload a file containing queries to warm the cache.
+
+    Supports .txt and .csv files with one query per line.
+    Numbered queries (e.g., "1. Question") are automatically cleaned.
+
+    Returns a job_id and SSE URL for progress monitoring.
+
+    Admin only.
+    """
+    # Validate file type
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No filename provided.",
+        )
+
+    ext = file.filename.lower().split(".")[-1]
+    if ext not in ("txt", "csv"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type: .{ext}. Only .txt and .csv files are supported.",
+        )
+
+    # Read and parse file
+    try:
+        content = await file.read()
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be UTF-8 encoded text.",
+        ) from None
+
+    # Parse questions (one per line, strip numbering)
+    questions = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if line and not line.startswith("#"):  # Skip empty lines and comments
+            cleaned = _strip_numbering(line)
+            if cleaned:
+                questions.append(cleaned)
+
+    if not questions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid questions found in file.",
+        )
+
+    # Cleanup old jobs
+    _cleanup_old_jobs()
+
+    # Create job
+    job_id = str(uuid.uuid4())
+    job = WarmingJob(
+        id=job_id,
+        queries=questions,
+        total=len(questions),
+    )
+    _warming_jobs[job_id] = job
+
+    # Start background warming
+    def run_warming():
+        import asyncio
+
+        try:
+            asyncio.run(_warm_file_task(job_id, current_user.id))
+        except Exception as e:
+            logger.error(f"Cache warming job {job_id} failed: {e}")
+
+    background_tasks.add_task(run_warming)
+
+    logger.info(
+        f"Admin {current_user.email} started file cache warming: "
+        f"{len(questions)} questions, job_id={job_id}"
+    )
+
+    return WarmFileResponse(
+        job_id=job_id,
+        queued=len(questions),
+        message="Cache warming started. Connect to SSE for progress.",
+        sse_url=f"/api/admin/cache/warm-progress/{job_id}",
+    )
+
+
+@router.get("/cache/warm-progress/{job_id}")
+async def stream_warming_progress(
+    job_id: str,
+    current_user: User = Depends(require_system_admin),
+):
+    """Stream cache warming progress via Server-Sent Events (SSE).
+
+    Event types:
+    - progress: {"processed": N, "total": M, "current_query": "...", "estimated_remaining_seconds": S}
+    - result: {"query": "...", "status": "success|failed", "cached": bool, "error": "..."}
+    - complete: {"total": N, "success": M, "failed": F, "duration_seconds": D, "failed_queries": [...]}
+
+    Admin only.
+    """
+    if job_id not in _warming_jobs:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+
+    return StreamingResponse(
+        _sse_event_generator(job_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
+
+
+@router.post(
+    "/cache/warm-retry", response_model=WarmFileResponse, status_code=status.HTTP_202_ACCEPTED
+)
+async def retry_warming_queries(
+    request: WarmRetryRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_system_admin),
+):
+    """Retry specific failed queries from a previous warming job.
+
+    Accepts a list of queries to retry and starts a new warming job.
+
+    Admin only.
+    """
+    if not request.queries:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one query is required.",
+        )
+
+    # Cleanup old jobs
+    _cleanup_old_jobs()
+
+    # Create new job for retry
+    job_id = str(uuid.uuid4())
+    job = WarmingJob(
+        id=job_id,
+        queries=request.queries,
+        total=len(request.queries),
+    )
+    _warming_jobs[job_id] = job
+
+    # Start background warming
+    def run_warming():
+        import asyncio
+
+        try:
+            asyncio.run(_warm_file_task(job_id, current_user.id))
+        except Exception as e:
+            logger.error(f"Cache warming retry job {job_id} failed: {e}")
+
+    background_tasks.add_task(run_warming)
+
+    logger.info(
+        f"Admin {current_user.email} started retry warming: "
+        f"{len(request.queries)} queries, job_id={job_id}"
+    )
+
+    return WarmFileResponse(
+        job_id=job_id,
+        queued=len(request.queries),
+        message="Retry warming started. Connect to SSE for progress.",
+        sse_url=f"/api/admin/cache/warm-progress/{job_id}",
+    )
+
+
+@router.get("/cache/warm-status/{job_id}")
+async def get_warming_status(
+    job_id: str,
+    current_user: User = Depends(require_system_admin),
+):
+    """Get current status of a warming job.
+
+    Used to recover state after navigation or page refresh.
+
+    Admin only.
+    """
+    job = _warming_jobs.get(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "total": job.total,
+        "processed": job.processed,
+        "success_count": job.success_count,
+        "failed_queries": job.failed_queries,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+
+
+async def _sse_event_generator(job_id: str):
+    """Generate SSE events for warming job progress."""
+    job = _warming_jobs.get(job_id)
+    if not job:
+        yield f"event: error\ndata: {json.dumps({'error': 'Job not found'})}\n\n"
+        return
+
+    last_processed = -1
+    last_results_count = 0
+
+    while True:
+        job = _warming_jobs.get(job_id)
+        if not job:
+            break
+
+        # Send progress update if changed
+        if job.processed != last_processed:
+            last_processed = job.processed
+            elapsed = 0
+            remaining = None
+
+            if job.started_at and job.processed > 0:
+                elapsed = (datetime.now(UTC) - job.started_at).total_seconds()
+                avg_per_query = elapsed / job.processed
+                remaining_queries = job.total - job.processed
+                remaining = int(avg_per_query * remaining_queries)
+
+            progress_data = {
+                "processed": job.processed,
+                "total": job.total,
+                "estimated_remaining_seconds": remaining,
+            }
+            yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+
+        # Send new results
+        if len(job.results) > last_results_count:
+            for result in job.results[last_results_count:]:
+                yield f"event: result\ndata: {json.dumps(result)}\n\n"
+            last_results_count = len(job.results)
+
+        # Check for completion
+        if job.status in ("completed", "failed"):
+            duration = 0
+            if job.started_at and job.completed_at:
+                duration = (job.completed_at - job.started_at).total_seconds()
+
+            complete_data = {
+                "status": job.status,
+                "total": job.total,
+                "success": job.success_count,
+                "failed": len(job.failed_queries),
+                "duration_seconds": int(duration),
+                "failed_queries": job.failed_queries,
+            }
+            yield f"event: complete\ndata: {json.dumps(complete_data)}\n\n"
+            break
+
+        await asyncio.sleep(0.5)
+
+
+async def _warm_file_task(job_id: str, triggered_by: str) -> None:
+    """Background task to warm cache with queries from file.
+
+    Updates job state as queries are processed for SSE streaming.
+    """
+    from ai_ready_rag.config import get_settings
+    from ai_ready_rag.db.database import SessionLocal
+    from ai_ready_rag.services.rag_service import RAGRequest, RAGService
+
+    job = _warming_jobs.get(job_id)
+    if not job:
+        logger.error(f"Warming job {job_id} not found")
+        return
+
+    job.status = "running"
+    job.started_at = datetime.now(UTC)
+
+    settings = get_settings()
+    db = SessionLocal()
+
+    try:
+        # Initialize vector service properly
+        from ai_ready_rag.services.vector_service import VectorService
+
+        vector_service = VectorService(
+            qdrant_url=settings.qdrant_url,
+            ollama_url=settings.ollama_base_url,
+            collection_name=settings.qdrant_collection,
+            embedding_model=settings.embedding_model,
+            embedding_dimension=settings.embedding_dimension,
+            max_tokens=settings.embedding_max_tokens,
+            tenant_id=settings.default_tenant_id,
+        )
+        await vector_service.initialize()
+
+        rag_service = RAGService(settings, vector_service)
+
+        # Get admin user's tags for proper access control
+        admin_user = db.query(User).filter(User.id == triggered_by).first()
+        admin_tags = [t.name for t in admin_user.tags] if admin_user and admin_user.tags else []
+
+        for i, query in enumerate(job.queries):
+            try:
+                rag_request = RAGRequest(
+                    query=query,
+                    user_tags=admin_tags,
+                    tenant_id="default",
+                )
+                await rag_service.generate(rag_request, db)  # Triggers caching
+
+                # Record success
+                job.results.append(
+                    {
+                        "query": query,
+                        "status": "success",
+                        "cached": True,
+                        "error": None,
+                    }
+                )
+                job.success_count += 1
+                logger.info(f"[WARM] Completed query {i + 1}: {query[:50]}...")
+
+            except Exception as e:
+                # Record failure
+                error_msg = str(e)[:200]
+                job.results.append(
+                    {
+                        "query": query,
+                        "status": "failed",
+                        "cached": False,
+                        "error": error_msg,
+                    }
+                )
+                job.failed_queries.append(query)
+                logger.warning(f"Failed to warm cache for query '{query[:50]}...': {e}")
+
+            job.processed = i + 1
+
+            # Throttle to reduce Ollama contention
+            if i < len(job.queries) - 1 and settings.warming_delay_seconds > 0:
+                await asyncio.sleep(settings.warming_delay_seconds)
+
+        job.status = "completed"
+        job.completed_at = datetime.now(UTC)
+
+        logger.info(
+            f"File cache warming complete: {job.success_count}/{job.total} queries "
+            f"(job_id={job_id}, triggered_by={triggered_by})"
+        )
+
+    except Exception as e:
+        job.status = "failed"
+        job.completed_at = datetime.now(UTC)
+        logger.error(f"Cache warming job {job_id} failed: {e}")
+    finally:
+        db.close()

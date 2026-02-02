@@ -17,7 +17,8 @@ import {
 } from '../api/documents';
 import { listTags } from '../api/tags';
 import { useAuthStore } from '../stores/authStore';
-import type { Document, Tag, DocumentStatus } from '../types';
+import { useDocumentsStore } from '../stores/documentsStore';
+import type { Document, Tag } from '../types';
 
 const ITEMS_PER_PAGE = 20;
 const AUTO_REFRESH_INTERVAL_ACTIVE = 3000; // 3 seconds when processing
@@ -26,26 +27,31 @@ export function DocumentsView() {
   const { user } = useAuthStore();
   const isAdmin = user?.role === 'admin' || user?.role === 'customer_admin';
 
-  // Data state
+  // Get persisted state from store
+  const {
+    search,
+    setSearch,
+    selectedTagId,
+    setTagFilter,
+    status,
+    setStatusFilter,
+    sortBy,
+    sortOrder,
+    setSort,
+    page,
+    setPage,
+    validateTagFilter,
+    clampPage,
+  } = useDocumentsStore();
+
+  // Data state (not persisted - fetched fresh)
   const [documents, setDocuments] = useState<Document[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Filter state
-  const [search, setSearch] = useState('');
-  const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
-  const [status, setStatus] = useState<DocumentStatus | null>(null);
-
-  // Sort state
-  const [sortBy, setSortBy] = useState('uploaded_at');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-
-  // Pagination state
-  const [page, setPage] = useState(1);
-
-  // Selection state
+  // Selection state (not persisted - transient per visit)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Modal state
@@ -66,6 +72,13 @@ export function DocumentsView() {
     };
     fetchTags();
   }, []);
+
+  // Validate persisted tag filter when tags load
+  useEffect(() => {
+    if (tags.length > 0) {
+      validateTagFilter(tags.map((t) => t.id));
+    }
+  }, [tags, validateTagFilter]);
 
   // Fetch documents
   const fetchDocuments = useCallback(async () => {
@@ -98,10 +111,12 @@ export function DocumentsView() {
     fetchDocuments();
   }, [fetchDocuments]);
 
-  // Reset page when filters change
+  // Clamp page to valid range when total changes
   useEffect(() => {
-    setPage(1);
-  }, [search, selectedTagId, status]);
+    if (total > 0) {
+      clampPage(total);
+    }
+  }, [total, clampPage]);
 
   // Clear selection only when the set of document IDs changes (not just status updates)
   const documentIds = documents.map((d) => d.id).join(',');
@@ -155,16 +170,15 @@ export function DocumentsView() {
   // Handle sort
   const handleSort = (field: string) => {
     if (sortBy === field) {
-      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+      setSort(field, sortOrder === 'asc' ? 'desc' : 'asc');
     } else {
-      setSortBy(field);
-      setSortOrder('asc');
+      setSort(field, 'asc');
     }
   };
 
   // Handle tag click in table
   const handleTagClick = (tag: Tag) => {
-    setSelectedTagId(tag.id);
+    setTagFilter(tag.id);
   };
 
   // Handle bulk delete
@@ -196,8 +210,6 @@ export function DocumentsView() {
       await Promise.all(promises);
       setSelectedIds(new Set());
       fetchDocuments();
-    } catch (err) {
-      throw err; // Let TagEditModal handle the error
     } finally {
       setActionLoading(false);
     }
@@ -255,9 +267,9 @@ export function DocumentsView() {
         search={search}
         onSearchChange={setSearch}
         selectedTagId={selectedTagId}
-        onTagChange={setSelectedTagId}
+        onTagChange={setTagFilter}
         status={status}
-        onStatusChange={setStatus}
+        onStatusChange={setStatusFilter}
         tags={tags}
       />
 

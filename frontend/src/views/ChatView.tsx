@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useCallback } from 'react';
 import { Wifi, WifiOff, AlertCircle } from 'lucide-react';
 import { apiClient } from '../api/client';
 import type {
@@ -8,33 +8,51 @@ import type {
   MessageListResponse,
   SendMessageResponse,
 } from '../types';
+import { useChatStore } from '../stores/chatStore';
 import { SessionSidebar } from '../components/features/chat/SessionSidebar';
 import { MessageList } from '../components/features/chat/MessageList';
 import { ChatInput } from '../components/features/chat/ChatInput';
 import { Alert, Badge } from '../components/ui';
 
 export function ChatView() {
-  // Sessions state
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [isLoadingSessions, setIsLoadingSessions] = useState(true);
-  const [sessionsError, setSessionsError] = useState<string | null>(null);
-
-  // Messages state
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-  const [messagesError, setMessagesError] = useState<string | null>(null);
-
-  // Sending state
-  const [isSending, setIsSending] = useState(false);
-  const [typingMessage, setTypingMessage] = useState<ChatMessage | null>(null);
+  // Get state and actions from Zustand store
+  const {
+    sessions,
+    activeSessionId,
+    messages,
+    isLoadingSessions,
+    isLoadingMessages,
+    isSending,
+    sessionsError,
+    messagesError,
+    typingMessage,
+    pendingMessageId,
+    setSessions,
+    setActiveSession,
+    addSession,
+    updateSession,
+    moveSessionToTop,
+    setMessages,
+    addMessage,
+    replaceOptimisticMessage,
+    removeMessage,
+    setLoadingSessions,
+    setLoadingMessages,
+    setSending,
+    setTypingMessage,
+    setSessionsError,
+    setMessagesError,
+    setPendingMessageId,
+    syncFromBackend,
+  } = useChatStore();
 
   // Connection status (for future WebSocket, currently shows HTTP)
-  const [isConnected] = useState(true);
+  const isConnected = true;
 
-  // Load sessions on mount
+  // Load sessions on mount and sync with backend
   useEffect(() => {
     loadSessions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Load messages when active session changes
@@ -44,40 +62,63 @@ export function ChatView() {
     } else {
       setMessages([]);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSessionId]);
 
+  // Handle pending message recovery on mount
+  useEffect(() => {
+    // If there's a pending message ID, the user may have navigated away during a request
+    // When they return, we should check if the response has arrived
+    if (pendingMessageId && activeSessionId) {
+      // The loadMessages call will trigger syncFromBackend which handles this
+      loadMessages(activeSessionId);
+    }
+    // Only run on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const loadSessions = async () => {
-    setIsLoadingSessions(true);
+    setLoadingSessions(true);
     setSessionsError(null);
     try {
       const response = await apiClient.get<SessionListResponse>('/api/chat/sessions?limit=50');
       setSessions(response.sessions);
 
-      // Auto-select first session if none selected
-      if (response.sessions.length > 0 && !activeSessionId) {
-        setActiveSessionId(response.sessions[0].id);
+      // Auto-select first session if none selected and sessions exist
+      // Use store's activeSessionId which persists across navigation
+      const currentActiveId = useChatStore.getState().activeSessionId;
+      if (response.sessions.length > 0 && !currentActiveId) {
+        setActiveSession(response.sessions[0].id);
+      } else if (currentActiveId) {
+        // Verify the active session still exists
+        const sessionExists = response.sessions.some((s) => s.id === currentActiveId);
+        if (!sessionExists) {
+          // Session was deleted while user was away
+          setActiveSession(response.sessions.length > 0 ? response.sessions[0].id : null);
+        }
       }
     } catch (error) {
       console.error('Failed to load sessions:', error);
       setSessionsError(error instanceof Error ? error.message : 'Failed to load sessions');
     } finally {
-      setIsLoadingSessions(false);
+      setLoadingSessions(false);
     }
   };
 
   const loadMessages = async (sessionId: string) => {
-    setIsLoadingMessages(true);
+    setLoadingMessages(true);
     setMessagesError(null);
     try {
       const response = await apiClient.get<MessageListResponse>(
         `/api/chat/sessions/${sessionId}/messages?limit=50`
       );
-      setMessages(response.messages);
+      // Use syncFromBackend to handle pending message recovery
+      syncFromBackend(response.messages);
     } catch (error) {
       console.error('Failed to load messages:', error);
       setMessagesError(error instanceof Error ? error.message : 'Failed to load messages');
     } finally {
-      setIsLoadingMessages(false);
+      setLoadingMessages(false);
     }
   };
 
@@ -88,14 +129,11 @@ export function ChatView() {
       });
 
       // Add new session to the top of the list
-      setSessions((prev) => [
-        {
-          ...response,
-          message_count: 0,
-          last_message_preview: undefined,
-        },
-        ...prev,
-      ]);
+      addSession({
+        ...response,
+        message_count: 0,
+        last_message_preview: undefined,
+      });
 
       return response.id;
     } catch (error) {
@@ -108,9 +146,12 @@ export function ChatView() {
   const handleNewSession = useCallback(async () => {
     const sessionId = await createSession();
     if (sessionId) {
-      setActiveSessionId(sessionId);
+      setActiveSession(sessionId);
       setMessages([]);
+      setPendingMessageId(null);
+      setTypingMessage(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Handle Cmd/Ctrl + N keyboard shortcut for new session in chat view
@@ -135,9 +176,12 @@ export function ChatView() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [handleNewSession]);
 
-  const handleSelectSession = useCallback((sessionId: string) => {
-    setActiveSessionId(sessionId);
-  }, []);
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      setActiveSession(sessionId);
+    },
+    [setActiveSession]
+  );
 
   const handleSendMessage = async (content: string) => {
     if (!content.trim() || isSending) return;
@@ -148,19 +192,23 @@ export function ChatView() {
     if (!sessionId) {
       sessionId = await createSession();
       if (!sessionId) return;
-      setActiveSessionId(sessionId);
+      setActiveSession(sessionId);
     }
 
     // Create optimistic user message
+    const tempId = `temp-${Date.now()}`;
     const optimisticUserMessage: ChatMessage = {
-      id: `temp-${Date.now()}`,
+      id: tempId,
       role: 'user',
       content,
       created_at: new Date().toISOString(),
     };
 
-    // Add user message immediately
-    setMessages((prev) => [...prev, optimisticUserMessage]);
+    // Add user message immediately (optimistic update)
+    addMessage(optimisticUserMessage);
+
+    // Track pending message for recovery if user navigates away
+    setPendingMessageId(tempId);
 
     // Show typing indicator
     setTypingMessage({
@@ -170,7 +218,7 @@ export function ChatView() {
       created_at: new Date().toISOString(),
     });
 
-    setIsSending(true);
+    setSending(true);
     setMessagesError(null);
 
     try {
@@ -179,43 +227,36 @@ export function ChatView() {
         { content }
       );
 
-      // Replace optimistic message with real one and add assistant response
-      setMessages((prev) => {
-        const filtered = prev.filter((m) => m.id !== optimisticUserMessage.id);
-        return [...filtered, response.user_message, response.assistant_message];
-      });
+      // Replace optimistic message with real one
+      replaceOptimisticMessage(tempId, response.user_message);
+
+      // Add assistant response
+      addMessage(response.assistant_message);
+
+      // Clear pending state
+      setPendingMessageId(null);
 
       // Update session in list with new preview and message count
-      setSessions((prev) =>
-        prev.map((session) => {
-          if (session.id === sessionId) {
-            return {
-              ...session,
-              message_count: session.message_count + 2,
-              last_message_preview: content.slice(0, 100),
-              updated_at: new Date().toISOString(),
-            };
-          }
-          return session;
-        })
-      );
+      updateSession(sessionId, {
+        message_count:
+          (sessions.find((s) => s.id === sessionId)?.message_count ?? 0) + 2,
+        last_message_preview: content.slice(0, 100),
+        updated_at: new Date().toISOString(),
+      });
 
       // Move active session to top of list
-      setSessions((prev) => {
-        const activeSession = prev.find((s) => s.id === sessionId);
-        if (activeSession) {
-          return [activeSession, ...prev.filter((s) => s.id !== sessionId)];
-        }
-        return prev;
-      });
+      moveSessionToTop(sessionId);
     } catch (error) {
       console.error('Failed to send message:', error);
       setMessagesError(error instanceof Error ? error.message : 'Failed to send message');
 
       // Remove optimistic message on error
-      setMessages((prev) => prev.filter((m) => m.id !== optimisticUserMessage.id));
+      removeMessage(tempId);
+
+      // Clear pending state
+      setPendingMessageId(null);
     } finally {
-      setIsSending(false);
+      setSending(false);
       setTypingMessage(null);
     }
   };

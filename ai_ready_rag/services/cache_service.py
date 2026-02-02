@@ -387,7 +387,7 @@ class CacheService:
                 "document_name": c.document_name,
                 "page_number": c.page_number,
                 "section": c.section,
-                "excerpt": c.excerpt,
+                "excerpt": c.snippet,  # Citation uses 'snippet' not 'excerpt'
             }
             for c in response.citations
         ]
@@ -399,9 +399,9 @@ class CacheService:
             answer=response.answer,
             sources=sources,
             confidence_overall=response.confidence.overall,
-            confidence_retrieval=response.confidence.retrieval,
-            confidence_coverage=response.confidence.coverage,
-            confidence_llm=response.confidence.llm,
+            confidence_retrieval=response.confidence.retrieval_score,
+            confidence_coverage=response.confidence.coverage_score,
+            confidence_llm=response.confidence.llm_score,
             generation_time_ms=response.generation_time_ms,
             model_used=response.model_used,
             created_at=datetime.utcnow(),

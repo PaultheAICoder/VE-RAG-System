@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     rag_enable_query_expansion: bool = True  # Expand queries for better recall
     rag_enable_hallucination_check: bool | None = None  # None = use profile default
 
+    # Cache Warming
+    warming_delay_seconds: float = 2.0  # Delay between warming queries to reduce Ollama contention
+
     # Document Management
     upload_dir: str = "./data/uploads"
     max_upload_size_mb: int = 100
