@@ -1242,9 +1242,14 @@ class RAGService:
         )
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
+        print(f"[RAG-DEBUG] Retrieved {len(context_chunks)} context chunks", flush=True)
 
         # Early exit: no context (zero-context short-circuit)
         if not context_chunks:
+            print(
+                "[RAG-DEBUG] NO CONTEXT - returning insufficient_context_response (NOT CACHED)",
+                flush=True,
+            )
             return self._insufficient_context_response(model, elapsed_ms, routing_decision)
 
         # 3. Apply token budget
