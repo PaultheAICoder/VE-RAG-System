@@ -21,6 +21,7 @@ export function CacheWarmingCard({
   const [fileError, setFileError] = useState<string | null>(null);
   const [showFailedDetails, setShowFailedDetails] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const completedRef = useRef<boolean>(false);
 
   const {
     status,
@@ -101,6 +102,7 @@ export function CacheWarmingCard({
     const url = getWarmProgressUrl(jobId);
     const eventSource = new EventSource(url);
     eventSourceRef.current = eventSource;
+    completedRef.current = false;
 
     eventSource.addEventListener('progress', (e) => {
       const data = JSON.parse(e.data);
@@ -112,14 +114,31 @@ export function CacheWarmingCard({
       addResult(data);
     });
 
-    eventSource.addEventListener('complete', () => {
+    eventSource.addEventListener('complete', (e) => {
+      console.log('[SSE] Complete event received:', e.data);
+      completedRef.current = true;
       completeFileJob();
       eventSource.close();
       eventSourceRef.current = null;
     });
 
     eventSource.onerror = () => {
-      setError('Connection to server lost. Please try again.');
+      // Delay error handling to allow complete event to process first
+      // (SSE fires onerror when connection closes, even after normal completion)
+      setTimeout(() => {
+        const currentStatus = useCacheWarmingStore.getState().status;
+        console.log('[SSE] Error handler - completedRef:', completedRef.current, 'status:', currentStatus);
+
+        // Ignore if job already completed successfully
+        if (completedRef.current || currentStatus === 'completed') {
+          console.log('[SSE] Ignoring error - job completed');
+          return;
+        }
+
+        console.log('[SSE] Setting connection lost error');
+        setError('Connection to server lost. Please try again.');
+      }, 100);
+
       eventSource.close();
       eventSourceRef.current = null;
     };
@@ -194,6 +213,7 @@ export function CacheWarmingCard({
 
   // Handle reset
   const handleReset = () => {
+    completedRef.current = false;
     reset();
     resetFileJob();
     setUploadedFile(null);

@@ -69,6 +69,39 @@ async def get_current_user(
     return user
 
 
+async def get_optional_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db),
+) -> User | None:
+    """Get current user if authenticated, None otherwise.
+
+    Used for endpoints that need optional auth (e.g., SSE with query param token).
+    """
+    token = None
+
+    # Try Authorization header first
+    if credentials:
+        token = credentials.credentials
+
+    # Fallback to cookie
+    if not token:
+        token = request.cookies.get("access_token")
+
+    if not token:
+        return None
+
+    payload = decode_token(token)
+    if not payload:
+        return None
+
+    user = db.query(User).filter(User.id == payload.get("sub")).first()
+    if not user or not user.is_active:
+        return None
+
+    return user
+
+
 async def require_admin(current_user: User = Depends(get_current_user)) -> User:
     """Require admin role (system_admin or customer_admin).
 
