@@ -28,7 +28,9 @@ from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.dependencies import (
+    ROLE_SYSTEM_ADMIN,
     get_optional_current_user,
+    normalize_role,
     require_admin,
     require_system_admin,
 )
@@ -2910,8 +2912,14 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
         rag_service = RAGService(settings, vector_service)
 
         # Get admin user's tags for proper access control
+        # System admins bypass tag filtering during cache warming
         admin_user = db.query(User).filter(User.id == triggered_by).first()
-        admin_tags = [t.name for t in admin_user.tags] if admin_user and admin_user.tags else []
+        admin_role = normalize_role(admin_user.role) if admin_user else None
+        if admin_role == ROLE_SYSTEM_ADMIN:
+            # System admin bypasses tag filtering (None = no filtering)
+            admin_tags = None
+        else:
+            admin_tags = [t.name for t in admin_user.tags] if admin_user and admin_user.tags else []
 
         # Resume from processed_index (supports crash recovery)
         for i in range(job.processed_index, job.total):

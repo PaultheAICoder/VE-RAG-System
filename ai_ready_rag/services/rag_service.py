@@ -101,7 +101,7 @@ class RAGRequest:
     """Input for RAG generation."""
 
     query: str
-    user_tags: list[str]
+    user_tags: list[str] | None  # None = no tag filtering (system admin bypass)
     tenant_id: str = "default"
     chat_history: list[ChatMessage] | None = None
     model: str | None = None
@@ -615,7 +615,7 @@ class RAGService:
     async def get_quality_context(
         self,
         query: str,
-        user_tags: list[str],
+        user_tags: list[str] | None,
         tenant_id: str,
         max_chunks: int = 8,
     ) -> list[SearchResult]:
@@ -632,7 +632,8 @@ class RAGService:
 
         Args:
             query: User's question
-            user_tags: User's access tags
+            user_tags: User's access tags. None = no tag filtering
+                (system admin bypass), empty list = public only.
             tenant_id: Tenant identifier
             max_chunks: Maximum chunks to return
 
