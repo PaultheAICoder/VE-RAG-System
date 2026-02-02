@@ -27,7 +27,11 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
-from ai_ready_rag.core.dependencies import require_admin, require_system_admin
+from ai_ready_rag.core.dependencies import (
+    get_optional_current_user,
+    require_admin,
+    require_system_admin,
+)
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import Document, User
 from ai_ready_rag.services.document_service import DocumentService
@@ -2670,7 +2674,9 @@ async def warm_cache_from_file(
 @router.get("/cache/warm-progress/{job_id}")
 async def stream_warming_progress(
     job_id: str,
-    current_user: User = Depends(require_system_admin),
+    token: str | None = None,
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
 ):
     """Stream cache warming progress via Server-Sent Events (SSE).
 
@@ -2679,8 +2685,27 @@ async def stream_warming_progress(
     - result: {"query": "...", "status": "success|failed", "cached": bool, "error": "..."}
     - complete: {"total": N, "success": M, "failed": F, "duration_seconds": D, "failed_queries": [...]}
 
-    Admin only.
+    Admin only. Accepts token via query param for EventSource compatibility.
     """
+    # SSE/EventSource can't send headers, so accept token from query param
+    from ai_ready_rag.core.dependencies import ROLE_SYSTEM_ADMIN, normalize_role
+    from ai_ready_rag.core.security import decode_token
+
+    user = current_user
+    if not user and token:
+        try:
+            payload = decode_token(token)
+            user_id = payload.get("sub")
+            if user_id:
+                user = db.query(User).filter(User.id == user_id).first()
+        except Exception:
+            pass
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    if normalize_role(user.role) != ROLE_SYSTEM_ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="System admin required")
     queue_service = get_warming_queue()
     job = queue_service.get_job(job_id)
     if job is None:
@@ -2787,12 +2812,15 @@ async def _sse_event_generator(job_id: str):
         yield f"event: error\ndata: {json.dumps({'error': 'Job not found'})}\n\n"
         return
 
+    logger.info(f"[SSE] Started streaming for job {job_id}, status={job.status}")
     last_processed = -1
     last_results_count = 0
 
     while True:
         job = queue_service.get_job(job_id)
         if not job:
+            logger.warning(f"[SSE] Job {job_id} disappeared unexpectedly")
+            yield f"event: error\ndata: {json.dumps({'error': 'Job disappeared'})}\n\n"
             break
 
         # Send progress update if changed
@@ -2938,6 +2966,10 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
             f"File cache warming complete: {job.success_count}/{job.total} queries "
             f"(job_id={job_id}, triggered_by={triggered_by})"
         )
+
+        # Wait for SSE to pick up completion before deleting
+        # SSE polls every 0.5s, so 2s should be plenty
+        await asyncio.sleep(2.0)
 
         # Delete job file on success (or archive if configured)
         queue_service.delete_job(job_id)
