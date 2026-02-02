@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Flame, CheckCircle, AlertCircle, Upload, FileText, RotateCcw, X } from 'lucide-react';
 import { Card, Button } from '../../ui';
 import { useCacheWarmingStore } from '../../../stores/cacheWarmingStore';
-import { warmCacheFromFile, retryWarmCache, getWarmProgressUrl } from '../../../api/cache';
+import { warmCacheFromFile, retryWarmCache, getWarmProgressUrl, getWarmStatus } from '../../../api/cache';
 
 interface CacheWarmingCardProps {
   onWarm: (queries: string[]) => Promise<void>;
@@ -58,6 +58,36 @@ export function CacheWarmingCard({
       }
     };
   }, []);
+
+  // Check for orphaned jobs on mount (server restarted while job was running)
+  useEffect(() => {
+    const checkOrphanedJob = async () => {
+      if (!activeJobId || status !== 'warming') return;
+
+      try {
+        const jobStatus = await getWarmStatus(activeJobId);
+
+        if (jobStatus.status === 'running') {
+          // Job still running, reconnect to SSE
+          connectToSSE(activeJobId);
+        } else if (jobStatus.status === 'completed') {
+          // Job completed while we were away
+          completeFileJob();
+        } else if (jobStatus.status === 'failed') {
+          // Job failed
+          setError('Warming job failed on server');
+          resetFileJob();
+        }
+      } catch {
+        // Job not found (404) or server error - reset UI
+        console.warn('Orphaned warming job detected, resetting UI:', activeJobId);
+        resetFileJob();
+      }
+    };
+
+    checkOrphanedJob();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run on mount - intentionally checking stored state once
 
   // Call onWarmingComplete when warming finishes
   useEffect(() => {
