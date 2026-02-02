@@ -573,7 +573,7 @@ class RAGService:
                 return cached_embedding
 
         # Compute embedding via vector service
-        return await self.vector_service.embed_query(query)
+        return await self.vector_service.embed(query)
 
     async def validate_model(self, model: str) -> str:
         """Validate model is allowed and available.

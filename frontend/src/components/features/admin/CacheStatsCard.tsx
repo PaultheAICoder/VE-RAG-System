@@ -49,12 +49,14 @@ export function CacheStatsCard({
     );
   }
 
-  const hitRate = stats.hit_rate.toFixed(1);
-  const speedup = stats.avg_response_time_uncached_ms > 0
-    ? (stats.avg_response_time_uncached_ms / Math.max(stats.avg_response_time_cached_ms, 1)).toFixed(1)
+  const hitRate = (stats.hit_rate ?? 0).toFixed(1);
+  const avgCached = stats.avg_response_time_cached_ms ?? 0;
+  const avgUncached = stats.avg_response_time_uncached_ms ?? 0;
+  const speedup = avgUncached > 0
+    ? (avgUncached / Math.max(avgCached, 1)).toFixed(1)
     : '0';
-  const cachedBarWidth = stats.avg_response_time_uncached_ms > 0
-    ? Math.min(100, (stats.avg_response_time_cached_ms / stats.avg_response_time_uncached_ms) * 100)
+  const cachedBarWidth = avgUncached > 0
+    ? Math.min(100, (avgCached / avgUncached) * 100)
     : 0;
 
   return (
@@ -105,20 +107,20 @@ export function CacheStatsCard({
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
           <div className="text-2xl font-bold text-green-600 dark:text-green-400">
-            {stats.avg_response_time_cached_ms.toFixed(0)}ms
+            {avgCached.toFixed(0)}ms
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Avg Cached</div>
         </div>
         <div className="text-center p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
           <div className="text-2xl font-bold text-amber-600 dark:text-amber-400">
-            {stats.avg_response_time_uncached_ms.toFixed(0)}ms
+            {avgUncached.toFixed(0)}ms
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Avg Uncached</div>
         </div>
       </div>
 
       {/* Response Time Comparison Bar */}
-      {stats.avg_response_time_uncached_ms > 0 && (
+      {avgUncached > 0 && (
         <div className="mb-4">
           <div className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Response Time Comparison
@@ -133,7 +135,7 @@ export function CacheStatsCard({
                 />
               </div>
               <span className="text-xs text-gray-500 dark:text-gray-400 w-16 text-right">
-                {stats.avg_response_time_cached_ms.toFixed(0)}ms
+                {avgCached.toFixed(0)}ms
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -142,7 +144,7 @@ export function CacheStatsCard({
                 <div className="h-full bg-amber-500 rounded-full w-full" />
               </div>
               <span className="text-xs text-gray-500 dark:text-gray-400 w-16 text-right">
-                {stats.avg_response_time_uncached_ms.toFixed(0)}ms
+                {avgUncached.toFixed(0)}ms
               </span>
             </div>
           </div>
