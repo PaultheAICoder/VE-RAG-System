@@ -27,9 +27,9 @@ def mock_response():
     response.answer = "This is a cached answer."
     response.confidence = MagicMock()
     response.confidence.overall = 75
-    response.confidence.retrieval = 0.85
-    response.confidence.coverage = 0.80
-    response.confidence.llm = 70
+    response.confidence.retrieval_score = 0.85  # Match ConfidenceScore dataclass
+    response.confidence.coverage_score = 0.80  # Match ConfidenceScore dataclass
+    response.confidence.llm_score = 70  # Match ConfidenceScore dataclass
     response.generation_time_ms = 34000.0
     response.model_used = "llama3.2"
     response.citations = []
@@ -490,8 +490,12 @@ class TestCacheServiceCore:
 
     def test_semantic_threshold_default(self, db):
         """Default semantic threshold is 0.95."""
-        service = CacheService(db)
-        assert service.semantic_threshold == 0.95
+        with patch(
+            "ai_ready_rag.services.settings_service.get_cache_setting",
+            side_effect=lambda key, default: default,
+        ):
+            service = CacheService(db)
+            assert service.semantic_threshold == 0.95
 
     @pytest.mark.asyncio
     async def test_semantic_fallback_on_layer1_miss(self, db, mock_response):
@@ -527,13 +531,18 @@ class TestCacheServiceCore:
         self, db, mock_response, sample_documents, sample_tag, admin_user
     ):
         """Semantic hit still respects access verification."""
+        from types import SimpleNamespace
+
         # Mock response with citation to doc-1 (requires hr tag)
-        mock_response.citations = [MagicMock()]
-        mock_response.citations[0].document_id = "doc-1"
-        mock_response.citations[0].document_name = "test.pdf"
-        mock_response.citations[0].page_number = 1
-        mock_response.citations[0].section = "Section 1"
-        mock_response.citations[0].excerpt = "Test excerpt"
+        # Use SimpleNamespace for JSON-serializable attributes
+        citation = SimpleNamespace(
+            document_id="doc-1",
+            document_name="test.pdf",
+            page_number=1,
+            section="Section 1",
+            snippet="Test excerpt",  # Cache uses 'snippet' not 'excerpt'
+        )
+        mock_response.citations = [citation]
 
         service = CacheService(db)
         embedding = [0.1] * 768
@@ -586,9 +595,14 @@ class TestTTLExpiration:
         db.add(expired_row)
         db.commit()
 
-        service = CacheService(db)
-        result = await service.get("expired query", [])
-        assert result is None
+        # Mock settings to ensure TTL is 24 hours
+        with patch(
+            "ai_ready_rag.services.settings_service.get_cache_setting",
+            side_effect=lambda key, default: default,
+        ):
+            service = CacheService(db)
+            result = await service.get("expired query", [])
+            assert result is None
 
     def test_evict_expired_removes_old(self, db):
         """evict_expired() removes entries older than TTL."""
@@ -631,13 +645,18 @@ class TestTTLExpiration:
         db.add(fresh_row)
         db.commit()
 
-        service = CacheService(db)
-        removed = service.evict_expired()
-        assert removed == 2
+        # Mock settings to ensure TTL is 24 hours
+        with patch(
+            "ai_ready_rag.services.settings_service.get_cache_setting",
+            side_effect=lambda key, default: default,
+        ):
+            service = CacheService(db)
+            removed = service.evict_expired()
+            assert removed == 2
 
-        # Fresh entry should remain
-        remaining = db.query(ResponseCache).count()
-        assert remaining == 1
+            # Fresh entry should remain
+            remaining = db.query(ResponseCache).count()
+            assert remaining == 1
 
 
 # =============================================================================
@@ -1076,13 +1095,21 @@ class TestCacheWarming:
 
     def test_auto_warm_enabled_property_default(self, db):
         """auto_warm_enabled returns True by default."""
-        service = CacheService(db)
-        assert service.auto_warm_enabled is True
+        with patch(
+            "ai_ready_rag.services.settings_service.get_cache_setting",
+            side_effect=lambda key, default: default,
+        ):
+            service = CacheService(db)
+            assert service.auto_warm_enabled is True
 
     def test_auto_warm_count_property_default(self, db):
         """auto_warm_count returns 20 by default."""
-        service = CacheService(db)
-        assert service.auto_warm_count == 20
+        with patch(
+            "ai_ready_rag.services.settings_service.get_cache_setting",
+            side_effect=lambda key, default: default,
+        ):
+            service = CacheService(db)
+            assert service.auto_warm_count == 20
 
     def test_auto_warm_enabled_property_overridden(self, db):
         """auto_warm_enabled respects settings override."""
