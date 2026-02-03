@@ -82,7 +82,7 @@ export async function warmCacheFromFile(file: File): Promise<WarmFileResponse> {
   formData.append('file', file);
 
   const token = useAuthStore.getState().token;
-  const response = await fetch('/api/admin/cache/warm-file', {
+  const response = await fetch('/api/admin/warming/queue/upload', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -103,7 +103,7 @@ export async function warmCacheFromFile(file: File): Promise<WarmFileResponse> {
  */
 export async function retryWarmCache(queries: string[]): Promise<WarmFileResponse> {
   const token = useAuthStore.getState().token;
-  const response = await fetch('/api/admin/cache/warm-retry', {
+  const response = await fetch('/api/admin/warming/queue/manual', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -123,10 +123,15 @@ export async function retryWarmCache(queries: string[]): Promise<WarmFileRespons
  * Get SSE URL for warming progress.
  * Note: Token passed as query param for EventSource compatibility.
  * @param jobId - The warming job ID
+ * @param lastEventId - Optional last event ID for resumption
  */
-export function getWarmProgressUrl(jobId: string): string {
+export function getWarmProgressUrl(jobId: string, lastEventId?: string | null): string {
   const token = useAuthStore.getState().token;
-  return `/api/admin/cache/warm-progress/${jobId}?token=${token}`;
+  let url = `/api/admin/warming/progress?job_id=${jobId}&token=${token}`;
+  if (lastEventId) {
+    url += `&last_event_id=${lastEventId}`;
+  }
+  return url;
 }
 
 /**
@@ -143,7 +148,7 @@ export async function getWarmStatus(jobId: string): Promise<{
   started_at: string | null;
   completed_at: string | null;
 }> {
-  return apiClient.get(`/api/admin/cache/warm-status/${jobId}`);
+  return apiClient.get(`/api/admin/warming/queue/${jobId}`);
 }
 
 // =============================================================================
@@ -155,8 +160,8 @@ export async function getWarmStatus(jobId: string): Promise<{
  */
 export async function getWarmingJobs(status?: string): Promise<WarmingJobListResponse> {
   const url = status
-    ? `/api/admin/cache/warm-jobs?status=${status}`
-    : '/api/admin/cache/warm-jobs';
+    ? `/api/admin/warming/queue?status=${status}`
+    : '/api/admin/warming/queue';
   return apiClient.get<WarmingJobListResponse>(url);
 }
 
@@ -164,26 +169,55 @@ export async function getWarmingJobs(status?: string): Promise<WarmingJobListRes
  * Get the currently active (running) warming job.
  */
 export async function getActiveWarmingJob(): Promise<WarmingJob | null> {
-  return apiClient.get<WarmingJob | null>('/api/admin/cache/warm-jobs/active');
+  return apiClient.get<WarmingJob | null>('/api/admin/warming/current');
 }
 
 /**
- * Pause a running warming job.
+ * Pause the currently running warming job.
+ * @param _jobId - Unused (kept for API compatibility)
  */
-export async function pauseWarmingJob(jobId: string): Promise<WarmingJob> {
-  return apiClient.post<WarmingJob>(`/api/admin/cache/warm-jobs/${jobId}/pause`);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export async function pauseWarmingJob(_jobId: string): Promise<WarmingJob> {
+  return apiClient.post<WarmingJob>('/api/admin/warming/current/pause');
 }
 
 /**
- * Resume a paused warming job.
+ * Resume the paused warming job.
+ * @param _jobId - Unused (kept for API compatibility)
  */
-export async function resumeWarmingJob(jobId: string): Promise<WarmingJob> {
-  return apiClient.post<WarmingJob>(`/api/admin/cache/warm-jobs/${jobId}/resume`);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export async function resumeWarmingJob(_jobId: string): Promise<WarmingJob> {
+  return apiClient.post<WarmingJob>('/api/admin/warming/current/resume');
 }
 
 /**
  * Delete a warming job (any status).
  */
 export async function deleteWarmingJob(jobId: string): Promise<void> {
-  await apiClient.delete(`/api/admin/cache/warm-jobs/${jobId}`);
+  await apiClient.delete(`/api/admin/warming/queue/${jobId}`);
+}
+
+/**
+ * Cancel the currently running warming job.
+ */
+export async function cancelWarmingJob(): Promise<WarmingJob> {
+  return apiClient.post<WarmingJob>('/api/admin/warming/current/cancel');
+}
+
+/**
+ * Bulk delete multiple warming jobs.
+ * @param jobIds - Array of job IDs to delete
+ */
+export async function bulkDeleteWarmingJobs(jobIds: string[]): Promise<{ deleted_count: number }> {
+  return apiClient.delete<{ deleted_count: number }>('/api/admin/warming/queue/bulk', {
+    body: JSON.stringify({ job_ids: jobIds }),
+  });
+}
+
+/**
+ * Add manual queries to the warming queue.
+ * @param queries - Array of queries to add
+ */
+export async function addManualQueries(queries: string[]): Promise<WarmFileResponse> {
+  return apiClient.post<WarmFileResponse>('/api/admin/warming/queue/manual', { queries });
 }

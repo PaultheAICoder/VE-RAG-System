@@ -9,7 +9,6 @@ import {
   CacheTopQueriesCard,
   CacheWarmingCard,
   ClearCacheModal,
-  WarmingQueueCard,
 } from '../components/features/admin';
 import {
   getProcessingOptions,
@@ -721,11 +720,8 @@ export function SettingsView() {
       {/* Top Cached Queries */}
       <CacheTopQueriesCard queries={topQueries} />
 
-      {/* Cache Warming */}
-      <CacheWarmingCard onWarm={handleWarmCache} onWarmingComplete={handleWarmingComplete} />
-
-      {/* Warming Queue */}
-      <WarmingQueueCard />
+      {/* Cache Warming (includes queue) */}
+      <CacheWarmingCard onWarm={handleWarmCache} onWarmingComplete={handleWarmingComplete} onJobDelete={handleWarmingComplete} />
 
       {/* Reindex Status Section */}
       <ReindexStatusCard />

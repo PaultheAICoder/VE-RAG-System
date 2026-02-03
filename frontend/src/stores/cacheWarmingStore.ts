@@ -44,12 +44,27 @@ interface CacheWarmingState {
   queueLoading: boolean;
   queueError: string | null;
 
+  // Bulk selection state
+  selectedJobIds: Set<string>;
+
+  // SSE reconnection
+  lastEventId: string | null;
+
   // Queue management actions
   setQueueJobs: (jobs: WarmingJob[]) => void;
   setQueueLoading: (loading: boolean) => void;
   setQueueError: (error: string | null) => void;
   updateQueueJob: (job: WarmingJob) => void;
   removeQueueJob: (jobId: string) => void;
+
+  // Bulk selection actions
+  setSelectedJobIds: (ids: Set<string>) => void;
+  toggleJobSelection: (jobId: string) => void;
+  selectAllJobs: () => void;
+  clearSelection: () => void;
+
+  // SSE reconnection actions
+  setLastEventId: (id: string | null) => void;
 }
 
 export const useCacheWarmingStore = create<CacheWarmingState>()(
@@ -73,6 +88,12 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
       queueJobs: [],
       queueLoading: false,
       queueError: null,
+
+      // Initial state - Bulk selection
+      selectedJobIds: new Set<string>(),
+
+      // Initial state - SSE reconnection
+      lastEventId: null,
 
       // Manual warming actions
       startWarming: (queriesCount) =>
@@ -160,7 +181,29 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
       removeQueueJob: (jobId) =>
         set((state) => ({
           queueJobs: state.queueJobs.filter((j) => j.id !== jobId),
+          selectedJobIds: new Set([...state.selectedJobIds].filter((id) => id !== jobId)),
         })),
+
+      // Bulk selection actions
+      setSelectedJobIds: (ids) => set({ selectedJobIds: ids }),
+      toggleJobSelection: (jobId) =>
+        set((state) => {
+          const newSet = new Set(state.selectedJobIds);
+          if (newSet.has(jobId)) {
+            newSet.delete(jobId);
+          } else {
+            newSet.add(jobId);
+          }
+          return { selectedJobIds: newSet };
+        }),
+      selectAllJobs: () =>
+        set((state) => ({
+          selectedJobIds: new Set(state.queueJobs.map((j) => j.id)),
+        })),
+      clearSelection: () => set({ selectedJobIds: new Set<string>() }),
+
+      // SSE reconnection actions
+      setLastEventId: (id) => set({ lastEventId: id }),
     }),
     {
       name: 'cache-warming-storage',
@@ -172,6 +215,7 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
         processed: state.processed,
         total: state.total,
         failedQueries: state.failedQueries,
+        lastEventId: state.lastEventId,
       }),
     }
   )
