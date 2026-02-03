@@ -2717,15 +2717,25 @@ async def warm_cache_from_file(
 async def stream_warming_progress(
     job_id: str,
     token: str | None = None,
+    last_event_id: str | None = Query(None, description="Resume from event ID for replay"),
+    resume_job: str | None = Query(None, description="Get status of specific job"),
     current_user: User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
     """Stream cache warming progress via Server-Sent Events (SSE).
 
-    Event types:
-    - progress: {"processed": N, "total": M, "current_query": "...", "estimated_remaining_seconds": S}
-    - result: {"query": "...", "status": "success|failed", "cached": bool, "error": "..."}
-    - complete: {"total": N, "success": M, "failed": F, "duration_seconds": D, "failed_queries": [...]}
+    Supports reconnection and replay via last_event_id parameter.
+
+    Event types (all include event_id):
+    - connected: {"worker_id": "...", "timestamp": "..."}
+    - job_started: {"job_id": "...", "file_path": "...", "total_queries": N}
+    - progress: {"processed": N, "failed": F, "total": M, "percent": P, "estimated_remaining_seconds": S, "queries_per_second": Q}
+    - query_failed: {"query": "...", "line_number": N, "error": "...", "error_type": "..."}
+    - job_completed: {"processed": N, "failed": F, "total": M, "duration_seconds": D, "queries_per_second": Q}
+    - job_paused: {"processed": N, "total": M}
+    - job_cancelled: {"processed": N, "total": M, "file_deleted": bool}
+    - job_failed: {"error": "..."}
+    - heartbeat: {"timestamp": "..."}
 
     Admin only. Accepts token via query param for EventSource compatibility.
     """
@@ -2748,16 +2758,20 @@ async def stream_warming_progress(
 
     if normalize_role(user.role) != ROLE_SYSTEM_ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="System admin required")
+
+    # Use resume_job if provided, otherwise use job_id from path
+    target_job_id = resume_job or job_id
+
     queue_service = get_warming_queue()
-    job = queue_service.get_job(job_id)
+    job = queue_service.get_job(target_job_id)
     if job is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job {job_id} not found.",
+            detail=f"Job {target_job_id} not found.",
         )
 
     return StreamingResponse(
-        _sse_event_generator(job_id),
+        _sse_event_generator(target_job_id, last_event_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -3035,65 +3049,203 @@ async def delete_warming_job(
     return None
 
 
-async def _sse_event_generator(job_id: str):
-    """Generate SSE events for warming job progress."""
+def _format_sse_event(event_type: str, data: dict, event_id: str | None = None) -> str:
+    """Format SSE event with event_id for client tracking.
+
+    Args:
+        event_type: Event type name
+        data: Event payload data
+        event_id: Optional event ID (generates UUID if None)
+
+    Returns:
+        Formatted SSE event string
+    """
+    if event_id is None:
+        event_id = str(uuid.uuid4())
+    data["event_id"] = event_id
+    return f"id: {event_id}\nevent: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
+    """Generate SSE events for warming job progress.
+
+    Supports replay via last_event_id and emits heartbeats every 30 seconds.
+
+    Args:
+        job_id: Job ID to stream events for
+        last_event_id: Optional event ID to resume from (for replay)
+    """
+    from ai_ready_rag.db.database import SessionLocal
+    from ai_ready_rag.services.sse_buffer_service import (
+        get_events_for_job,
+        prune_old_events,
+        store_sse_event,
+    )
+
+    settings = get_settings()
     queue_service = get_warming_queue()
     job = queue_service.get_job(job_id)
     if not job:
-        yield f"event: error\ndata: {json.dumps({'error': 'Job not found'})}\n\n"
+        event_id = str(uuid.uuid4())
+        yield _format_sse_event("error", {"error": "Job not found"}, event_id)
         return
 
     logger.info(f"[SSE] Started streaming for job {job_id}, status={job.status}")
+
+    # Send connected event
+    connected_event_id = str(uuid.uuid4())
+    connected_data = {
+        "worker_id": f"sse-{uuid.uuid4().hex[:8]}",
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    db = SessionLocal()
+    try:
+        store_sse_event(db, "connected", job_id, connected_data)
+    finally:
+        db.close()
+    yield _format_sse_event("connected", connected_data, connected_event_id)
+
+    # Replay missed events if last_event_id provided
+    if last_event_id:
+        db = SessionLocal()
+        try:
+            missed_events = get_events_for_job(db, job_id, since_event_id=last_event_id)
+            for event in missed_events:
+                yield _format_sse_event(
+                    event["event_type"],
+                    event["payload"],
+                    event["event_id"],
+                )
+            logger.info(f"[SSE] Replayed {len(missed_events)} events for job {job_id}")
+        finally:
+            db.close()
+
     last_processed = -1
     last_results_count = 0
+    last_heartbeat_time = asyncio.get_event_loop().time()
+    heartbeat_interval = settings.sse_heartbeat_seconds
 
     while True:
         job = queue_service.get_job(job_id)
         if not job:
             logger.warning(f"[SSE] Job {job_id} disappeared unexpectedly")
-            yield f"event: error\ndata: {json.dumps({'error': 'Job disappeared'})}\n\n"
+            error_event_id = str(uuid.uuid4())
+            yield _format_sse_event("error", {"error": "Job disappeared"}, error_event_id)
             break
+
+        # Send heartbeat if interval elapsed
+        current_time = asyncio.get_event_loop().time()
+        if current_time - last_heartbeat_time >= heartbeat_interval:
+            heartbeat_event_id = str(uuid.uuid4())
+            heartbeat_data = {"timestamp": datetime.now(UTC).isoformat()}
+            db = SessionLocal()
+            try:
+                store_sse_event(db, "heartbeat", job_id, heartbeat_data)
+            finally:
+                db.close()
+            yield _format_sse_event("heartbeat", heartbeat_data, heartbeat_event_id)
+            last_heartbeat_time = current_time
 
         # Send progress update if changed
         if job.processed != last_processed:
             last_processed = job.processed
             elapsed = 0
             remaining = None
+            qps = 0.0
 
             if job.started_at and job.processed > 0:
                 elapsed = (datetime.now(UTC) - job.started_at).total_seconds()
                 avg_per_query = elapsed / job.processed
                 remaining_queries = job.total - job.processed
                 remaining = int(avg_per_query * remaining_queries)
+                qps = job.processed / elapsed if elapsed > 0 else 0.0
 
+            percent = int(job.processed / job.total * 100) if job.total > 0 else 0
+            progress_event_id = str(uuid.uuid4())
             progress_data = {
+                "job_id": job_id,
                 "processed": job.processed,
+                "failed": len(job.failed_queries) if hasattr(job, "failed_queries") else 0,
                 "total": job.total,
+                "percent": percent,
                 "estimated_remaining_seconds": remaining,
+                "queries_per_second": round(qps, 2),
             }
-            yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+            db = SessionLocal()
+            try:
+                store_sse_event(db, "progress", job_id, progress_data)
+            finally:
+                db.close()
+            yield _format_sse_event("progress", progress_data, progress_event_id)
 
-        # Send new results
+        # Send new results (query_failed events)
         if len(job.results) > last_results_count:
             for result in job.results[last_results_count:]:
-                yield f"event: result\ndata: {json.dumps(result)}\n\n"
+                result_event_id = str(uuid.uuid4())
+                db = SessionLocal()
+                try:
+                    # Store as query_failed if it's a failed result
+                    if result.get("status") == "failed":
+                        store_sse_event(db, "query_failed", job_id, result)
+                        yield _format_sse_event("query_failed", result, result_event_id)
+                    else:
+                        store_sse_event(db, "result", job_id, result)
+                        yield _format_sse_event("result", result, result_event_id)
+                finally:
+                    db.close()
             last_results_count = len(job.results)
 
-        # Check for completion or pause
-        if job.status in ("completed", "failed", "paused"):
+        # Check for completion, pause, or cancellation
+        if job.status in ("completed", "failed", "paused", "cancelled"):
             duration = 0
+            qps = 0.0
             if job.started_at and job.completed_at:
                 duration = (job.completed_at - job.started_at).total_seconds()
+                qps = job.processed / duration if duration > 0 else 0.0
 
-            complete_data = {
-                "status": job.status,
-                "total": job.total,
-                "success": job.success_count,
-                "failed": len(job.failed_queries),
-                "duration_seconds": int(duration),
-                "failed_queries": job.failed_queries,
-            }
-            yield f"event: complete\ndata: {json.dumps(complete_data)}\n\n"
+            final_event_id = str(uuid.uuid4())
+            db = SessionLocal()
+            try:
+                if job.status == "completed":
+                    complete_data = {
+                        "job_id": job_id,
+                        "processed": job.processed,
+                        "failed": len(job.failed_queries) if hasattr(job, "failed_queries") else 0,
+                        "total": job.total,
+                        "duration_seconds": int(duration),
+                        "queries_per_second": round(qps, 2),
+                    }
+                    store_sse_event(db, "job_completed", job_id, complete_data)
+                    yield _format_sse_event("job_completed", complete_data, final_event_id)
+                elif job.status == "failed":
+                    failed_data = {
+                        "job_id": job_id,
+                        "error": getattr(job, "error_message", "Unknown error"),
+                    }
+                    store_sse_event(db, "job_failed", job_id, failed_data)
+                    yield _format_sse_event("job_failed", failed_data, final_event_id)
+                elif job.status == "paused":
+                    paused_data = {
+                        "job_id": job_id,
+                        "processed": job.processed,
+                        "total": job.total,
+                    }
+                    store_sse_event(db, "job_paused", job_id, paused_data)
+                    yield _format_sse_event("job_paused", paused_data, final_event_id)
+                elif job.status == "cancelled":
+                    cancelled_data = {
+                        "job_id": job_id,
+                        "processed": job.processed,
+                        "total": job.total,
+                        "file_deleted": False,  # File cleanup handled separately
+                    }
+                    store_sse_event(db, "job_cancelled", job_id, cancelled_data)
+                    yield _format_sse_event("job_cancelled", cancelled_data, final_event_id)
+
+                # Periodic pruning of old events
+                prune_old_events(db)
+            finally:
+                db.close()
             break
 
         await asyncio.sleep(0.5)
