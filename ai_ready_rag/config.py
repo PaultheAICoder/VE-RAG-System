@@ -142,6 +142,10 @@ class Settings(BaseSettings):
     warming_archive_completed: bool = False  # Archive completed jobs for audit
     warming_checkpoint_interval: int = 1  # Save progress every N queries
 
+    # SSE settings
+    sse_event_buffer_size: int = 1000  # Ring buffer size for replay
+    sse_heartbeat_seconds: int = 30  # Heartbeat interval
+
     # Document Management
     upload_dir: str = "./data/uploads"
     max_upload_size_mb: int = 100
