@@ -8,6 +8,8 @@ import type {
   ClearCacheResponse,
   WarmCacheResponse,
   WarmFileResponse,
+  WarmingJob,
+  WarmingJobListResponse,
 } from '../types';
 
 /**
@@ -142,4 +144,46 @@ export async function getWarmStatus(jobId: string): Promise<{
   completed_at: string | null;
 }> {
   return apiClient.get(`/api/admin/cache/warm-status/${jobId}`);
+}
+
+// =============================================================================
+// Queue Management API Functions
+// =============================================================================
+
+/**
+ * Get list of all warming jobs with optional status filter.
+ */
+export async function getWarmingJobs(status?: string): Promise<WarmingJobListResponse> {
+  const url = status
+    ? `/api/admin/cache/warm-jobs?status=${status}`
+    : '/api/admin/cache/warm-jobs';
+  return apiClient.get<WarmingJobListResponse>(url);
+}
+
+/**
+ * Get the currently active (running) warming job.
+ */
+export async function getActiveWarmingJob(): Promise<WarmingJob | null> {
+  return apiClient.get<WarmingJob | null>('/api/admin/cache/warm-jobs/active');
+}
+
+/**
+ * Pause a running warming job.
+ */
+export async function pauseWarmingJob(jobId: string): Promise<WarmingJob> {
+  return apiClient.post<WarmingJob>(`/api/admin/cache/warm-jobs/${jobId}/pause`);
+}
+
+/**
+ * Resume a paused warming job.
+ */
+export async function resumeWarmingJob(jobId: string): Promise<WarmingJob> {
+  return apiClient.post<WarmingJob>(`/api/admin/cache/warm-jobs/${jobId}/resume`);
+}
+
+/**
+ * Delete a warming job (any status).
+ */
+export async function deleteWarmingJob(jobId: string): Promise<void> {
+  await apiClient.delete(`/api/admin/cache/warm-jobs/${jobId}`);
 }

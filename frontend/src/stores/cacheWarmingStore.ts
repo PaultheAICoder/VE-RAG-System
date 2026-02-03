@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { WarmingJob } from '../types';
 
 type WarmingStatus = 'idle' | 'warming' | 'completed' | 'error';
 
@@ -37,6 +38,18 @@ interface CacheWarmingState {
   addResult: (result: QueryResult) => void;
   completeFileJob: () => void;
   resetFileJob: () => void;
+
+  // Queue management state
+  queueJobs: WarmingJob[];
+  queueLoading: boolean;
+  queueError: string | null;
+
+  // Queue management actions
+  setQueueJobs: (jobs: WarmingJob[]) => void;
+  setQueueLoading: (loading: boolean) => void;
+  setQueueError: (error: string | null) => void;
+  updateQueueJob: (job: WarmingJob) => void;
+  removeQueueJob: (jobId: string) => void;
 }
 
 export const useCacheWarmingStore = create<CacheWarmingState>()(
@@ -55,6 +68,11 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
       results: [],
       failedQueries: [],
       estimatedTimeRemaining: null,
+
+      // Initial state - Queue management
+      queueJobs: [],
+      queueLoading: false,
+      queueError: null,
 
       // Manual warming actions
       startWarming: (queriesCount) =>
@@ -130,6 +148,19 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
           estimatedTimeRemaining: null,
           error: null,
         }),
+
+      // Queue management actions
+      setQueueJobs: (jobs) => set({ queueJobs: jobs }),
+      setQueueLoading: (loading) => set({ queueLoading: loading }),
+      setQueueError: (error) => set({ queueError: error }),
+      updateQueueJob: (job) =>
+        set((state) => ({
+          queueJobs: state.queueJobs.map((j) => (j.id === job.id ? job : j)),
+        })),
+      removeQueueJob: (jobId) =>
+        set((state) => ({
+          queueJobs: state.queueJobs.filter((j) => j.id !== jobId),
+        })),
     }),
     {
       name: 'cache-warming-storage',

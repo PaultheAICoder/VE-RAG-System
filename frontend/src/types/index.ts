@@ -519,3 +519,28 @@ export interface WarmFileResponse {
   message: string;
   sse_url: string;
 }
+
+// =============================================================================
+// Cache Warming Queue Types
+// =============================================================================
+
+export type WarmingJobStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed';
+
+export interface WarmingJob {
+  id: string;
+  source_file: string | null;
+  status: WarmingJobStatus;
+  total: number;
+  processed: number;
+  success_count: number;
+  failed_count: number;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  triggered_by: string;
+}
+
+export interface WarmingJobListResponse {
+  jobs: WarmingJob[];
+  total_count: number;
+}

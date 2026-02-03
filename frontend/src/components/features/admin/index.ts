@@ -14,3 +14,4 @@ export { CacheStatsCard } from './CacheStatsCard';
 export { CacheTopQueriesCard } from './CacheTopQueriesCard';
 export { CacheWarmingCard } from './CacheWarmingCard';
 export { ClearCacheModal } from './ClearCacheModal';
+export { WarmingQueueCard } from './WarmingQueueCard';
