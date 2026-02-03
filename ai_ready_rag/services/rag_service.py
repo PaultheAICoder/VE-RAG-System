@@ -541,6 +541,7 @@ class RAGService:
         # Check if already cached
         if self.cache and self.cache.enabled:
             try:
+                print(f"[WARM] Checking cache for: {query[:50]}...", flush=True)
                 query_embedding = await self.cache.get_embedding(query)
                 cached = await self.cache.get(
                     query=query,
@@ -549,9 +550,12 @@ class RAGService:
                 )
                 if cached:
                     logger.debug(f"[WARM] Cache hit for query: {query[:50]}...")
+                    print("[WARM] Cache HIT - already cached", flush=True)
                     return True
+                print("[WARM] Cache MISS - will generate", flush=True)
             except Exception as e:
                 logger.warning(f"[WARM] Cache check failed: {e}")
+                print(f"[WARM] Cache check failed: {e}", flush=True)
 
         # Generate response to populate cache
         db = SessionLocal()
@@ -561,7 +565,30 @@ class RAGService:
                 user_tags=effective_tags,
                 tenant_id="default",
             )
-            await self.generate(request, db)
+            print("[WARM] Calling RAG generate()...", flush=True)
+            response = await self.generate(request, db)
+            print(
+                f"[WARM] RAG response: confidence={response.confidence.overall}, "
+                f"citations={len(response.citations)}, grounded={response.grounded}",
+                flush=True,
+            )
+
+            # Check if response was actually cached (confidence >= min_confidence)
+            if self.cache and self.cache.enabled:
+                min_conf = self.cache.min_confidence
+                if response.confidence.overall < min_conf:
+                    logger.info(
+                        f"[WARM] Query skipped (confidence {response.confidence.overall} "
+                        f"< {min_conf}): {query[:50]}..."
+                    )
+                    print(
+                        f"[WARM] NOT CACHED: confidence {response.confidence.overall} "
+                        f"< min_confidence {min_conf}",
+                        flush=True,
+                    )
+                    return False  # Query processed but not cached
+
+            print("[WARM] Response will be cached", flush=True)
             return True
         except httpx.TimeoutException as e:
             raise ConnectionTimeoutError(f"Timeout warming query: {e}") from e

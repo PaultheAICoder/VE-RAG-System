@@ -127,6 +127,7 @@ class WarmingWorker:
                 if job:
                     self._current_job_id = job.id
                     logger.info(f"[WARM] Acquired job {job.id} ({job.total_queries} queries)")
+                    print(f"[WARM] Acquired job {job.id} ({job.total_queries} queries)", flush=True)
 
                     try:
                         await self._process_job(job)
@@ -315,6 +316,7 @@ class WarmingWorker:
         """
         processed = job.processed_queries
         failed = job.failed_queries
+        skipped = 0  # Queries processed but not cached (low confidence)
         byte_offset = job.byte_offset
         line_number = 0
         checkpoint_count = 0
@@ -396,15 +398,29 @@ class WarmingWorker:
                     db.close()
 
                 # Warm the query
+                print(f"[WARM] Processing query {line_number}: {query[:50]}...", flush=True)
                 start_time = asyncio.get_event_loop().time()
-                success = await self._warm_query_with_retry(query, job.id, line_number)
+                success, was_cached = await self._warm_query_with_retry(query, job.id, line_number)
                 duration = asyncio.get_event_loop().time() - start_time
                 self._query_durations.append(duration)
 
                 if success:
                     processed += 1
+                    if not was_cached:
+                        skipped += 1  # Processed but not cached (low confidence)
+                        print(
+                            f"[WARM] Query {line_number} SKIPPED (low confidence) "
+                            f"in {duration:.2f}s",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"[WARM] Query {line_number} CACHED in {duration:.2f}s",
+                            flush=True,
+                        )
                 else:
                     failed += 1
+                    print(f"[WARM] Query {line_number} FAILED in {duration:.2f}s", flush=True)
 
                 checkpoint_count += 1
 
@@ -433,6 +449,7 @@ class WarmingWorker:
                                 "job_id": job.id,
                                 "processed": processed,
                                 "failed": failed,
+                                "skipped": skipped,  # Processed but not cached (low confidence)
                                 "total": job.total_queries,
                                 "percent": percent,
                                 "estimated_remaining_seconds": self._estimate_remaining(job),
@@ -471,6 +488,7 @@ class WarmingWorker:
                     "job_id": job.id,
                     "processed": processed,
                     "failed": failed,
+                    "skipped": skipped,  # Processed but not cached (low confidence)
                     "total": job.total_queries,
                     "duration_seconds": duration_seconds,
                     "queries_per_second": round(final_qps, 2),
@@ -479,7 +497,15 @@ class WarmingWorker:
         finally:
             db.close()
 
-        logger.info(f"[WARM] Job {job.id} completed: {processed} processed, {failed} failed")
+        logger.info(
+            f"[WARM] Job {job.id} completed: {processed} processed "
+            f"({skipped} skipped due to low confidence), {failed} failed"
+        )
+        print(
+            f"[WARM] Job {job.id} COMPLETED: {processed} processed "
+            f"({skipped} skipped due to low confidence), {failed} failed",
+            flush=True,
+        )
 
     def _should_stop(self, db, job_id: str) -> tuple[bool, str | None]:
         """Check if job should stop due to pause/cancel flags.
@@ -528,7 +554,9 @@ class WarmingWorker:
             finally:
                 check_db.close()
 
-    async def _warm_query_with_retry(self, query: str, job_id: str, line_number: int) -> bool:
+    async def _warm_query_with_retry(
+        self, query: str, job_id: str, line_number: int
+    ) -> tuple[bool, bool]:
         """Warm a single query with retry logic.
 
         Args:
@@ -537,14 +565,17 @@ class WarmingWorker:
             line_number: Line number in source file.
 
         Returns:
-            True if query was warmed successfully, False otherwise.
+            Tuple of (success, was_cached):
+            - (True, True) = query warmed and cached
+            - (True, False) = query processed but not cached (low confidence)
+            - (False, False) = query failed
         """
         max_retries = self.settings.warming_max_retries
 
         for attempt in range(max_retries + 1):
             try:
-                await self.rag_service.warm_cache(query)
-                return True
+                was_cached = await self.rag_service.warm_cache(query)
+                return (True, was_cached)
             except RETRYABLE_EXCEPTIONS as e:
                 if attempt < max_retries:
                     delay = self._retry_delays[min(attempt, len(self._retry_delays) - 1)]
@@ -558,15 +589,15 @@ class WarmingWorker:
                     self._record_failed_query(
                         job_id, query, line_number, str(e), type(e).__name__, attempt + 1
                     )
-                    return False
+                    return (False, False)
             except Exception as e:
                 # Non-retryable error - fail immediately
                 self._record_failed_query(
                     job_id, query, line_number, str(e), type(e).__name__, attempt + 1
                 )
-                return False
+                return (False, False)
 
-        return False
+        return (False, False)
 
     def _record_failed_query(
         self,

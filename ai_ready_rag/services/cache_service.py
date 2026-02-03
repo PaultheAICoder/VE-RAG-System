@@ -367,11 +367,19 @@ class CacheService:
     ) -> None:
         """Store response in cache (memory + SQLite)."""
         if not self.enabled:
+            print("[CACHE] put() skipped - cache disabled", flush=True)
             return
 
         # Skip low-confidence responses
         if response.confidence.overall < self.min_confidence:
+            print(
+                f"[CACHE] put() skipped - confidence {response.confidence.overall} "
+                f"< min {self.min_confidence}",
+                flush=True,
+            )
             return
+
+        print(f"[CACHE] put() storing response for: {query[:50]}...", flush=True)
 
         from ai_ready_rag.db.models import ResponseCache
 
@@ -429,6 +437,7 @@ class CacheService:
             existing.document_ids = json.dumps(doc_ids)
             existing.last_accessed_at = datetime.utcnow()
             existing.access_count += 1
+            print(f"[CACHE] Updated existing entry (hash={query_hash[:12]}...)", flush=True)
         else:
             row = ResponseCache(
                 query_hash=query_hash,
@@ -445,8 +454,10 @@ class CacheService:
                 document_ids=json.dumps(doc_ids),
             )
             self.db.add(row)
+            print(f"[CACHE] Created new entry (hash={query_hash[:12]}...)", flush=True)
 
         self.db.commit()
+        print("[CACHE] Committed to SQLite", flush=True)
         logger.debug(f"Cached response for query: {query[:50]}...")
 
     async def put_embedding(self, query: str, embedding: list[float]) -> None:
