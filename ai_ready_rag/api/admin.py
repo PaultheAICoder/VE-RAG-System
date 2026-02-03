@@ -2195,6 +2195,46 @@ class WarmRetryRequest(BaseModel):
     queries: list[str]
 
 
+class WarmingJobResponse(BaseModel):
+    """Response model for a warming job."""
+
+    id: str
+    source_file: str | None = None  # Not tracked in current implementation
+    status: str
+    total: int
+    processed: int
+    success_count: int
+    failed_count: int
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    triggered_by: str
+
+
+class WarmingJobListResponse(BaseModel):
+    """Response model for list of warming jobs."""
+
+    jobs: list[WarmingJobResponse]
+    total_count: int
+
+
+def _job_to_response(job) -> WarmingJobResponse:
+    """Convert a WarmingJob to a WarmingJobResponse."""
+    return WarmingJobResponse(
+        id=job.id,
+        source_file=None,  # Not tracked in current implementation
+        status=job.status,
+        total=job.total,
+        processed=job.processed,
+        success_count=job.success_count,
+        failed_count=len(job.failed_indices),
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        triggered_by=job.triggered_by,
+    )
+
+
 def _strip_numbering(text: str) -> str:
     """Strip leading numbering from a question (e.g., '1. Question' -> 'Question')."""
     return re.sub(r"^\d+[\.\)\-\s]+", "", text.strip())
@@ -2806,6 +2846,195 @@ async def get_warming_status(
     }
 
 
+@router.get("/cache/warm-jobs", response_model=WarmingJobListResponse)
+async def list_warming_jobs(
+    status_filter: str | None = Query(None, alias="status", description="Filter by job status"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of jobs to return"),
+    offset: int = Query(0, ge=0, description="Number of jobs to skip"),
+    current_user: User = Depends(require_system_admin),
+):
+    """List all warming jobs with optional filtering.
+
+    Supports filtering by status and pagination.
+
+    Admin only.
+    """
+    queue_service = get_warming_queue()
+    all_jobs = queue_service.list_all_jobs()
+
+    # Filter by status if provided
+    if status_filter:
+        all_jobs = [j for j in all_jobs if j.status == status_filter]
+
+    total_count = len(all_jobs)
+
+    # Apply pagination
+    paginated_jobs = all_jobs[offset : offset + limit]
+
+    return WarmingJobListResponse(
+        jobs=[_job_to_response(j) for j in paginated_jobs],
+        total_count=total_count,
+    )
+
+
+@router.get("/cache/warm-jobs/active", response_model=WarmingJobResponse | None)
+async def get_active_warming_job(
+    current_user: User = Depends(require_system_admin),
+):
+    """Get the currently running warming job, if any.
+
+    Returns null if no job is currently running.
+
+    Admin only.
+    """
+    queue_service = get_warming_queue()
+    all_jobs = queue_service.list_all_jobs()
+
+    # Find running job
+    for job in all_jobs:
+        if job.status == "running":
+            return _job_to_response(job)
+
+    return None
+
+
+@router.get("/cache/warm-jobs/{job_id}", response_model=WarmingJobResponse)
+async def get_warming_job(
+    job_id: str,
+    current_user: User = Depends(require_system_admin),
+):
+    """Get details of a specific warming job.
+
+    Admin only.
+    """
+    queue_service = get_warming_queue()
+    job = queue_service.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+
+    return _job_to_response(job)
+
+
+@router.post("/cache/warm-jobs/{job_id}/pause", response_model=WarmingJobResponse)
+async def pause_warming_job(
+    job_id: str,
+    current_user: User = Depends(require_system_admin),
+):
+    """Pause a running warming job.
+
+    Only running jobs can be paused.
+
+    Admin only.
+    """
+    queue_service = get_warming_queue()
+
+    # Check if job exists
+    job = queue_service.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+
+    # Check if job is running
+    if job.status != "running":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot pause job with status '{job.status}'. Only running jobs can be paused.",
+        )
+
+    paused_job = queue_service.pause_job(job_id)
+    if not paused_job:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Could not pause job. It may have been modified by another process.",
+        )
+
+    logger.info(f"Admin {current_user.email} paused warming job {job_id}")
+    return _job_to_response(paused_job)
+
+
+@router.post("/cache/warm-jobs/{job_id}/resume", response_model=WarmingJobResponse)
+async def resume_warming_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_system_admin),
+):
+    """Resume a paused warming job.
+
+    Only paused jobs can be resumed. This will restart the background processing.
+
+    Admin only.
+    """
+    queue_service = get_warming_queue()
+
+    # Check if job exists
+    job = queue_service.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+
+    # Check if job is paused
+    if job.status != "paused":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot resume job with status '{job.status}'. Only paused jobs can be resumed.",
+        )
+
+    worker_id = f"worker-{uuid.uuid4().hex[:8]}"
+    resumed_job = queue_service.resume_job(job_id, worker_id)
+    if not resumed_job:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Could not resume job. It may have been modified by another process.",
+        )
+
+    # Restart background warming task
+    def run_warming():
+        import asyncio
+
+        try:
+            asyncio.run(_warm_file_task(job_id, current_user.id))
+        except Exception as e:
+            logger.error(f"Cache warming job {job_id} failed after resume: {e}")
+
+    background_tasks.add_task(run_warming)
+
+    logger.info(f"Admin {current_user.email} resumed warming job {job_id}")
+    return _job_to_response(resumed_job)
+
+
+@router.delete("/cache/warm-jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_warming_job(
+    job_id: str,
+    current_user: User = Depends(require_system_admin),
+):
+    """Delete/cancel a warming job.
+
+    Can delete jobs in any status.
+
+    Admin only.
+    """
+    queue_service = get_warming_queue()
+
+    # Check if job exists
+    job = queue_service.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+
+    queue_service.delete_job(job_id)
+    logger.info(f"Admin {current_user.email} deleted warming job {job_id}")
+    return None
+
+
 async def _sse_event_generator(job_id: str):
     """Generate SSE events for warming job progress."""
     queue_service = get_warming_queue()
@@ -2850,8 +3079,8 @@ async def _sse_event_generator(job_id: str):
                 yield f"event: result\ndata: {json.dumps(result)}\n\n"
             last_results_count = len(job.results)
 
-        # Check for completion
-        if job.status in ("completed", "failed"):
+        # Check for completion or pause
+        if job.status in ("completed", "failed", "paused"):
             duration = 0
             if job.started_at and job.completed_at:
                 duration = (job.completed_at - job.started_at).total_seconds()
@@ -2923,6 +3152,12 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
 
         # Resume from processed_index (supports crash recovery)
         for i in range(job.processed_index, job.total):
+            # Check for paused status before processing each query
+            current_job = queue_service.get_job(job_id)
+            if current_job and current_job.status == "paused":
+                logger.info(f"[WARM] Job {job_id} was paused, stopping processing")
+                return
+
             query = job.queries[i]
             try:
                 rag_request = RAGRequest(
