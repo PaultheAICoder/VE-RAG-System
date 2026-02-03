@@ -514,10 +514,21 @@ export interface WarmCacheResponse {
 }
 
 export interface WarmFileResponse {
-  job_id: string;
-  queued: number;
-  message: string;
-  sse_url: string;
+  id: string;
+  file_path: string;
+  source_type: string;
+  original_filename: string | null;
+  total_queries: number;
+  processed_queries: number;
+  failed_queries: number;
+  status: string;
+  is_paused: boolean;
+  is_cancel_requested: boolean;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_by: string | null;
+  error_message: string | null;
 }
 
 // =============================================================================

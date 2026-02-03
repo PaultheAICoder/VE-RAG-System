@@ -412,8 +412,8 @@ export function CacheWarmingCard({
 
     try {
       const response = await warmCacheFromFile(uploadedFile);
-      startFileJob(response.job_id, response.queued);
-      connectToSSE(response.job_id);
+      startFileJob(response.id, response.total_queries);
+      connectToSSE(response.id);
     } catch (err) {
       setFileError(err instanceof Error ? err.message : 'Failed to start warming');
     }
@@ -429,8 +429,8 @@ export function CacheWarmingCard({
 
     try {
       const response = await retryWarmCache(queriesToRetry);
-      startFileJob(response.job_id, response.queued);
-      connectToSSE(response.job_id);
+      startFileJob(response.id, response.total_queries);
+      connectToSSE(response.id);
     } catch (err) {
       setFileError(err instanceof Error ? err.message : 'Retry failed');
     }
