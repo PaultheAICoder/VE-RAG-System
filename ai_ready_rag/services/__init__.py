@@ -36,6 +36,7 @@ from ai_ready_rag.services.warming_queue import (
     WarmingJob,
     WarmingQueueService,
 )
+from ai_ready_rag.services.warming_worker import WarmingWorker, recover_stale_jobs
 
 __all__ = [
     # Cache Service
@@ -71,4 +72,7 @@ __all__ = [
     "WarmingJob",
     "WarmingQueueService",
     "InvalidStateTransition",
+    # Warming Worker
+    "WarmingWorker",
+    "recover_stale_jobs",
 ]

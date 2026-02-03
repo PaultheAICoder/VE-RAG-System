@@ -131,16 +131,49 @@ class Settings(BaseSettings):
     rag_enable_query_expansion: bool = True  # Expand queries for better recall
     rag_enable_hallucination_check: bool | None = None  # None = use profile default
 
-    # Cache Warming
+    # Cache Warming - Core settings
     warming_delay_seconds: float = 2.0  # Delay between warming queries to reduce Ollama contention
     warming_queue_dir: str = "data/warming_queue"  # Directory for persistent job files
     warming_scan_interval_seconds: int = 60  # Folder watcher polling interval
-    warming_failed_job_retention_days: int = 7  # Auto-delete failed jobs after N days
     warming_lock_timeout_minutes: int = 30  # Reclaim stale locks after N minutes
     warming_max_file_size_mb: float = 10.0  # Max uploaded file size for CLI drops
     warming_allowed_extensions: list[str] = [".txt", ".csv"]  # Allowed CLI file types
     warming_archive_completed: bool = False  # Archive completed jobs for audit
-    warming_checkpoint_interval: int = 1  # Save progress every N queries
+    warming_checkpoint_interval: int = 10  # Save progress every N queries
+
+    # Cache Warming - Worker settings
+    warming_checkpoint_time_seconds: int = 5  # Max seconds between checkpoints
+    warming_lease_duration_minutes: int = 10  # Job lease duration
+    warming_lease_renewal_seconds: int = 60  # Lease renewal interval
+
+    # Cache Warming - Retry settings
+    warming_max_retries: int = 3
+    warming_retry_delays: str = "5,30,120"  # Comma-separated seconds for exponential backoff
+
+    # Cache Warming - SCTP settings (optional, disabled by default)
+    sctp_enabled: bool = False
+    sctp_host: str = "0.0.0.0"
+    sctp_port: int = 9900
+    sctp_max_file_size_mb: int = 10
+    sctp_max_queries_per_file: int = 10000
+    sctp_tls_cert: str | None = None
+    sctp_tls_key: str | None = None
+    sctp_tls_ca: str | None = None
+    sctp_shared_secret: str | None = None
+    sctp_allowed_ips: str | None = None
+
+    # Cache Warming - Cleanup settings
+    warming_completed_retention_days: int = 7
+    warming_failed_retention_days: int = 30  # Note: replaces existing 7-day default
+    warming_cleanup_interval_hours: int = 6
+
+    # Cache Warming - SSE settings
+    sse_event_buffer_size: int = 1000  # Ring buffer size for replay
+    sse_heartbeat_seconds: int = 30
+
+    # SSE settings
+    sse_event_buffer_size: int = 1000  # Ring buffer size for replay
+    sse_heartbeat_seconds: int = 30  # Heartbeat interval
 
     # Document Management
     upload_dir: str = "./data/uploads"
