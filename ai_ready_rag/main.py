@@ -16,6 +16,7 @@ from ai_ready_rag.api import admin, auth, chat, documents, health, setup, tags, 
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import Document
+from ai_ready_rag.services.warming_cleanup import WarmingCleanupService
 from ai_ready_rag.services.warming_queue import WarmingQueueService
 from ai_ready_rag.services.warming_worker import WarmingWorker, recover_stale_jobs
 
@@ -24,6 +25,8 @@ settings = get_settings()
 
 # Global warming worker instance (managed by lifespan)
 warming_worker: WarmingWorker | None = None
+# Global warming cleanup service instance (managed by lifespan)
+warming_cleanup: WarmingCleanupService | None = None
 
 
 def _strip_numbering(text: str) -> str:
@@ -206,9 +209,21 @@ async def lifespan(app: FastAPI):
 
     logger.info("WarmingWorker started")
 
+    # Initialize and start WarmingCleanupService
+    global warming_cleanup
+    warming_cleanup = WarmingCleanupService(settings)
+    await warming_cleanup.start()
+    logger.info("WarmingCleanupService started")
+
     yield
 
     # Shutdown
+    # Stop WarmingCleanupService
+    if warming_cleanup:
+        await warming_cleanup.stop()
+        warming_cleanup = None
+        logger.info("WarmingCleanupService stopped")
+
     # Stop WarmingWorker
     if warming_worker:
         await warming_worker.stop()

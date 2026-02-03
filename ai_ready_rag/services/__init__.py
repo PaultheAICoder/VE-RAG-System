@@ -31,6 +31,7 @@ from ai_ready_rag.services.vector_utils import (
     validate_tag,
     validate_tags_for_ingestion,
 )
+from ai_ready_rag.services.warming_cleanup import WarmingCleanupService
 from ai_ready_rag.services.warming_queue import (
     InvalidStateTransition,
     WarmingJob,
@@ -75,4 +76,6 @@ __all__ = [
     # Warming Worker
     "WarmingWorker",
     "recover_stale_jobs",
+    # Warming Cleanup Service
+    "WarmingCleanupService",
 ]
