@@ -17,9 +17,13 @@ from ai_ready_rag.config import get_settings
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import Document
 from ai_ready_rag.services.warming_queue import WarmingQueueService
+from ai_ready_rag.services.warming_worker import WarmingWorker, recover_stale_jobs
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Global warming worker instance (managed by lifespan)
+warming_worker: WarmingWorker | None = None
 
 
 def _strip_numbering(text: str) -> str:
@@ -152,9 +156,9 @@ async def lifespan(app: FastAPI):
         archive_completed=settings.warming_archive_completed,
     )
 
-    # Cleanup old failed jobs (>7 days)
+    # Cleanup old failed jobs (per retention setting)
     deleted_count = warming_service.cleanup_old_failed_jobs(
-        retention_days=settings.warming_failed_job_retention_days
+        retention_days=settings.warming_failed_retention_days
     )
     if deleted_count:
         logger.info(f"Cleaned up {deleted_count} old failed warming jobs")
@@ -187,9 +191,30 @@ async def lifespan(app: FastAPI):
         f"dir: {settings.warming_queue_dir})"
     )
 
+    # Initialize and start DB-based WarmingWorker
+    global warming_worker
+    from ai_ready_rag.services.rag_service import RAGService
+
+    rag_service = RAGService(settings)
+    warming_worker = WarmingWorker(rag_service, settings)
+    await warming_worker.start()
+
+    # Recover jobs with expired leases (from server crash)
+    recovered_count = await recover_stale_jobs()
+    if recovered_count:
+        logger.info(f"Recovered {recovered_count} warming jobs with expired leases")
+
+    logger.info("WarmingWorker started")
+
     yield
 
     # Shutdown
+    # Stop WarmingWorker
+    if warming_worker:
+        await warming_worker.stop()
+        warming_worker = None
+        logger.info("WarmingWorker stopped")
+
     # Cancel folder watcher
     if hasattr(app.state, "watcher_task") and app.state.watcher_task:
         app.state.watcher_task.cancel()
