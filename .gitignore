@@ -38,3 +38,5 @@ data/
 *.db
 issues/
 frontend/.vite/
+frontend/dist/
+ai_ready_rag/static/
