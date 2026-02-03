@@ -2,7 +2,6 @@
 
 import logging
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -20,16 +19,30 @@ from ai_ready_rag.services.warming_worker import WarmingWorker, recover_stale_jo
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Global warming worker instance (managed by lifespan)
+# Global warming worker instance (managed by startup/shutdown events)
 warming_worker: WarmingWorker | None = None
-# Global warming cleanup service instance (managed by lifespan)
+# Global warming cleanup service instance (managed by startup/shutdown events)
 warming_cleanup: WarmingCleanupService | None = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan: startup and shutdown."""
-    # Startup
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    description="Enterprise RAG system with authentication and access control",
+    docs_url="/api/docs" if settings.debug else None,
+    redoc_url="/api/redoc" if settings.debug else None,
+)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Application startup: initialize services.
+
+    NOTE: Using on_event instead of lifespan because Gradio's mount_gradio_app
+    replaces the lifespan context, causing our startup code to never run.
+    """
+    global warming_worker, warming_cleanup
+
     logger.info("=" * 60)
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     logger.info(f"  ENV_PROFILE: {settings.env_profile}")
@@ -39,9 +52,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Chat model: {settings.chat_model}")
     logger.info(f"  Embedding model: {settings.embedding_model}")
     logger.info("=" * 60)
-    print(f"Starting {settings.app_name} v{settings.app_version}")
-    print(f"Debug mode: {settings.debug}")
-    print(f"RAG enabled: {settings.enable_rag}")
+    print(f"Starting {settings.app_name} v{settings.app_version}", flush=True)
+    print(f"Debug mode: {settings.debug}", flush=True)
+    print(f"RAG enabled: {settings.enable_rag}", flush=True)
 
     # Track server start time for uptime calculation
     app.state.start_time = time.time()
@@ -59,12 +72,11 @@ async def lifespan(app: FastAPI):
         db.commit()
         if stuck_count:
             logger.warning(f"Reset {stuck_count} stuck documents to pending status")
-            print(f"Recovered {stuck_count} stuck documents")
+            print(f"Recovered {stuck_count} stuck documents", flush=True)
     finally:
         db.close()
 
     # Initialize and start DB-based WarmingWorker
-    global warming_worker
     from ai_ready_rag.services.rag_service import RAGService
 
     rag_service = RAGService(settings)
@@ -76,17 +88,21 @@ async def lifespan(app: FastAPI):
     if recovered_count:
         logger.info(f"Recovered {recovered_count} warming jobs with expired leases")
 
+    print("WarmingWorker started", flush=True)
     logger.info("WarmingWorker started")
 
     # Initialize and start WarmingCleanupService
-    global warming_cleanup
     warming_cleanup = WarmingCleanupService(settings)
     await warming_cleanup.start()
+    print("WarmingCleanupService started", flush=True)
     logger.info("WarmingCleanupService started")
 
-    yield
 
-    # Shutdown
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Application shutdown: cleanup services."""
+    global warming_worker, warming_cleanup
+
     # Stop WarmingCleanupService
     if warming_cleanup:
         await warming_cleanup.stop()
@@ -99,17 +115,8 @@ async def lifespan(app: FastAPI):
         warming_worker = None
         logger.info("WarmingWorker stopped")
 
-    print("Shutting down...")
+    print("Shutting down...", flush=True)
 
-
-app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
-    description="Enterprise RAG system with authentication and access control",
-    lifespan=lifespan,
-    docs_url="/api/docs" if settings.debug else None,
-    redoc_url="/api/redoc" if settings.debug else None,
-)
 
 # CORS middleware
 app.add_middleware(
