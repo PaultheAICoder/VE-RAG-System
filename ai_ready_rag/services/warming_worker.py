@@ -27,6 +27,7 @@ from ai_ready_rag.core.exceptions import (
 )
 from ai_ready_rag.db.database import SessionLocal
 from ai_ready_rag.db.models import WarmingFailedQuery, WarmingQueue
+from ai_ready_rag.services.sse_buffer_service import store_sse_event
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +284,17 @@ class WarmingWorker:
         )
         db.commit()
 
+        # Emit job_failed SSE event
+        store_sse_event(
+            db,
+            "job_failed",
+            job_id,
+            {
+                "job_id": job_id,
+                "error": error[:500],
+            },
+        )
+
     def _mark_job_cancelled(self, db, job_id: str) -> None:
         """Mark job as cancelled."""
         (
@@ -313,6 +325,23 @@ class WarmingWorker:
             f"resuming from offset {byte_offset}"
         )
 
+        # Emit job_started event
+        db = SessionLocal()
+        try:
+            store_sse_event(
+                db,
+                "job_started",
+                job.id,
+                {
+                    "job_id": job.id,
+                    "file_path": job.file_path,
+                    "total_queries": job.total_queries,
+                    "worker_id": self.worker_id,
+                },
+            )
+        finally:
+            db.close()
+
         async with aiofiles.open(job.file_path, encoding="utf-8") as f:
             # Seek to byte offset for resume
             if byte_offset > 0:
@@ -336,8 +365,31 @@ class WarmingWorker:
                         # Save checkpoint before stopping
                         self._checkpoint(db, job.id, processed, failed, current_offset)
                         if reason == "cancelled":
+                            # Emit job_cancelled event
+                            store_sse_event(
+                                db,
+                                "job_cancelled",
+                                job.id,
+                                {
+                                    "job_id": job.id,
+                                    "processed": processed,
+                                    "total": job.total_queries,
+                                    "file_deleted": False,
+                                },
+                            )
                             raise WarmingCancelledException()
                         elif reason == "paused":
+                            # Emit job_paused event
+                            store_sse_event(
+                                db,
+                                "job_paused",
+                                job.id,
+                                {
+                                    "job_id": job.id,
+                                    "processed": processed,
+                                    "total": job.total_queries,
+                                },
+                            )
                             logger.info(f"[WARM] Job {job.id} paused, waiting for resume...")
                             await self._wait_for_resume(db, job.id)
                 finally:
@@ -367,6 +419,26 @@ class WarmingWorker:
                     db = SessionLocal()
                     try:
                         self._checkpoint(db, job.id, processed, failed, current_offset)
+                        # Emit progress event at checkpoints
+                        percent = (
+                            int((processed + failed) / job.total_queries * 100)
+                            if job.total_queries > 0
+                            else 0
+                        )
+                        store_sse_event(
+                            db,
+                            "progress",
+                            job.id,
+                            {
+                                "job_id": job.id,
+                                "processed": processed,
+                                "failed": failed,
+                                "total": job.total_queries,
+                                "percent": percent,
+                                "estimated_remaining_seconds": self._estimate_remaining(job),
+                                "queries_per_second": round(self._calculate_qps(), 2),
+                            },
+                        )
                     finally:
                         db.close()
                     checkpoint_count = 0
@@ -380,6 +452,30 @@ class WarmingWorker:
         try:
             self._checkpoint(db, job.id, processed, failed, 0)  # Reset offset on completion
             self._mark_job_completed(db, job.id)
+
+            # Emit job_completed event
+            # Calculate final duration and QPS
+            job_refreshed = db.query(WarmingQueue).filter(WarmingQueue.id == job.id).first()
+            duration_seconds = 0
+            if job_refreshed and job_refreshed.started_at and job_refreshed.completed_at:
+                duration_seconds = int(
+                    (job_refreshed.completed_at - job_refreshed.started_at).total_seconds()
+                )
+            final_qps = processed / duration_seconds if duration_seconds > 0 else 0.0
+
+            store_sse_event(
+                db,
+                "job_completed",
+                job.id,
+                {
+                    "job_id": job.id,
+                    "processed": processed,
+                    "failed": failed,
+                    "total": job.total_queries,
+                    "duration_seconds": duration_seconds,
+                    "queries_per_second": round(final_qps, 2),
+                },
+            )
         finally:
             db.close()
 
@@ -503,6 +599,20 @@ class WarmingWorker:
             )
             db.add(failed_query)
             db.commit()
+
+            # Emit query_failed SSE event
+            store_sse_event(
+                db,
+                "query_failed",
+                job_id,
+                {
+                    "job_id": job_id,
+                    "query": query[:200],  # Truncate for SSE event
+                    "line_number": line_number,
+                    "error": error_message[:200],
+                    "error_type": error_type,
+                },
+            )
         except Exception as e:
             logger.error(f"[WARM] Failed to record failed query: {e}")
         finally:

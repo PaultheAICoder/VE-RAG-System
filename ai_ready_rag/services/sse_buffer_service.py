@@ -99,6 +99,46 @@ def get_events_since(db: Session, last_event_id: str | None) -> list[dict]:
     ]
 
 
+def get_events_for_job(db: Session, job_id: str, since_event_id: str | None = None) -> list[dict]:
+    """Get events for a specific job, optionally after an event_id.
+
+    Args:
+        db: Database session
+        job_id: Job ID to filter events for
+        since_event_id: Optional event ID to start from (exclusive)
+
+    Returns:
+        List of event dictionaries for the specified job
+    """
+    from ai_ready_rag.db.models import WarmingSSEEvent
+
+    query = db.query(WarmingSSEEvent).filter(WarmingSSEEvent.job_id == job_id)
+
+    if since_event_id:
+        # Find the row ID for the since_event_id
+        since_event = (
+            db.query(WarmingSSEEvent).filter(WarmingSSEEvent.event_id == since_event_id).first()
+        )
+        if since_event:
+            query = query.filter(WarmingSSEEvent.id > since_event.id)
+        else:
+            # Event not found, return empty (client too far behind)
+            return []
+
+    events = query.order_by(WarmingSSEEvent.id.asc()).all()
+
+    return [
+        {
+            "event_id": e.event_id,
+            "event_type": e.event_type,
+            "job_id": e.job_id,
+            "payload": json.loads(e.payload),
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in events
+    ]
+
+
 def prune_old_events(db: Session) -> int:
     """Prune events beyond buffer size, keeping most recent.
 
