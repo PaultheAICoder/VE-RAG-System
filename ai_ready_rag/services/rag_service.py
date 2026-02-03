@@ -535,8 +535,9 @@ class RAGService:
         """
         from ai_ready_rag.db.database import SessionLocal
 
-        # Use public tags if not specified (warming populates cache for common queries)
-        effective_tags = user_tags if user_tags is not None else ["public"]
+        # Use hr tags if not specified (warming populates cache for common queries)
+        # TODO: Make this configurable - currently hardcoded to "hr" for testing
+        effective_tags = user_tags if user_tags is not None else ["hr"]
 
         # Check if already cached
         if self.cache and self.cache.enabled:
