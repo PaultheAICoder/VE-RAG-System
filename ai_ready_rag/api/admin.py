@@ -35,7 +35,7 @@ from ai_ready_rag.core.dependencies import (
     require_system_admin,
 )
 from ai_ready_rag.db.database import get_db
-from ai_ready_rag.db.models import Document, User
+from ai_ready_rag.db.models import Document, User, WarmingQueue
 from ai_ready_rag.services.document_service import DocumentService
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.services.model_service import ModelService, OllamaUnavailableError
@@ -3007,6 +3007,45 @@ async def resume_warming_job(
 
     logger.info(f"Admin {current_user.email} resumed warming job {job_id}")
     return _job_to_response(resumed_job)
+
+
+@router.post("/cache/warm-jobs/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+async def cancel_warming_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_system_admin),
+):
+    """Request graceful cancellation of a warming job.
+
+    Sets is_cancel_requested=TRUE. The worker will detect this flag,
+    close the file handle gracefully, update status to 'cancelled',
+    and delete the query file.
+
+    Only running or paused jobs can be cancelled.
+
+    Admin only.
+    """
+    # Query job from database
+    job = db.query(WarmingQueue).filter(WarmingQueue.id == job_id).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+
+    # Only running or paused jobs can be cancelled gracefully
+    if job.status not in ("running", "paused"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot cancel job with status '{job.status}'. Only running or paused jobs can be cancelled.",
+        )
+
+    # Set the cancel flag for graceful shutdown
+    job.is_cancel_requested = True
+    db.commit()
+
+    logger.info(f"Admin {current_user.email} requested cancel for warming job {job_id}")
+    return {"job_id": job_id, "is_cancel_requested": True}
 
 
 @router.delete("/cache/warm-jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

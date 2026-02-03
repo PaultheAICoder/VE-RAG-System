@@ -11,6 +11,7 @@ Processes WarmingQueue jobs from database with:
 
 import asyncio
 import logging
+import os
 from collections import deque
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -133,6 +134,10 @@ class WarmingWorker:
                         db = SessionLocal()
                         try:
                             self._mark_job_cancelled(db, job.id)
+                            # Delete query file after graceful shutdown
+                            if job.file_path and os.path.exists(job.file_path):
+                                os.remove(job.file_path)
+                                logger.info(f"[WARM] Deleted query file for cancelled job {job.id}")
                         finally:
                             db.close()
                     except Exception as e:
