@@ -92,11 +92,14 @@ export function WarmingQueueCard({ onJobDelete }: WarmingQueueCardProps) {
     fetchQueue();
   }, [fetchQueue]);
 
-  // Auto-refresh every 3 seconds to catch new jobs
+  // Auto-refresh when jobs are active (running or pending)
   useEffect(() => {
-    const interval = setInterval(fetchQueue, 3000);
-    return () => clearInterval(interval);
-  }, [fetchQueue]);
+    const hasActive = queueJobs.some((j) => j.status === 'running' || j.status === 'pending');
+    if (hasActive) {
+      const interval = setInterval(fetchQueue, 2000);
+      return () => clearInterval(interval);
+    }
+  }, [queueJobs, fetchQueue]);
 
   // Handle pause
   const handlePause = async (jobId: string) => {
