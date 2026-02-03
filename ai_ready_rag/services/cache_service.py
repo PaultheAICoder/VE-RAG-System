@@ -314,8 +314,11 @@ class CacheService:
             return self._row_to_entry(row)
         return None
 
-    async def verify_access(self, entry: CacheEntry, user_tags: list[str]) -> bool:
+    async def verify_access(self, entry: CacheEntry, user_tags: list[str] | None) -> bool:
         """Verify user can access all documents cited in cached response."""
+        if user_tags is None:
+            return True  # Admin bypass - no tag filtering
+
         if not entry.document_ids:
             return True  # No documents cited
 
