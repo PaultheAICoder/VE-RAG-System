@@ -49,7 +49,28 @@ const STATUS_CONFIG: Record<
   paused: { label: 'Paused', variant: 'warning', icon: <Pause size={14} /> },
   completed: { label: 'Completed', variant: 'success', icon: <CheckCircle size={14} /> },
   failed: { label: 'Failed', variant: 'danger', icon: <XCircle size={14} /> },
+  cancelled: { label: 'Cancelled', variant: 'danger', icon: <StopCircle size={14} /> },
 };
+
+// Transitional states for jobs that are in process of cancelling/pausing
+const TRANSITIONAL_STATES = {
+  cancelling: { label: 'Cancelling...', variant: 'warning' as const, icon: <Loader2 size={14} className="animate-spin" /> },
+  pausing: { label: 'Pausing...', variant: 'warning' as const, icon: <Loader2 size={14} className="animate-spin" /> },
+};
+
+/**
+ * Get the display status config for a job, accounting for transitional states.
+ */
+function getJobStatusConfig(job: { status: WarmingJobStatus; is_cancel_requested?: boolean; is_paused?: boolean }) {
+  // Check for transitional states
+  if (job.status === 'running' && job.is_cancel_requested) {
+    return TRANSITIONAL_STATES.cancelling;
+  }
+  if (job.status === 'running' && job.is_paused) {
+    return TRANSITIONAL_STATES.pausing;
+  }
+  return STATUS_CONFIG[job.status];
+}
 
 /**
  * Format a date string as relative time (e.g., "2 mins ago").
@@ -763,11 +784,16 @@ export function CacheWarmingCard({
               </thead>
               <tbody>
                 {queueJobs.map((job) => {
-                  const statusConfig = STATUS_CONFIG[job.status];
+                  // Use transitional state-aware status config
+                  const statusConfig = getJobStatusConfig(job);
                   const progressPercent = job.total > 0
                     ? Math.round((job.processed / job.total) * 100)
                     : 0;
                   const isJobLoading = actionLoading === job.id;
+                  // Check if job is in transitional state
+                  const isCancelling = job.status === 'running' && job.is_cancel_requested;
+                  const isPausing = job.status === 'running' && job.is_paused;
+                  const isInTransition = isCancelling || isPausing;
 
                   return (
                     <tr
@@ -799,6 +825,17 @@ export function CacheWarmingCard({
                             {statusConfig.label}
                           </span>
                         </Badge>
+                        {/* Tooltip for transitional states */}
+                        {isCancelling && (
+                          <span className="text-xs text-gray-500 block mt-1">
+                            Waiting for current query to complete or timeout...
+                          </span>
+                        )}
+                        {isPausing && (
+                          <span className="text-xs text-gray-500 block mt-1">
+                            Waiting for current query to complete...
+                          </span>
+                        )}
                       </td>
 
                       {/* Progress */}
@@ -815,16 +852,18 @@ export function CacheWarmingCard({
                           <div className="h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                             <div
                               className={`h-full rounded-full transition-all duration-300 ${
-                                job.status === 'failed'
+                                job.status === 'failed' || job.status === 'cancelled'
                                   ? 'bg-red-500'
                                   : job.status === 'completed'
                                   ? 'bg-green-500'
+                                  : isInTransition
+                                  ? 'bg-amber-500'
                                   : 'bg-primary'
                               }`}
                               style={{ width: `${progressPercent}%` }}
                             />
                           </div>
-                          {job.status === 'running' && queriesPerSecond && job.id === activeJobId && (
+                          {job.status === 'running' && !isInTransition && queriesPerSecond && job.id === activeJobId && (
                             <span className="text-xs text-gray-500 mt-0.5 block">
                               {queriesPerSecond} q/s
                               {estimatedTimeRemaining && ` - ${formatTimeRemaining(estimatedTimeRemaining)}`}
@@ -848,27 +887,27 @@ export function CacheWarmingCard({
                       {/* Actions */}
                       <td className="py-3 px-3 text-right">
                         <div className="flex justify-end gap-1">
-                          {/* Cancel button - only for running jobs */}
-                          {job.status === 'running' && (
+                          {/* Cancel button - only for running jobs, disabled if already cancelling */}
+                          {job.status === 'running' && !isPausing && (
                             <Button
                               variant="warning"
                               size="sm"
                               icon={StopCircle}
                               onClick={handleCancel}
-                              disabled={actionLoading === 'cancel'}
-                              title="Cancel"
+                              disabled={actionLoading === 'cancel' || isCancelling}
+                              title={isCancelling ? "Cancel in progress..." : "Cancel"}
                             />
                           )}
 
-                          {/* Pause button - only for running jobs */}
-                          {job.status === 'running' && (
+                          {/* Pause button - only for running jobs, disabled if already pausing/cancelling */}
+                          {job.status === 'running' && !isCancelling && (
                             <Button
                               variant="secondary"
                               size="sm"
                               icon={Pause}
                               onClick={() => handlePause(job.id)}
-                              disabled={isJobLoading}
-                              title="Pause"
+                              disabled={isJobLoading || isPausing}
+                              title={isPausing ? "Pause in progress..." : "Pause"}
                             />
                           )}
 

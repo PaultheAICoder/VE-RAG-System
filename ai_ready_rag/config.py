@@ -149,6 +149,7 @@ class Settings(BaseSettings):
     # Cache Warming - Retry settings
     warming_max_retries: int = 3
     warming_retry_delays: str = "5,30,120"  # Comma-separated seconds for exponential backoff
+    warming_cancel_timeout_seconds: int = 5  # Max wait after cancel before abandoning query
 
     # Cache Warming - SCTP settings (optional, disabled by default)
     sctp_enabled: bool = False
