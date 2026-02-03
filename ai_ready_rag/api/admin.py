@@ -1,6 +1,7 @@
 """Admin endpoints for system management."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -9,6 +10,7 @@ import subprocess
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 import httpx
@@ -2218,6 +2220,71 @@ class WarmingJobListResponse(BaseModel):
     total_count: int
 
 
+# =============================================================================
+# DB-based Warming Queue Response Models (Issue #121)
+# =============================================================================
+
+
+class WarmingQueueJobResponse(BaseModel):
+    """Response model for a DB-based warming queue job."""
+
+    id: str
+    file_path: str
+    source_type: str
+    original_filename: str | None = None
+    total_queries: int
+    processed_queries: int
+    failed_queries: int
+    status: str
+    is_paused: bool
+    is_cancel_requested: bool
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_by: str | None = None
+    error_message: str | None = None
+
+
+class WarmingQueueListResponse(BaseModel):
+    """Response model for list of warming queue jobs."""
+
+    jobs: list[WarmingQueueJobResponse]
+    total_count: int
+
+
+class ManualWarmingRequest(BaseModel):
+    """Request to add manual queries to warming queue."""
+
+    queries: list[str]
+
+
+class BulkDeleteRequest(BaseModel):
+    """Request to bulk delete warming jobs."""
+
+    job_ids: list[str]
+
+
+def _db_job_to_response(job: WarmingQueue) -> WarmingQueueJobResponse:
+    """Convert WarmingQueue DB model to response."""
+    return WarmingQueueJobResponse(
+        id=job.id,
+        file_path=job.file_path,
+        source_type=job.source_type,
+        original_filename=job.original_filename,
+        total_queries=job.total_queries,
+        processed_queries=job.processed_queries,
+        failed_queries=job.failed_queries,
+        status=job.status,
+        is_paused=job.is_paused,
+        is_cancel_requested=job.is_cancel_requested,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        created_by=job.created_by,
+        error_message=job.error_message,
+    )
+
+
 def _job_to_response(job) -> WarmingJobResponse:
     """Convert a WarmingJob to a WarmingJobResponse."""
     return WarmingJobResponse(
@@ -2625,12 +2692,575 @@ async def clear_cache(
 
 
 # =============================================================================
-# File-based Cache Warming Endpoints
+# DB-based Warming Queue Endpoints (Issue #121 - New URL Pattern)
+# =============================================================================
+
+
+def _ensure_warming_dir() -> Path:
+    """Ensure warming directory exists and return path."""
+    settings = get_settings()
+    warming_dir = Path(settings.warming_queue_dir)
+    warming_dir.mkdir(parents=True, exist_ok=True)
+    return warming_dir
+
+
+@router.get("/warming/queue", response_model=WarmingQueueListResponse)
+async def list_warming_queue(
+    status_filter: str | None = Query(None, alias="status", description="Filter by job status"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of jobs to return"),
+    offset: int = Query(0, ge=0, description="Number of jobs to skip"),
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """List all warming queue jobs from database.
+
+    Supports filtering by status and pagination.
+
+    Admin only.
+    """
+    query = db.query(WarmingQueue)
+
+    if status_filter:
+        query = query.filter(WarmingQueue.status == status_filter)
+
+    # Order by created_at descending (newest first)
+    query = query.order_by(WarmingQueue.created_at.desc())
+
+    total_count = query.count()
+    jobs = query.offset(offset).limit(limit).all()
+
+    return WarmingQueueListResponse(
+        jobs=[_db_job_to_response(j) for j in jobs],
+        total_count=total_count,
+    )
+
+
+@router.get("/warming/queue/completed", response_model=WarmingQueueListResponse)
+async def list_completed_warming_jobs(
+    date_filter: str | None = Query(
+        None, description="Filter by date (YYYY-MM-DD), defaults to today"
+    ),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of jobs to return"),
+    offset: int = Query(0, ge=0, description="Number of jobs to skip"),
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """List completed warming jobs from database.
+
+    Defaults to showing jobs completed today.
+
+    Admin only.
+    """
+    from datetime import date
+
+    query = db.query(WarmingQueue).filter(WarmingQueue.status == "completed")
+
+    # Apply date filter
+    if date_filter:
+        try:
+            filter_date = datetime.strptime(date_filter, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Use YYYY-MM-DD.",
+            ) from None
+    else:
+        filter_date = date.today()
+
+    # Filter by completed_at date
+    query = query.filter(
+        WarmingQueue.completed_at >= datetime.combine(filter_date, datetime.min.time()),
+        WarmingQueue.completed_at < datetime.combine(filter_date, datetime.max.time()),
+    )
+
+    # Order by completed_at descending (newest first)
+    query = query.order_by(WarmingQueue.completed_at.desc())
+
+    total_count = query.count()
+    jobs = query.offset(offset).limit(limit).all()
+
+    return WarmingQueueListResponse(
+        jobs=[_db_job_to_response(j) for j in jobs],
+        total_count=total_count,
+    )
+
+
+@router.post(
+    "/warming/queue/upload",
+    response_model=WarmingQueueJobResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_warming_file(
+    file: UploadFile,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Upload a file containing queries to the warming queue.
+
+    Saves the file to disk and creates a DB record. WarmingWorker will
+    automatically pick up the job.
+
+    Supports .txt and .csv files with one query per line.
+
+    Admin only.
+    """
+    # Validate file type
+    if not file.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No filename provided.",
+        )
+
+    ext = file.filename.lower().split(".")[-1]
+    if ext not in ("txt", "csv"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type: .{ext}. Only .txt and .csv files are supported.",
+        )
+
+    # Read and parse file
+    try:
+        content = await file.read()
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be UTF-8 encoded text.",
+        ) from None
+
+    # Parse questions (one per line, strip numbering)
+    queries = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if line and not line.startswith("#"):  # Skip empty lines and comments
+            cleaned = _strip_numbering(line)
+            if cleaned:
+                queries.append(cleaned)
+
+    if not queries:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid questions found in file.",
+        )
+
+    # Calculate checksum
+    file_content = "\n".join(queries)
+    checksum = hashlib.sha256(file_content.encode()).hexdigest()
+
+    # Save to disk
+    warming_dir = _ensure_warming_dir()
+    job_id = str(uuid.uuid4())
+    file_path = warming_dir / f"upload_{job_id}.txt"
+    file_path.write_text(file_content, encoding="utf-8")
+
+    # Create DB record
+    job = WarmingQueue(
+        id=job_id,
+        file_path=str(file_path),
+        file_checksum=checksum,
+        source_type="upload",
+        original_filename=file.filename,
+        total_queries=len(queries),
+        processed_queries=0,
+        failed_queries=0,
+        byte_offset=0,
+        status="pending",
+        is_paused=False,
+        is_cancel_requested=False,
+        created_at=datetime.now(UTC),
+        created_by=current_user.id,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    logger.info(
+        f"Admin {current_user.email} uploaded warming file: {len(queries)} queries, job_id={job_id}"
+    )
+
+    return _db_job_to_response(job)
+
+
+@router.post(
+    "/warming/queue/manual",
+    response_model=WarmingQueueJobResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_manual_warming_queries(
+    request: ManualWarmingRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Add manual queries to the warming queue.
+
+    Saves queries to a file and creates a DB record. WarmingWorker will
+    automatically pick up the job.
+
+    Admin only.
+    """
+    if not request.queries:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one query is required.",
+        )
+
+    # Clean and validate queries
+    queries = []
+    for q in request.queries:
+        cleaned = q.strip()
+        if cleaned and not cleaned.startswith("#"):
+            queries.append(cleaned)
+
+    if not queries:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid queries provided.",
+        )
+
+    # Calculate checksum
+    file_content = "\n".join(queries)
+    checksum = hashlib.sha256(file_content.encode()).hexdigest()
+
+    # Save to disk
+    warming_dir = _ensure_warming_dir()
+    job_id = str(uuid.uuid4())
+    file_path = warming_dir / f"manual_{job_id}.txt"
+    file_path.write_text(file_content, encoding="utf-8")
+
+    # Create DB record
+    job = WarmingQueue(
+        id=job_id,
+        file_path=str(file_path),
+        file_checksum=checksum,
+        source_type="manual",
+        original_filename=None,
+        total_queries=len(queries),
+        processed_queries=0,
+        failed_queries=0,
+        byte_offset=0,
+        status="pending",
+        is_paused=False,
+        is_cancel_requested=False,
+        created_at=datetime.now(UTC),
+        created_by=current_user.id,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    logger.info(
+        f"Admin {current_user.email} added manual warming queries: "
+        f"{len(queries)} queries, job_id={job_id}"
+    )
+
+    return _db_job_to_response(job)
+
+
+@router.get("/warming/queue/{job_id}", response_model=WarmingQueueJobResponse)
+async def get_warming_queue_job(
+    job_id: str,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get details of a specific warming queue job from database.
+
+    Admin only.
+    """
+    job = db.query(WarmingQueue).filter(WarmingQueue.id == job_id).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+
+    return _db_job_to_response(job)
+
+
+@router.delete("/warming/queue/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_warming_queue_job(
+    job_id: str,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete a warming queue job from database.
+
+    Also deletes the associated query file if it exists.
+    Cannot delete running jobs - cancel them first.
+
+    Admin only.
+    """
+    job = db.query(WarmingQueue).filter(WarmingQueue.id == job_id).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+
+    if job.status == "running":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete running job. Cancel it first.",
+        )
+
+    # Delete associated file if exists
+    if job.file_path:
+        file_path = Path(job.file_path)
+        if file_path.exists():
+            try:
+                file_path.unlink()
+            except OSError as e:
+                logger.warning(f"Could not delete warming file {file_path}: {e}")
+
+    db.delete(job)
+    db.commit()
+
+    logger.info(f"Admin {current_user.email} deleted warming job {job_id}")
+    return None
+
+
+@router.delete("/warming/queue/bulk", status_code=status.HTTP_200_OK)
+async def bulk_delete_warming_jobs(
+    request: BulkDeleteRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Bulk delete warming queue jobs from database.
+
+    Also deletes the associated query files if they exist.
+    Skips running jobs - cancel them first.
+
+    Admin only.
+    """
+    if not request.job_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one job_id is required.",
+        )
+
+    deleted_count = 0
+    skipped_count = 0
+    not_found_count = 0
+
+    for job_id in request.job_ids:
+        job = db.query(WarmingQueue).filter(WarmingQueue.id == job_id).first()
+        if not job:
+            not_found_count += 1
+            continue
+
+        if job.status == "running":
+            skipped_count += 1
+            continue
+
+        # Delete associated file if exists
+        if job.file_path:
+            file_path = Path(job.file_path)
+            if file_path.exists():
+                try:
+                    file_path.unlink()
+                except OSError as e:
+                    logger.warning(f"Could not delete warming file {file_path}: {e}")
+
+        db.delete(job)
+        deleted_count += 1
+
+    db.commit()
+
+    logger.info(
+        f"Admin {current_user.email} bulk deleted warming jobs: "
+        f"deleted={deleted_count}, skipped={skipped_count}, not_found={not_found_count}"
+    )
+
+    return {
+        "deleted_count": deleted_count,
+        "skipped_count": skipped_count,
+        "not_found_count": not_found_count,
+    }
+
+
+@router.get("/warming/current", response_model=WarmingQueueJobResponse | None)
+async def get_current_warming_job(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get the currently running warming job from database.
+
+    Returns null if no job is currently running.
+
+    Admin only.
+    """
+    job = db.query(WarmingQueue).filter(WarmingQueue.status == "running").first()
+    if not job:
+        return None
+
+    return _db_job_to_response(job)
+
+
+@router.post("/warming/current/pause", response_model=WarmingQueueJobResponse)
+async def pause_current_warming_job(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Pause the currently running warming job.
+
+    Sets is_paused=True. Worker will detect this flag and pause.
+
+    Admin only.
+    """
+    job = db.query(WarmingQueue).filter(WarmingQueue.status == "running").first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No running job to pause.",
+        )
+
+    job.is_paused = True
+    db.commit()
+    db.refresh(job)
+
+    logger.info(f"Admin {current_user.email} paused warming job {job.id}")
+    return _db_job_to_response(job)
+
+
+@router.post("/warming/current/resume", response_model=WarmingQueueJobResponse)
+async def resume_current_warming_job(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Resume a paused warming job.
+
+    Sets is_paused=False. Worker will detect this and continue processing.
+
+    Admin only.
+    """
+    # Find paused job (prioritize running+paused, then paused status)
+    job = (
+        db.query(WarmingQueue)
+        .filter(WarmingQueue.is_paused == True)  # noqa: E712
+        .filter(WarmingQueue.status.in_(["running", "paused"]))
+        .first()
+    )
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No paused job to resume.",
+        )
+
+    job.is_paused = False
+    # If status was explicitly paused, reset to pending for worker pickup
+    if job.status == "paused":
+        job.status = "pending"
+    db.commit()
+    db.refresh(job)
+
+    logger.info(f"Admin {current_user.email} resumed warming job {job.id}")
+    return _db_job_to_response(job)
+
+
+@router.post("/warming/current/cancel", status_code=status.HTTP_202_ACCEPTED)
+async def cancel_current_warming_job(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Request graceful cancellation of the currently running warming job.
+
+    Sets is_cancel_requested=True. Worker will detect this flag,
+    close the file handle gracefully, and update status to 'cancelled'.
+
+    Admin only.
+    """
+    job = db.query(WarmingQueue).filter(WarmingQueue.status.in_(["running", "paused"])).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No running or paused job to cancel.",
+        )
+
+    job.is_cancel_requested = True
+    db.commit()
+
+    logger.info(f"Admin {current_user.email} requested cancel for warming job {job.id}")
+    return {"job_id": job.id, "is_cancel_requested": True}
+
+
+@router.get("/warming/progress")
+async def stream_warming_progress_db(
+    job_id: str | None = Query(None, description="Job ID (defaults to current running job)"),
+    token: str | None = None,
+    last_event_id: str | None = Query(None, description="Resume from event ID for replay"),
+    current_user: User | None = Depends(get_optional_current_user),
+    db: Session = Depends(get_db),
+):
+    """Stream warming progress via Server-Sent Events (SSE).
+
+    If job_id is not provided, streams progress for the currently running job.
+
+    Supports reconnection and replay via last_event_id parameter.
+
+    Admin only. Accepts token via query param for EventSource compatibility.
+    """
+    from ai_ready_rag.core.dependencies import ROLE_SYSTEM_ADMIN, normalize_role
+    from ai_ready_rag.core.security import decode_token
+
+    user = current_user
+    if not user and token:
+        try:
+            payload = decode_token(token)
+            user_id = payload.get("sub")
+            if user_id:
+                user = db.query(User).filter(User.id == user_id).first()
+        except Exception:
+            pass
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    if normalize_role(user.role) != ROLE_SYSTEM_ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="System admin required")
+
+    # Get job_id from query or find current running job
+    target_job_id = job_id
+    if not target_job_id:
+        running_job = db.query(WarmingQueue).filter(WarmingQueue.status == "running").first()
+        if running_job:
+            target_job_id = running_job.id
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No running job found. Provide job_id parameter.",
+            )
+
+    # Verify job exists
+    job = db.query(WarmingQueue).filter(WarmingQueue.id == target_job_id).first()
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {target_job_id} not found.",
+        )
+
+    # Reuse existing SSE generator (it reads from file-based queue service
+    # but we can still use it for progress - alternatively, we'd create
+    # a DB-based generator)
+    return StreamingResponse(
+        _sse_event_generator(target_job_id, last_event_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# =============================================================================
+# File-based Cache Warming Endpoints (DEPRECATED - use /warming/* endpoints)
 # =============================================================================
 
 
 @router.post(
-    "/cache/warm-file", response_model=WarmFileResponse, status_code=status.HTTP_202_ACCEPTED
+    "/cache/warm-file",
+    response_model=WarmFileResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    deprecated=True,
 )
 async def warm_cache_from_file(
     file: UploadFile,
@@ -2639,6 +3269,8 @@ async def warm_cache_from_file(
 ):
     """Upload a file containing queries to warm the cache.
 
+    DEPRECATED: Use POST /api/admin/warming/queue/upload instead.
+
     Supports .txt and .csv files with one query per line.
     Numbered queries (e.g., "1. Question") are automatically cleaned.
 
@@ -2646,6 +3278,10 @@ async def warm_cache_from_file(
 
     Admin only.
     """
+    logger.warning(
+        f"DEPRECATED: /cache/warm-file called by {current_user.email}. "
+        "Use /warming/queue/upload instead."
+    )
     # Validate file type
     if not file.filename:
         raise HTTPException(
@@ -2860,7 +3496,7 @@ async def get_warming_status(
     }
 
 
-@router.get("/cache/warm-jobs", response_model=WarmingJobListResponse)
+@router.get("/cache/warm-jobs", response_model=WarmingJobListResponse, deprecated=True)
 async def list_warming_jobs(
     status_filter: str | None = Query(None, alias="status", description="Filter by job status"),
     limit: int = Query(50, ge=1, le=200, description="Maximum number of jobs to return"),
@@ -2869,10 +3505,15 @@ async def list_warming_jobs(
 ):
     """List all warming jobs with optional filtering.
 
+    DEPRECATED: Use GET /api/admin/warming/queue instead.
+
     Supports filtering by status and pagination.
 
     Admin only.
     """
+    logger.warning(
+        f"DEPRECATED: /cache/warm-jobs called by {current_user.email}. Use /warming/queue instead."
+    )
     queue_service = get_warming_queue()
     all_jobs = queue_service.list_all_jobs()
 
@@ -2891,16 +3532,22 @@ async def list_warming_jobs(
     )
 
 
-@router.get("/cache/warm-jobs/active", response_model=WarmingJobResponse | None)
+@router.get("/cache/warm-jobs/active", response_model=WarmingJobResponse | None, deprecated=True)
 async def get_active_warming_job(
     current_user: User = Depends(require_system_admin),
 ):
     """Get the currently running warming job, if any.
 
+    DEPRECATED: Use GET /api/admin/warming/current instead.
+
     Returns null if no job is currently running.
 
     Admin only.
     """
+    logger.warning(
+        f"DEPRECATED: /cache/warm-jobs/active called by {current_user.email}. "
+        "Use /warming/current instead."
+    )
     queue_service = get_warming_queue()
     all_jobs = queue_service.list_all_jobs()
 
@@ -2912,15 +3559,21 @@ async def get_active_warming_job(
     return None
 
 
-@router.get("/cache/warm-jobs/{job_id}", response_model=WarmingJobResponse)
+@router.get("/cache/warm-jobs/{job_id}", response_model=WarmingJobResponse, deprecated=True)
 async def get_warming_job(
     job_id: str,
     current_user: User = Depends(require_system_admin),
 ):
     """Get details of a specific warming job.
 
+    DEPRECATED: Use GET /api/admin/warming/queue/{id} instead.
+
     Admin only.
     """
+    logger.warning(
+        f"DEPRECATED: /cache/warm-jobs/{job_id} called by {current_user.email}. "
+        "Use /warming/queue/{id} instead."
+    )
     queue_service = get_warming_queue()
     job = queue_service.get_job(job_id)
     if not job:
@@ -2932,17 +3585,23 @@ async def get_warming_job(
     return _job_to_response(job)
 
 
-@router.post("/cache/warm-jobs/{job_id}/pause", response_model=WarmingJobResponse)
+@router.post("/cache/warm-jobs/{job_id}/pause", response_model=WarmingJobResponse, deprecated=True)
 async def pause_warming_job(
     job_id: str,
     current_user: User = Depends(require_system_admin),
 ):
     """Pause a running warming job.
 
+    DEPRECATED: Use POST /api/admin/warming/current/pause instead.
+
     Only running jobs can be paused.
 
     Admin only.
     """
+    logger.warning(
+        f"DEPRECATED: /cache/warm-jobs/{job_id}/pause called by {current_user.email}. "
+        "Use /warming/current/pause instead."
+    )
     queue_service = get_warming_queue()
 
     # Check if job exists
@@ -2971,7 +3630,7 @@ async def pause_warming_job(
     return _job_to_response(paused_job)
 
 
-@router.post("/cache/warm-jobs/{job_id}/resume", response_model=WarmingJobResponse)
+@router.post("/cache/warm-jobs/{job_id}/resume", response_model=WarmingJobResponse, deprecated=True)
 async def resume_warming_job(
     job_id: str,
     background_tasks: BackgroundTasks,
@@ -2979,10 +3638,16 @@ async def resume_warming_job(
 ):
     """Resume a paused warming job.
 
+    DEPRECATED: Use POST /api/admin/warming/current/resume instead.
+
     Only paused jobs can be resumed. This will restart the background processing.
 
     Admin only.
     """
+    logger.warning(
+        f"DEPRECATED: /cache/warm-jobs/{job_id}/resume called by {current_user.email}. "
+        "Use /warming/current/resume instead."
+    )
     queue_service = get_warming_queue()
 
     # Check if job exists
@@ -3023,13 +3688,17 @@ async def resume_warming_job(
     return _job_to_response(resumed_job)
 
 
-@router.post("/cache/warm-jobs/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/cache/warm-jobs/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED, deprecated=True
+)
 async def cancel_warming_job(
     job_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_system_admin),
 ):
     """Request graceful cancellation of a warming job.
+
+    DEPRECATED: Use POST /api/admin/warming/current/cancel instead.
 
     Sets is_cancel_requested=TRUE. The worker will detect this flag,
     close the file handle gracefully, update status to 'cancelled',
@@ -3039,6 +3708,10 @@ async def cancel_warming_job(
 
     Admin only.
     """
+    logger.warning(
+        f"DEPRECATED: /cache/warm-jobs/{job_id}/cancel called by {current_user.email}. "
+        "Use /warming/current/cancel instead."
+    )
     # Query job from database
     job = db.query(WarmingQueue).filter(WarmingQueue.id == job_id).first()
     if not job:
@@ -3062,17 +3735,23 @@ async def cancel_warming_job(
     return {"job_id": job_id, "is_cancel_requested": True}
 
 
-@router.delete("/cache/warm-jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/cache/warm-jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT, deprecated=True)
 async def delete_warming_job(
     job_id: str,
     current_user: User = Depends(require_system_admin),
 ):
     """Delete/cancel a warming job.
 
+    DEPRECATED: Use DELETE /api/admin/warming/queue/{id} instead.
+
     Can delete jobs in any status.
 
     Admin only.
     """
+    logger.warning(
+        f"DEPRECATED: /cache/warm-jobs/{job_id} DELETE called by {current_user.email}. "
+        "Use DELETE /warming/queue/{id} instead."
+    )
     queue_service = get_warming_queue()
 
     # Check if job exists
