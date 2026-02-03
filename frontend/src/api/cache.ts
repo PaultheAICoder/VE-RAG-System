@@ -6,7 +6,6 @@ import type {
   HitRateTrendPoint,
   TopCachedQuery,
   ClearCacheResponse,
-  WarmCacheResponse,
   WarmFileResponse,
   WarmingJob,
   WarmingJobListResponse,
@@ -66,10 +65,11 @@ export async function getHitRateTrend(days?: number): Promise<{ trend: HitRateTr
 
 /**
  * Warm cache with queries (system admin only).
+ * Uses the DB-based warming queue for reliable processing.
  * @param queries - Array of queries to pre-cache
  */
-export async function warmCache(queries: string[]): Promise<WarmCacheResponse> {
-  return apiClient.post<WarmCacheResponse>('/api/admin/cache/warm', { queries });
+export async function warmCache(queries: string[]): Promise<WarmFileResponse> {
+  return apiClient.post<WarmFileResponse>('/api/admin/warming/queue/manual', { queries });
 }
 
 /**
