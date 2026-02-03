@@ -152,9 +152,9 @@ async def lifespan(app: FastAPI):
         archive_completed=settings.warming_archive_completed,
     )
 
-    # Cleanup old failed jobs (>7 days)
+    # Cleanup old failed jobs (per retention setting)
     deleted_count = warming_service.cleanup_old_failed_jobs(
-        retention_days=settings.warming_failed_job_retention_days
+        retention_days=settings.warming_failed_retention_days
     )
     if deleted_count:
         logger.info(f"Cleaned up {deleted_count} old failed warming jobs")
