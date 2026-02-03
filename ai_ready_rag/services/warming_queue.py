@@ -36,7 +36,8 @@ class InvalidStateTransition(Exception):
 # Valid state transitions
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "pending": {"running"},
-    "running": {"completed", "failed", "pending"},  # pending = lock expired
+    "running": {"completed", "failed", "pending", "paused"},  # pending = lock expired
+    "paused": {"running"},  # Resume from paused
     "completed": set(),  # Terminal state
     "failed": set(),  # Terminal state
 }
@@ -269,7 +270,7 @@ class WarmingQueueService:
                     raise ValueError(f"Missing required field: {field_name}")
 
             # Validate status
-            if data["status"] not in ("pending", "running", "completed", "failed"):
+            if data["status"] not in ("pending", "running", "completed", "failed", "paused"):
                 raise ValueError(f"Invalid status: {data['status']}")
 
             return WarmingJob.from_dict(data)
@@ -515,3 +516,70 @@ class WarmingQueueService:
         self._atomic_write(job)
 
         logger.error(f"Warming job {job.id} failed: {error}")
+
+    def pause_job(self, job_id: str) -> WarmingJob | None:
+        """Pause a running job.
+
+        Args:
+            job_id: ID of job to pause
+
+        Returns:
+            The paused job, or None if job not found or not running
+        """
+        job_path = self.job_path(job_id)
+
+        with job_lock(job_path) as acquired:
+            if not acquired:
+                return None
+
+            job = self.get_job(job_id)
+            if job is None:
+                return None
+
+            # Can only pause running jobs
+            if job.status != "running":
+                return None
+
+            # Transition to paused
+            self._validate_state_transition(job.status, "paused")
+            job.status = "paused"
+            job.locked_by = None
+            job.locked_at = None
+            self._atomic_write(job)
+
+            logger.info(f"Paused warming job {job_id}")
+            return job
+
+    def resume_job(self, job_id: str, worker_id: str) -> WarmingJob | None:
+        """Resume a paused job.
+
+        Args:
+            job_id: ID of job to resume
+            worker_id: Unique identifier for the worker resuming the job
+
+        Returns:
+            The resumed job, or None if job not found or not paused
+        """
+        job_path = self.job_path(job_id)
+
+        with job_lock(job_path) as acquired:
+            if not acquired:
+                return None
+
+            job = self.get_job(job_id)
+            if job is None:
+                return None
+
+            # Can only resume paused jobs
+            if job.status != "paused":
+                return None
+
+            # Transition to running
+            self._validate_state_transition(job.status, "running")
+            job.status = "running"
+            job.locked_by = worker_id
+            job.locked_at = datetime.now(UTC)
+            self._atomic_write(job)
+
+            logger.info(f"Resumed warming job {job_id} by {worker_id}")
+            return job
