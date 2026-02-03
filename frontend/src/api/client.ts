@@ -28,7 +28,12 @@ class APIClient {
       const error = await response.json().catch(() => ({ detail: 'Request failed' }));
       throw new Error(error.detail || `HTTP ${response.status}`);
     }
-    return response.json();
+    // Handle empty responses (204 No Content or empty body)
+    const text = await response.text();
+    if (!text) {
+      return {} as T;
+    }
+    return JSON.parse(text);
   }
 
   async get<T>(endpoint: string): Promise<T> {

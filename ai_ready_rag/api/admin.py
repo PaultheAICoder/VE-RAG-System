@@ -3015,7 +3015,7 @@ async def delete_warming_queue_job(
     db.commit()
 
     logger.info(f"Admin {current_user.email} deleted warming job {job_id}")
-    return None
+    return {"success": True, "job_id": job_id}
 
 
 @router.delete("/warming/queue/bulk", status_code=status.HTTP_200_OK)
