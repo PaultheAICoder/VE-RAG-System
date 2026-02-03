@@ -36,6 +36,7 @@ RETRYABLE_EXCEPTIONS = (
     ConnectionTimeoutError,
     ServiceUnavailableError,
     RateLimitExceededError,
+    asyncio.TimeoutError,  # Added: Timeouts are retryable
 )
 
 
@@ -397,10 +398,12 @@ class WarmingWorker:
                 finally:
                     db.close()
 
-                # Warm the query
+                # Warm the query with cancel/pause support
                 print(f"[WARM] Processing query {line_number}: {query[:50]}...", flush=True)
                 start_time = asyncio.get_event_loop().time()
-                success, was_cached = await self._warm_query_with_retry(query, job.id, line_number)
+                success, was_cached = await self._warm_query_with_cancel_check(
+                    query, job.id, line_number
+                )
                 duration = asyncio.get_event_loop().time() - start_time
                 self._query_durations.append(duration)
 
@@ -510,6 +513,8 @@ class WarmingWorker:
     def _should_stop(self, db, job_id: str) -> tuple[bool, str | None]:
         """Check if job should stop due to pause/cancel flags.
 
+        Also validates this worker still owns the job lease.
+
         Args:
             db: Database session.
             job_id: Job ID to check.
@@ -517,8 +522,19 @@ class WarmingWorker:
         Returns:
             Tuple of (should_stop, reason) where reason is 'paused', 'cancelled', or None.
         """
-        job = db.query(WarmingQueue).filter(WarmingQueue.id == job_id).first()
+        # Verify this worker still owns the job lease
+        job = (
+            db.query(WarmingQueue)
+            .filter(
+                WarmingQueue.id == job_id,
+                WarmingQueue.worker_id == self.worker_id,  # Verify ownership
+            )
+            .first()
+        )
+
         if not job:
+            # Job deleted or lease lost to another worker
+            logger.warning(f"[WARM] Job {job_id} lease lost or deleted")
             return True, "cancelled"
 
         if job.is_cancel_requested:
@@ -554,6 +570,140 @@ class WarmingWorker:
             finally:
                 check_db.close()
 
+    async def _interruptible_sleep(self, seconds: float, job_id: str) -> None:
+        """Sleep with periodic cancel checks (every 2 seconds).
+
+        Args:
+            seconds: Total time to sleep.
+            job_id: Job ID for cancel checks.
+
+        Raises:
+            WarmingCancelledException: If cancel requested during sleep.
+        """
+        check_interval = 2.0
+        remaining = seconds
+
+        while remaining > 0:
+            sleep_time = min(check_interval, remaining)
+            await asyncio.sleep(sleep_time)
+            remaining -= sleep_time
+
+            db = SessionLocal()
+            try:
+                should_stop, reason = self._should_stop(db, job_id)
+                if should_stop and reason == "cancelled":
+                    logger.info(f"[WARM] Cancel detected during retry sleep for job {job_id}")
+                    raise WarmingCancelledException()
+                # Note: Don't raise for pause - let main loop handle
+            finally:
+                db.close()
+
+    async def _warm_query_with_cancel_check(
+        self, query: str, job_id: str, line_number: int
+    ) -> tuple[bool, bool]:
+        """Wrap warm_query_with_retry with cancel timeout support.
+
+        Cancel: 5 second timeout, abandon current query
+        Pause: No timeout, wait for completion (graceful)
+
+        Args:
+            query: Query string to warm.
+            job_id: Job ID for tracking.
+            line_number: Line number in source file.
+
+        Returns:
+            Tuple of (success, was_cached):
+            - (True, True) = query warmed and cached
+            - (True, False) = query processed but not cached (low confidence)
+            - (False, False) = query failed
+
+        Raises:
+            WarmingCancelledException: If cancelled and timeout exceeded.
+        """
+        cancel_timeout = self.settings.warming_cancel_timeout_seconds
+        start_time = asyncio.get_event_loop().time()
+
+        # Start the warming task
+        task = asyncio.create_task(self._warm_query_with_retry(query, job_id, line_number))
+
+        try:
+            # Check for cancel flag periodically while task runs
+            while not task.done():
+                db = SessionLocal()
+                try:
+                    should_stop, reason = self._should_stop(db, job_id)
+                    if should_stop and reason == "cancelled":
+                        # Cancel requested - wait up to cancel_timeout then abandon
+                        cancel_requested_time = asyncio.get_event_loop().time()
+                        logger.info(
+                            f"[WARM] Cancel detected for query {line_number}, "
+                            f"waiting up to {cancel_timeout}s for completion"
+                        )
+                        try:
+                            result = await asyncio.wait_for(
+                                asyncio.shield(task),
+                                timeout=cancel_timeout,
+                            )
+                            # Query completed within timeout - record cancel latency
+                            cancel_latency = asyncio.get_event_loop().time() - cancel_requested_time
+                            duration = asyncio.get_event_loop().time() - start_time
+                            logger.info(
+                                f"[WARM] Query {line_number} completed despite cancel "
+                                f"(latency {cancel_latency:.2f}s, duration {duration:.2f}s)"
+                            )
+                            return result
+                        except TimeoutError:
+                            task.cancel()
+                            cancel_latency = asyncio.get_event_loop().time() - cancel_requested_time
+                            logger.info(
+                                f"[WARM] Query {line_number} abandoned after cancel timeout "
+                                f"({cancel_timeout}s, latency {cancel_latency:.2f}s)"
+                            )
+                            print(
+                                f"[WARM] Query {line_number} CANCELLED (timeout)",
+                                flush=True,
+                            )
+                            self._record_failed_query(
+                                job_id,
+                                query,
+                                line_number,
+                                "Cancelled by user",
+                                "CancelledError",
+                                0,
+                            )
+                            raise WarmingCancelledException() from None
+                    elif should_stop and reason == "paused":
+                        # Pause requested - wait for completion (graceful)
+                        logger.info(
+                            f"[WARM] Pause requested, waiting for query {line_number} to complete"
+                        )
+                        result = await task
+                        duration = asyncio.get_event_loop().time() - start_time
+                        logger.info(
+                            f"[WARM] Query {line_number} completed before pause in {duration:.2f}s"
+                        )
+                        return result
+                finally:
+                    db.close()
+
+                # Poll every 1 second
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+                    duration = asyncio.get_event_loop().time() - start_time
+                    logger.info(f"[WARM] Query {line_number} completed in {duration:.2f}s")
+                    return result
+                except TimeoutError:
+                    continue  # Task still running, check flags again
+
+            # Task completed normally
+            result = await task
+            duration = asyncio.get_event_loop().time() - start_time
+            logger.info(f"[WARM] Query {line_number} completed in {duration:.2f}s")
+            return result
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+
     async def _warm_query_with_retry(
         self, query: str, job_id: str, line_number: int
     ) -> tuple[bool, bool]:
@@ -583,7 +733,8 @@ class WarmingWorker:
                         f"[WARM] Retry {attempt + 1}/{max_retries} for query "
                         f"(line {line_number}): {e}, waiting {delay}s"
                     )
-                    await asyncio.sleep(delay)
+                    # Use interruptible sleep to allow cancel during retry delay
+                    await self._interruptible_sleep(delay, job_id)
                 else:
                     # Max retries exhausted
                     self._record_failed_query(

@@ -341,13 +341,14 @@ class TestPauseCancel:
 
         worker = WarmingWorker(mock_rag, mock_settings)
 
-        # Create paused job
+        # Create paused job (with worker_id set to match worker for lease validation)
         job = WarmingQueue(
             file_path="/tmp/test.txt",
             file_checksum="abc123",
             source_type="manual",
             total_queries=10,
             is_paused=True,
+            worker_id=worker.worker_id,  # Must match worker for lease validation
         )
         db.add(job)
         db.commit()
@@ -367,13 +368,14 @@ class TestPauseCancel:
 
         worker = WarmingWorker(mock_rag, mock_settings)
 
-        # Create cancelled job
+        # Create cancelled job (with worker_id set to match worker for lease validation)
         job = WarmingQueue(
             file_path="/tmp/test.txt",
             file_checksum="abc123",
             source_type="manual",
             total_queries=10,
             is_cancel_requested=True,
+            worker_id=worker.worker_id,  # Must match worker for lease validation
         )
         db.add(job)
         db.commit()
@@ -393,7 +395,7 @@ class TestPauseCancel:
 
         worker = WarmingWorker(mock_rag, mock_settings)
 
-        # Create normal job
+        # Create normal job (with worker_id set to match worker for lease validation)
         job = WarmingQueue(
             file_path="/tmp/test.txt",
             file_checksum="abc123",
@@ -401,6 +403,7 @@ class TestPauseCancel:
             total_queries=10,
             is_paused=False,
             is_cancel_requested=False,
+            worker_id=worker.worker_id,  # Must match worker for lease validation
         )
         db.add(job)
         db.commit()
@@ -409,3 +412,32 @@ class TestPauseCancel:
 
         assert should_stop is False
         assert reason is None
+
+    def test_returns_cancelled_when_lease_lost(self, db):
+        """Returns cancelled when job lease is owned by another worker."""
+        from ai_ready_rag.db.models import WarmingQueue
+
+        mock_rag = MagicMock()
+        mock_settings = MagicMock()
+        mock_settings.warming_retry_delays = "5,30,120"
+
+        worker = WarmingWorker(mock_rag, mock_settings)
+
+        # Create job owned by a different worker
+        job = WarmingQueue(
+            file_path="/tmp/test.txt",
+            file_checksum="abc123",
+            source_type="manual",
+            total_queries=10,
+            is_paused=False,
+            is_cancel_requested=False,
+            worker_id="other-worker-12345",  # Different worker
+        )
+        db.add(job)
+        db.commit()
+
+        should_stop, reason = worker._should_stop(db, job.id)
+
+        # Should return cancelled when lease is lost
+        assert should_stop is True
+        assert reason == "cancelled"

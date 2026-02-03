@@ -535,7 +535,7 @@ export interface WarmFileResponse {
 // Cache Warming Queue Types
 // =============================================================================
 
-export type WarmingJobStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed';
+export type WarmingJobStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
 export interface WarmingJob {
   id: string;
@@ -549,6 +549,9 @@ export interface WarmingJob {
   started_at: string | null;
   completed_at: string | null;
   triggered_by: string;
+  // Transitional state flags
+  is_cancel_requested?: boolean;
+  is_paused?: boolean;
 }
 
 export interface WarmingJobListResponse {

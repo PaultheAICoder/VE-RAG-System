@@ -3102,10 +3102,13 @@ async def pause_current_warming_job(
 ):
     """Pause the currently running warming job.
 
-    Sets is_paused=True. Worker will detect this flag and pause.
+    Sets is_paused=True. Worker will detect this flag and pause gracefully
+    after the current query completes.
 
     Admin only.
     """
+    from ai_ready_rag.services.sse_buffer_service import store_sse_event
+
     job = db.query(WarmingQueue).filter(WarmingQueue.status == "running").first()
     if not job:
         raise HTTPException(
@@ -3116,6 +3119,14 @@ async def pause_current_warming_job(
     job.is_paused = True
     db.commit()
     db.refresh(job)
+
+    # Emit SSE event for immediate UI update
+    store_sse_event(
+        db,
+        "pause_requested",
+        job.id,
+        {"job_id": job.id, "status": "pausing"},
+    )
 
     logger.info(f"Admin {current_user.email} paused warming job {job.id}")
     return _db_job_to_response(job)
@@ -3166,8 +3177,12 @@ async def cancel_current_warming_job(
     Sets is_cancel_requested=True. Worker will detect this flag,
     close the file handle gracefully, and update status to 'cancelled'.
 
+    Returns status "cancelling" to indicate transitional state.
+
     Admin only.
     """
+    from ai_ready_rag.services.sse_buffer_service import store_sse_event
+
     job = db.query(WarmingQueue).filter(WarmingQueue.status.in_(["running", "paused"])).first()
     if not job:
         raise HTTPException(
@@ -3178,8 +3193,16 @@ async def cancel_current_warming_job(
     job.is_cancel_requested = True
     db.commit()
 
+    # Emit SSE event for immediate UI update
+    store_sse_event(
+        db,
+        "cancel_requested",
+        job.id,
+        {"job_id": job.id, "status": "cancelling"},
+    )
+
     logger.info(f"Admin {current_user.email} requested cancel for warming job {job.id}")
-    return {"job_id": job.id, "is_cancel_requested": True}
+    return {"job_id": job.id, "is_cancel_requested": True, "status": "cancelling"}
 
 
 @router.get("/warming/progress")
