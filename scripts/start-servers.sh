@@ -1,9 +1,9 @@
 #!/bin/bash
 # Start VE-RAG-System servers
-# Usage: ./scripts/start-servers.sh [backend|frontend|all]
-#   backend  - Start only backend (port 8502)
-#   frontend - Start only frontend dev server (port 5173)
-#   all      - Start both (default)
+# Usage: ./scripts/start-servers.sh [backend|dev|all]
+#   backend  - Start only backend (port 8502), assumes frontend already built
+#   dev      - Start frontend dev server (port 5173) for local development
+#   all      - Build frontend + start backend (default, recommended for production)
 
 MODE="${1:-all}"
 
@@ -80,7 +80,15 @@ finally:
 PYTHON
 }
 
-start_frontend() {
+build_frontend() {
+    echo "=== Building frontend ==="
+    cd "$PROJECT_DIR/frontend"
+    npm run build
+    cd "$PROJECT_DIR"
+    echo "Frontend build complete"
+}
+
+start_dev_server() {
     echo "=== Starting frontend dev server (port 5173) ==="
     cd "$PROJECT_DIR/frontend"
     npm run dev &
@@ -100,18 +108,17 @@ case "$MODE" in
         init_database
         start_backend
         ;;
-    frontend)
-        start_frontend
+    dev)
+        start_dev_server
         wait
         ;;
     all)
         init_database
-        start_frontend
-        sleep 2  # Give frontend time to start
+        build_frontend
         start_backend
         ;;
     *)
-        echo "Usage: $0 [backend|frontend|all]"
+        echo "Usage: $0 [backend|dev|all]"
         exit 1
         ;;
 esac
