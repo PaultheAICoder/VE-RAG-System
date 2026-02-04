@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type KeyboardEvent, type ChangeEvent } from 'react';
-import { Send, Command } from 'lucide-react';
+import { Send } from 'lucide-react';
 import { Button } from '../../ui';
 
 interface ChatInputProps {
@@ -41,8 +41,9 @@ export function ChatInput({ onSend, disabled = false, maxLength = 4000 }: ChatIn
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Cmd/Ctrl + Enter to send
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    // Enter to send (without Shift)
+    // Shift+Enter for new line (default behavior)
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
@@ -101,9 +102,8 @@ export function ChatInput({ onSend, disabled = false, maxLength = 4000 }: ChatIn
       </div>
 
       {/* Keyboard shortcut hint */}
-      <div className="mt-2 flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500">
-        <Command size={12} />
-        <span>+ Enter to send</span>
+      <div className="mt-2 text-xs text-gray-400 dark:text-gray-500">
+        <span>⏎ Enter to send</span>
       </div>
     </div>
   );
