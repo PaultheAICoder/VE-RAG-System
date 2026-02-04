@@ -266,6 +266,19 @@ def invalidate_synonym_cache() -> None:
     logger.debug(f"Synonym cache invalidated (version: {_synonym_cache_version})")
 
 
+# Module-level cache for curated Q&A data
+_qa_cache: list | None = None
+_qa_cache_version: int = 0
+
+
+def invalidate_qa_cache() -> None:
+    """Invalidate curated Q&A cache (call on CRUD operations)."""
+    global _qa_cache, _qa_cache_version
+    _qa_cache = None
+    _qa_cache_version += 1
+    logger.debug(f"Q&A cache invalidated (version: {_qa_cache_version})")
+
+
 def tokenize_query(query: str) -> set[str]:
     """Extract normalized word tokens from query.
 
