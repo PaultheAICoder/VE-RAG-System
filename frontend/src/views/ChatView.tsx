@@ -9,6 +9,7 @@ import type {
   SendMessageResponse,
 } from '../types';
 import { useChatStore } from '../stores/chatStore';
+import { useAuthStore } from '../stores/authStore';
 import { SessionSidebar } from '../components/features/chat/SessionSidebar';
 import { MessageList } from '../components/features/chat/MessageList';
 import { ChatInput } from '../components/features/chat/ChatInput';
@@ -48,6 +49,10 @@ export function ChatView() {
 
   // Connection status (for future WebSocket, currently shows HTTP)
   const isConnected = true;
+
+  // Check if user is admin (for session deletion features)
+  const user = useAuthStore((state) => state.user);
+  const isAdmin = user?.role === 'admin' || user?.role === 'customer_admin';
 
   // Load sessions on mount and sync with backend
   useEffect(() => {
@@ -274,6 +279,7 @@ export function ChatView() {
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
         isLoading={isLoadingSessions}
+        isAdmin={isAdmin}
       />
 
       {/* Main chat area */}

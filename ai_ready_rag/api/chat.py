@@ -9,7 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
-from ai_ready_rag.core.dependencies import get_current_user
+from ai_ready_rag.core.dependencies import get_current_user, require_admin
 from ai_ready_rag.core.exceptions import (
     LLMConnectionError,
     LLMTimeoutError,
@@ -18,7 +18,7 @@ from ai_ready_rag.core.exceptions import (
     RAGServiceError,
 )
 from ai_ready_rag.db.database import get_db
-from ai_ready_rag.db.models import ChatMessage, ChatSession, Tag, User
+from ai_ready_rag.db.models import AuditLog, ChatMessage, ChatSession, Tag, User
 from ai_ready_rag.services.rag_service import (
     ChatMessage as RAGChatMessage,
 )
@@ -58,6 +58,12 @@ class MessageCreate(BaseModel):
 
     content: str = Field(..., min_length=1, max_length=4000)
     model: str | None = None  # Override model (must be in allowlist)
+
+
+class BulkDeleteRequest(BaseModel):
+    """Request body for bulk session deletion."""
+
+    session_ids: list[str] = Field(..., min_length=1, max_length=100)
 
 
 # =============================================================================
@@ -153,6 +159,23 @@ class MessageListResponse(BaseModel):
     messages: list[MessageResponse]
     has_more: bool
     total: int
+
+
+class DeleteSessionResponse(BaseModel):
+    """Response for single session deletion."""
+
+    success: bool
+    deleted_session_id: str
+    deleted_messages_count: int
+
+
+class BulkDeleteResponse(BaseModel):
+    """Response for bulk session deletion."""
+
+    success: bool
+    deleted_count: int
+    failed_ids: list[str]
+    total_messages_deleted: int
 
 
 # =============================================================================
@@ -333,6 +356,110 @@ async def update_session(
         updated_at=session.updated_at,
         is_archived=session.is_archived,
         message_count=message_count,
+    )
+
+
+@router.delete("/sessions/bulk", response_model=BulkDeleteResponse)
+async def bulk_delete_sessions(
+    request: BulkDeleteRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Bulk delete chat sessions permanently (admin only).
+
+    Maximum 100 sessions per request.
+    Returns list of failed IDs if any sessions not found.
+    """
+    deleted_count = 0
+    failed_ids = []
+    total_messages = 0
+
+    for session_id in request.session_ids:
+        session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+
+        if not session:
+            failed_ids.append(session_id)
+            continue
+
+        # Count messages
+        message_count = (
+            db.query(func.count(ChatMessage.id))
+            .filter(ChatMessage.session_id == session_id)
+            .scalar()
+        )
+        total_messages += message_count
+
+        db.delete(session)
+        deleted_count += 1
+
+    # Add single audit log for bulk operation
+    audit_log = AuditLog(
+        level="essential",
+        event_type="chat.session.bulk_deleted",
+        user_id=current_user.id,
+        user_email=current_user.email,
+        action="bulk_delete",
+        resource_type="chat_session",
+        resource_id=None,
+        success=True,
+        details=f"Bulk deleted {deleted_count} sessions with {total_messages} messages. Failed: {len(failed_ids)}",
+    )
+    db.add(audit_log)
+    db.commit()
+
+    return BulkDeleteResponse(
+        success=True,
+        deleted_count=deleted_count,
+        failed_ids=failed_ids,
+        total_messages_deleted=total_messages,
+    )
+
+
+@router.delete("/sessions/{session_id}", response_model=DeleteSessionResponse)
+async def delete_session(
+    session_id: str,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete a chat session permanently (admin only).
+
+    Cascade deletes all associated messages.
+    """
+    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
+
+    # Count messages before deletion
+    message_count = (
+        db.query(func.count(ChatMessage.id)).filter(ChatMessage.session_id == session_id).scalar()
+    )
+
+    # Delete session (cascade deletes messages)
+    db.delete(session)
+
+    # Add audit log
+    audit_log = AuditLog(
+        level="essential",
+        event_type="chat.session.deleted",
+        user_id=current_user.id,
+        user_email=current_user.email,
+        action="delete",
+        resource_type="chat_session",
+        resource_id=session_id,
+        success=True,
+        details=f"Deleted session with {message_count} messages",
+    )
+    db.add(audit_log)
+    db.commit()
+
+    return DeleteSessionResponse(
+        success=True,
+        deleted_session_id=session_id,
+        deleted_messages_count=message_count,
     )
 
 

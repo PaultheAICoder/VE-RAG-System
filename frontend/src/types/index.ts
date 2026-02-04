@@ -519,3 +519,20 @@ export interface WarmFileResponse {
   message: string;
   sse_url: string;
 }
+
+// =============================================================================
+// Chat Session Deletion Types
+// =============================================================================
+
+export interface DeleteSessionResponse {
+  success: boolean;
+  deleted_session_id: string;
+  deleted_messages_count: number;
+}
+
+export interface BulkDeleteSessionsResponse {
+  success: boolean;
+  deleted_count: number;
+  failed_ids: string[];
+  total_messages_deleted: number;
+}

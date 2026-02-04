@@ -489,3 +489,218 @@ class TestGetMessages:
             headers=user_headers,
         )
         assert response.status_code == 404
+
+
+# =============================================================================
+# Admin Deletion Tests
+# =============================================================================
+
+
+class TestDeleteSession:
+    """DELETE /api/chat/sessions/{session_id} tests."""
+
+    def test_delete_session_admin_success(self, client, admin_headers, test_session):
+        """Admin can delete a session."""
+        response = client.delete(
+            f"/api/chat/sessions/{test_session.id}",
+            headers=admin_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["deleted_session_id"] == test_session.id
+        assert data["deleted_messages_count"] == 0
+
+    def test_delete_session_customer_admin_success(
+        self, client, customer_admin_headers, test_session
+    ):
+        """Customer admin can delete a session."""
+        response = client.delete(
+            f"/api/chat/sessions/{test_session.id}",
+            headers=customer_admin_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+
+    def test_delete_session_regular_user_forbidden(self, client, user_headers, test_session):
+        """Regular user cannot delete sessions (403)."""
+        response = client.delete(
+            f"/api/chat/sessions/{test_session.id}",
+            headers=user_headers,
+        )
+        assert response.status_code == 403
+
+    def test_delete_session_unauthenticated(self, client, test_session):
+        """Unauthenticated request rejected (401)."""
+        response = client.delete(f"/api/chat/sessions/{test_session.id}")
+        assert response.status_code == 401
+
+    def test_delete_session_not_found(self, client, admin_headers):
+        """404 for non-existent session."""
+        response = client.delete(
+            "/api/chat/sessions/nonexistent-session-id",
+            headers=admin_headers,
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Session not found"
+
+    def test_delete_session_cascades_messages(
+        self, client, db, admin_headers, test_session_with_messages
+    ):
+        """Deleting session cascades to messages."""
+        session_id = test_session_with_messages.id
+
+        # Verify messages exist before deletion
+        message_count = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).count()
+        assert message_count == 25
+
+        response = client.delete(
+            f"/api/chat/sessions/{session_id}",
+            headers=admin_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["deleted_messages_count"] == 25
+
+        # Verify session and messages are deleted
+        db.expire_all()
+        assert db.query(ChatSession).filter(ChatSession.id == session_id).first() is None
+        assert db.query(ChatMessage).filter(ChatMessage.session_id == session_id).count() == 0
+
+
+class TestBulkDeleteSessions:
+    """DELETE /api/chat/sessions/bulk tests."""
+
+    def test_bulk_delete_admin_success(self, client, db, admin_headers, regular_user):
+        """Admin can bulk delete sessions."""
+        # Create multiple sessions
+        sessions = []
+        for i in range(3):
+            session = ChatSession(user_id=regular_user.id, title=f"Bulk Delete Test {i}")
+            db.add(session)
+            sessions.append(session)
+        db.flush()
+        session_ids = [s.id for s in sessions]
+
+        response = client.request(
+            "DELETE",
+            "/api/chat/sessions/bulk",
+            headers=admin_headers,
+            json={"session_ids": session_ids},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["deleted_count"] == 3
+        assert data["failed_ids"] == []
+        assert data["total_messages_deleted"] == 0
+
+    def test_bulk_delete_customer_admin_success(
+        self, client, db, customer_admin_headers, regular_user
+    ):
+        """Customer admin can bulk delete sessions."""
+        session = ChatSession(user_id=regular_user.id, title="Bulk Delete Test")
+        db.add(session)
+        db.flush()
+
+        response = client.request(
+            "DELETE",
+            "/api/chat/sessions/bulk",
+            headers=customer_admin_headers,
+            json={"session_ids": [session.id]},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["deleted_count"] == 1
+
+    def test_bulk_delete_regular_user_forbidden(self, client, user_headers, test_session):
+        """Regular user cannot bulk delete sessions (403)."""
+        response = client.request(
+            "DELETE",
+            "/api/chat/sessions/bulk",
+            headers=user_headers,
+            json={"session_ids": [test_session.id]},
+        )
+        assert response.status_code == 403
+
+    def test_bulk_delete_empty_list(self, client, admin_headers):
+        """400 for empty session_ids list."""
+        response = client.request(
+            "DELETE",
+            "/api/chat/sessions/bulk",
+            headers=admin_headers,
+            json={"session_ids": []},
+        )
+        assert response.status_code == 422  # Pydantic validation error
+
+    def test_bulk_delete_over_limit(self, client, admin_headers):
+        """400 for session_ids > 100."""
+        # Create list of 101 fake IDs
+        session_ids = [f"fake-session-{i}" for i in range(101)]
+        response = client.request(
+            "DELETE",
+            "/api/chat/sessions/bulk",
+            headers=admin_headers,
+            json={"session_ids": session_ids},
+        )
+        assert response.status_code == 422  # Pydantic validation error
+
+    def test_bulk_delete_partial_not_found(self, client, db, admin_headers, regular_user):
+        """Some IDs not found are reported in failed_ids."""
+        # Create one real session
+        session = ChatSession(user_id=regular_user.id, title="Real Session")
+        db.add(session)
+        db.flush()
+
+        response = client.request(
+            "DELETE",
+            "/api/chat/sessions/bulk",
+            headers=admin_headers,
+            json={"session_ids": [session.id, "nonexistent-1", "nonexistent-2"]},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["deleted_count"] == 1
+        assert sorted(data["failed_ids"]) == sorted(["nonexistent-1", "nonexistent-2"])
+
+    def test_bulk_delete_cascades_all_messages(self, client, db, admin_headers, regular_user):
+        """Bulk delete cascades all messages from all sessions."""
+        # Create sessions with messages
+        sessions = []
+        for i in range(2):
+            session = ChatSession(user_id=regular_user.id, title=f"Session {i}")
+            db.add(session)
+            db.flush()
+            sessions.append(session)
+
+            # Add 5 messages per session
+            for j in range(5):
+                msg = ChatMessage(
+                    session_id=session.id,
+                    role="user" if j % 2 == 0 else "assistant",
+                    content=f"Message {j}",
+                )
+                db.add(msg)
+
+        db.flush()
+        session_ids = [s.id for s in sessions]
+
+        response = client.request(
+            "DELETE",
+            "/api/chat/sessions/bulk",
+            headers=admin_headers,
+            json={"session_ids": session_ids},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["deleted_count"] == 2
+        assert data["total_messages_deleted"] == 10
+
+        # Verify all sessions and messages are deleted
+        db.expire_all()
+        for session_id in session_ids:
+            assert db.query(ChatSession).filter(ChatSession.id == session_id).first() is None
+            assert db.query(ChatMessage).filter(ChatMessage.session_id == session_id).count() == 0
