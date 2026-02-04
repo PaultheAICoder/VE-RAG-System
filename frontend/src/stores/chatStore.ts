@@ -26,6 +26,8 @@ interface ChatState {
   setActiveSession: (sessionId: string | null) => void;
   addSession: (session: ChatSession) => void;
   updateSession: (id: string, updates: Partial<ChatSession>) => void;
+  removeSession: (sessionId: string) => void;
+  removeSessions: (sessionIds: string[]) => void;
   moveSessionToTop: (sessionId: string) => void;
 
   // Message actions
@@ -88,6 +90,45 @@ export const useChatStore = create<ChatState>()(
             s.id === id ? { ...s, ...updates } : s
           ),
         })),
+
+      removeSession: (sessionId) =>
+        set((state) => {
+          const newSessions = state.sessions.filter((s) => s.id !== sessionId);
+          // If the deleted session was active, clear the active session
+          const newActiveId =
+            state.activeSessionId === sessionId
+              ? newSessions.length > 0
+                ? newSessions[0].id
+                : null
+              : state.activeSessionId;
+          return {
+            sessions: newSessions,
+            activeSessionId: newActiveId,
+            // Clear messages if the active session was deleted
+            ...(state.activeSessionId === sessionId
+              ? { messages: [], messagesError: null }
+              : {}),
+          };
+        }),
+
+      removeSessions: (sessionIds) =>
+        set((state) => {
+          const idsSet = new Set(sessionIds);
+          const newSessions = state.sessions.filter((s) => !idsSet.has(s.id));
+          // If the active session was deleted, select the first remaining session
+          const activeDeleted = state.activeSessionId && idsSet.has(state.activeSessionId);
+          const newActiveId = activeDeleted
+            ? newSessions.length > 0
+              ? newSessions[0].id
+              : null
+            : state.activeSessionId;
+          return {
+            sessions: newSessions,
+            activeSessionId: newActiveId,
+            // Clear messages if the active session was deleted
+            ...(activeDeleted ? { messages: [], messagesError: null } : {}),
+          };
+        }),
 
       moveSessionToTop: (sessionId) =>
         set((state) => {

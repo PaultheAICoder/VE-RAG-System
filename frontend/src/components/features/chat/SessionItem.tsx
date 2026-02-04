@@ -1,10 +1,21 @@
-import { MessageSquare } from 'lucide-react';
+import { MessageSquare, Trash2 } from 'lucide-react';
 import type { ChatSession } from '../../../types';
+import { Checkbox } from '../../ui';
 
 interface SessionItemProps {
   session: ChatSession;
   isActive: boolean;
   onClick: () => void;
+  /** Show delete button (admin only) */
+  showDelete?: boolean;
+  /** Callback when delete button is clicked */
+  onDelete?: (sessionId: string) => void;
+  /** Show selection checkbox (for bulk operations) */
+  showSelect?: boolean;
+  /** Whether this item is selected */
+  isSelected?: boolean;
+  /** Callback when selection changes */
+  onSelect?: (sessionId: string, selected: boolean) => void;
 }
 
 function formatRelativeDate(dateString: string): string {
@@ -23,15 +34,46 @@ function formatRelativeDate(dateString: string): string {
   });
 }
 
-export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
+export function SessionItem({
+  session,
+  isActive,
+  onClick,
+  showDelete = false,
+  onDelete,
+  showSelect = false,
+  isSelected = false,
+  onSelect,
+}: SessionItemProps) {
   const title = session.title || 'New Chat';
   const preview = session.last_message_preview || 'No messages yet';
 
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onDelete?.(session.id);
+  };
+
+  const handleSelectChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    e.stopPropagation();
+    onSelect?.(session.id, e.target.checked);
+  };
+
+  const handleCheckboxClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+  };
+
   return (
-    <button
+    <div
       onClick={onClick}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }}
       className={`
-        w-full text-left px-3 py-3 rounded-lg transition-colors
+        w-full text-left px-3 py-3 rounded-lg transition-colors cursor-pointer
         ${isActive
           ? 'bg-primary/10 border-l-4 border-primary'
           : 'hover:bg-gray-100 dark:hover:bg-gray-800 border-l-4 border-transparent'
@@ -39,6 +81,16 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
       `}
     >
       <div className="flex items-start gap-3">
+        {/* Selection checkbox */}
+        {showSelect && (
+          <div className="mt-0.5 flex-shrink-0" onClick={handleCheckboxClick}>
+            <Checkbox
+              checked={isSelected}
+              onChange={handleSelectChange}
+            />
+          </div>
+        )}
+
         <div
           className={`
             mt-0.5 w-6 h-6 rounded flex items-center justify-center flex-shrink-0
@@ -81,7 +133,18 @@ export function SessionItem({ session, isActive, onClick }: SessionItemProps) {
             )}
           </div>
         </div>
+
+        {/* Delete button */}
+        {showDelete && (
+          <button
+            onClick={handleDelete}
+            className="mt-0.5 p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors flex-shrink-0"
+            title="Delete session"
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
       </div>
-    </button>
+    </div>
   );
 }

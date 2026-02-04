@@ -165,12 +165,8 @@ class Settings(BaseSettings):
 
     # Cache Warming - Cleanup settings
     warming_completed_retention_days: int = 7
-    warming_failed_retention_days: int = 30  # Note: replaces existing 7-day default
+    warming_failed_retention_days: int = 30
     warming_cleanup_interval_hours: int = 6
-
-    # Cache Warming - SSE settings
-    sse_event_buffer_size: int = 1000  # Ring buffer size for replay
-    sse_heartbeat_seconds: int = 30
 
     # SSE settings
     sse_event_buffer_size: int = 1000  # Ring buffer size for replay
