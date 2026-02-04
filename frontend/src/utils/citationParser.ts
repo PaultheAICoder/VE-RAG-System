@@ -29,22 +29,13 @@ export interface ParsedContent {
  */
 export function parseCitations(
   content: string,
-  sources?: SourceInfo[]
+  _sources?: SourceInfo[]
 ): ParsedContent {
   const citationMap: CitationMap = {};
   let footnoteNum = 1;
 
-  // Build source lookup for validation (optional)
-  const sourceSet = new Set(sources?.map((s) => s.source_id) || []);
-
   // Replace [SourceId: uuid:index] with [N]
-  const text = content.replace(CITATION_PATTERN, (match, sourceId: string) => {
-    // Only number citations that exist in sources (if sources provided)
-    if (sources && sourceSet.size > 0 && !sourceSet.has(sourceId)) {
-      // Unknown citation - keep original for debugging
-      return match;
-    }
-
+  const text = content.replace(CITATION_PATTERN, (_match, sourceId: string) => {
     if (!citationMap[sourceId]) {
       citationMap[sourceId] = footnoteNum++;
     }
