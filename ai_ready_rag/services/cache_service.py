@@ -337,12 +337,21 @@ class CacheService:
             flush=True,
         )
         if row:
-            # Check TTL
-            age_hours = (datetime.utcnow() - row.created_at).total_seconds() / 3600
-            print(f"[CACHE] Entry age={age_hours:.1f}h, TTL={self.ttl_hours}h", flush=True)
-            if datetime.utcnow() - row.created_at > timedelta(hours=self.ttl_hours):
+            # Check TTL using last_accessed_at (sliding expiration)
+            # Fall back to created_at if never accessed
+            check_time = row.last_accessed_at or row.created_at
+            age_hours = (datetime.utcnow() - check_time).total_seconds() / 3600
+            print(
+                f"[CACHE] Entry age={age_hours:.1f}h since last access, TTL={self.ttl_hours}h",
+                flush=True,
+            )
+            if datetime.utcnow() - check_time > timedelta(hours=self.ttl_hours):
                 print("[CACHE] Entry EXPIRED", flush=True)
                 return None  # Expired
+            # Update last_accessed_at on hit
+            row.last_accessed_at = datetime.utcnow()
+            row.access_count = (row.access_count or 0) + 1
+            self.db.commit()
             return self._row_to_entry(row)
         return None
 
