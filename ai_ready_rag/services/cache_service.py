@@ -261,14 +261,21 @@ class CacheService:
         Returns None if cache miss or access denied.
         """
         if not self.enabled:
+            print("[CACHE] get() - cache disabled", flush=True)
             return None
 
         query_hash = self._hash_query(query)
+        print(f"[CACHE] get() query='{query[:50]}' hash={query_hash[:16]}...", flush=True)
+        print(f"[CACHE] get() user_tags={user_tags}", flush=True)
+        print(f"[CACHE] get() memory_size={len(self.memory)}", flush=True)
 
         # Layer 1: Try memory cache (exact hash match)
         entry = self.memory.get(query_hash)
         if entry:
-            if await self.verify_access(entry, user_tags):
+            print("[CACHE] Layer 1 HIT (memory exact)", flush=True)
+            access_ok = await self.verify_access(entry, user_tags)
+            print(f"[CACHE] verify_access={access_ok}", flush=True)
+            if access_ok:
                 self._log_access(query_hash, query, was_hit=True)
                 self._hit_count += 1
                 return entry
@@ -279,17 +286,31 @@ class CacheService:
 
         # Layer 2: Semantic similarity lookup (if embedding provided)
         if query_embedding is not None:
+            print(
+                f"[CACHE] Trying Layer 2 (semantic), threshold={self.semantic_threshold}",
+                flush=True,
+            )
             entry = self.memory.get_semantic(query_embedding, self.semantic_threshold)
-            if entry and await self.verify_access(entry, user_tags):
-                self._log_access(query_hash, query, was_hit=True)
-                self._hit_count += 1
-                return entry
+            if entry:
+                print("[CACHE] Layer 2 HIT (semantic)", flush=True)
+                access_ok = await self.verify_access(entry, user_tags)
+                print(f"[CACHE] verify_access={access_ok}", flush=True)
+                if access_ok:
+                    self._log_access(query_hash, query, was_hit=True)
+                    self._hit_count += 1
+                    return entry
+            else:
+                print("[CACHE] Layer 2 MISS (no semantic match)", flush=True)
             # Access denied or no match - continue to SQLite fallback
 
         # Try SQLite fallback (Layer 1 only - no semantic in SQLite for perf)
+        print("[CACHE] Trying Layer 3 (SQLite exact)", flush=True)
         entry = self._get_from_sqlite(query_hash)
         if entry:
-            if await self.verify_access(entry, user_tags):
+            print("[CACHE] Layer 3 HIT (SQLite exact)", flush=True)
+            access_ok = await self.verify_access(entry, user_tags)
+            print(f"[CACHE] verify_access={access_ok}", flush=True)
+            if access_ok:
                 self.memory.put(entry)  # Warm memory
                 self._log_access(query_hash, query, was_hit=True)
                 self._hit_count += 1
@@ -298,6 +319,7 @@ class CacheService:
             self._miss_count += 1
             return None
 
+        print("[CACHE] Layer 3 MISS (not in SQLite)", flush=True)
         self._log_access(query_hash, query, was_hit=False)
         self._miss_count += 1
         return None
