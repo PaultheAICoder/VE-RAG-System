@@ -32,6 +32,31 @@ CACHE_SETTINGS_DEFAULTS = {
 }
 
 
+def get_model_setting(key: str, default: Any = None) -> Any:
+    """Get a model setting from database with fallback to default.
+
+    This is a standalone function that creates its own db session,
+    suitable for use from services which may not have a session.
+
+    Args:
+        key: Setting key (e.g., 'embedding_model', 'chat_model')
+        default: Default value if not found in database
+
+    Returns:
+        Setting value from database, or default if not found
+    """
+    from ai_ready_rag.db.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        setting = db.query(AdminSetting).filter(AdminSetting.key == key).first()
+        if setting is not None:
+            return json.loads(setting.value)
+        return default
+    finally:
+        db.close()
+
+
 def get_cache_setting(key: str, default: Any = None) -> Any:
     """Get a cache setting from database with fallback to default.
 

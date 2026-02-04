@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ai_ready_rag.config import Settings
+from ai_ready_rag.services.settings_service import get_model_setting
 
 if TYPE_CHECKING:
     from ai_ready_rag.services.processing_service import ProcessingOptions
@@ -35,6 +36,10 @@ def get_vector_service(settings: Settings) -> VectorServiceProtocol:
     if not backend:
         raise ValueError("vector_backend not configured in settings")
 
+    # Get embedding model from database first, fall back to config
+    embedding_model = get_model_setting("embedding_model", settings.embedding_model)
+    logger.info(f"Using embedding model: {embedding_model}")
+
     if backend == "qdrant":
         from ai_ready_rag.services.vector_service import VectorService
 
@@ -43,7 +48,7 @@ def get_vector_service(settings: Settings) -> VectorServiceProtocol:
             qdrant_url=settings.qdrant_url,
             ollama_url=settings.ollama_base_url,
             collection_name=settings.qdrant_collection,
-            embedding_model=settings.embedding_model,
+            embedding_model=embedding_model,
             embedding_dimension=settings.embedding_dimension,
         )
     elif backend == "chroma":
@@ -53,7 +58,7 @@ def get_vector_service(settings: Settings) -> VectorServiceProtocol:
         return ChromaVectorService(
             persist_dir=settings.chroma_persist_dir,
             collection_name=settings.qdrant_collection,  # Reuse collection name setting
-            embedding_model=settings.embedding_model,
+            embedding_model=embedding_model,
             ollama_url=settings.ollama_base_url,
             embedding_dimension=settings.embedding_dimension,
         )

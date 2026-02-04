@@ -41,7 +41,7 @@ from ai_ready_rag.db.models import Document, User, WarmingQueue
 from ai_ready_rag.services.document_service import DocumentService
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.services.model_service import ModelService, OllamaUnavailableError
-from ai_ready_rag.services.settings_service import SettingsService
+from ai_ready_rag.services.settings_service import SettingsService, get_model_setting
 from ai_ready_rag.services.warming_queue import WarmingQueueService
 
 logger = logging.getLogger(__name__)
@@ -643,13 +643,13 @@ async def get_architecture_info(
     response = ArchitectureInfoResponse(
         document_parsing=doc_parsing_info,
         embeddings=EmbeddingsInfo(
-            model=settings.embedding_model,
+            model=get_model_setting("embedding_model", settings.embedding_model),
             dimensions=settings.embedding_dimension,
             vector_store=settings.vector_backend,
             vector_store_url=settings.qdrant_url,
         ),
         chat_model=ChatModelInfo(
-            name=settings.chat_model,
+            name=get_model_setting("chat_model", settings.chat_model),
             provider="Ollama",
             capabilities=[
                 "Text generation",
@@ -1181,7 +1181,7 @@ async def get_detailed_health(
             status="healthy" if ollama_healthy else "unhealthy",
             version=ollama_version,
             details={
-                "model": settings.chat_model,
+                "model": get_model_setting("chat_model", settings.chat_model),
                 "url": settings.ollama_base_url,
             },
         ),
@@ -1195,8 +1195,8 @@ async def get_detailed_health(
             },
         ),
         rag_pipeline=RAGPipelineStatus(
-            embedding_model=settings.embedding_model,
-            chat_model=settings.chat_model,
+            embedding_model=get_model_setting("embedding_model", settings.embedding_model),
+            chat_model=get_model_setting("chat_model", settings.chat_model),
             chunker=settings.chunker_backend,
             stages=["query", "embed", "search", "rerank", "context", "llm", "response"],
             all_stages_healthy=ollama_healthy and vector_healthy,
@@ -4024,7 +4024,7 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
             qdrant_url=settings.qdrant_url,
             ollama_url=settings.ollama_base_url,
             collection_name=settings.qdrant_collection,
-            embedding_model=settings.embedding_model,
+            embedding_model=get_model_setting("embedding_model", settings.embedding_model),
             embedding_dimension=settings.embedding_dimension,
             max_tokens=settings.embedding_max_tokens,
             tenant_id=settings.default_tenant_id,
