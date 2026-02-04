@@ -152,3 +152,55 @@ class ReindexPausedError(ReindexError):
         self.document_id = document_id
         self.error = error
         super().__init__(f"Reindex paused on document {document_id}: {error}")
+
+
+# -----------------------------------------------------------------------------
+# Cache Warming Exceptions
+# -----------------------------------------------------------------------------
+
+
+class WarmingError(Exception):
+    """Base exception for cache warming errors."""
+
+    pass
+
+
+class ConnectionTimeoutError(WarmingError):
+    """Connection to service timed out (retryable).
+
+    Causes:
+        - Ollama or Qdrant not responding
+        - Network latency spike
+    """
+
+    pass
+
+
+class ServiceUnavailableError(WarmingError):
+    """Service temporarily unavailable (retryable).
+
+    Causes:
+        - Ollama restarting
+        - Qdrant under load
+    """
+
+    pass
+
+
+class RateLimitExceededError(WarmingError):
+    """Rate limit exceeded (retryable with backoff).
+
+    Causes:
+        - Too many concurrent requests
+    """
+
+    pass
+
+
+class WarmingCancelledException(WarmingError):
+    """Job was cancelled by user (non-retryable).
+
+    Raised to break out of processing loop cleanly.
+    """
+
+    pass

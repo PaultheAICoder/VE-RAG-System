@@ -1,9 +1,16 @@
 #!/bin/bash
-# Start AI Ready RAG - works on both laptop and Spark
+# Start VE-RAG-System servers
+# Usage: ./scripts/start-servers.sh [backend|dev|all]
+#   backend  - Start only backend (port 8502), assumes frontend already built
+#   dev      - Start frontend dev server (port 5173) for local development
+#   all      - Build frontend + start backend (default, recommended for production)
 
-# Change to script directory (works regardless of where script is located)
+MODE="${1:-all}"
+
+# Change to project root directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
 
 # Activate virtual environment
 source .venv/bin/activate
@@ -15,12 +22,14 @@ else
     echo "Warning: No .env file found. Using defaults."
 fi
 
-echo "=== AI Ready RAG Startup ==="
-echo "Directory: $SCRIPT_DIR"
-echo "Profile:   ${ENV_PROFILE:-not set}"
+echo "=== VE-RAG-System Startup ==="
+echo "Directory: $PROJECT_DIR"
+echo "Mode:      $MODE"
 
-# Check/create admin user and tags via Python (more reliable than API)
-python << "PYTHON"
+# Initialize database and create admin/tags
+init_database() {
+    echo "=== Initializing database ==="
+    python << "PYTHON"
 import os
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import User, Tag
@@ -69,6 +78,47 @@ try:
 finally:
     db.close()
 PYTHON
+}
 
-echo "=== Starting server on port 8502 ==="
-exec python -m uvicorn ai_ready_rag.main:app --host 0.0.0.0 --port 8502
+build_frontend() {
+    echo "=== Building frontend ==="
+    cd "$PROJECT_DIR/frontend"
+    npm run build
+    cd "$PROJECT_DIR"
+    echo "Frontend build complete"
+}
+
+start_dev_server() {
+    echo "=== Starting frontend dev server (port 5173) ==="
+    cd "$PROJECT_DIR/frontend"
+    npm run dev &
+    FRONTEND_PID=$!
+    echo "Frontend PID: $FRONTEND_PID"
+    cd "$PROJECT_DIR"
+}
+
+start_backend() {
+    echo "=== Starting backend server (port 8502) ==="
+    exec python -m uvicorn ai_ready_rag.main:app --host 0.0.0.0 --port 8502
+}
+
+# Run based on mode
+case "$MODE" in
+    backend)
+        init_database
+        start_backend
+        ;;
+    dev)
+        start_dev_server
+        wait
+        ;;
+    all)
+        init_database
+        build_frontend
+        start_backend
+        ;;
+    *)
+        echo "Usage: $0 [backend|dev|all]"
+        exit 1
+        ;;
+esac

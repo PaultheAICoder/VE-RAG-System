@@ -17,11 +17,13 @@ from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import Settings
 from ai_ready_rag.core.exceptions import (
+    ConnectionTimeoutError,
     LLMConnectionError,
     LLMTimeoutError,
     ModelNotAllowedError,
     ModelUnavailableError,
     RAGServiceError,
+    ServiceUnavailableError,
     TokenBudgetExceededError,
 )
 from ai_ready_rag.services.cache_service import CacheEntry, CacheService
@@ -101,7 +103,7 @@ class RAGRequest:
     """Input for RAG generation."""
 
     query: str
-    user_tags: list[str]
+    user_tags: list[str] | None  # None = no tag filtering (system admin bypass)
     tenant_id: str = "default"
     chat_history: list[ChatMessage] | None = None
     model: str | None = None
@@ -514,6 +516,97 @@ class RAGService:
             self._cache_service = CacheService(db)
         return self._cache_service
 
+    async def warm_cache(self, query: str, user_tags: list[str] | None = None) -> bool:
+        """Execute RAG query to populate cache without user response.
+
+        This method is used by the WarmingWorker to pre-populate the cache
+        with responses for common queries.
+
+        Args:
+            query: The query to warm.
+            user_tags: Optional tags for access control (uses ["public"] if None).
+
+        Returns:
+            True if cache was populated (or already cached).
+
+        Raises:
+            ConnectionTimeoutError: Ollama/Qdrant timeout.
+            ServiceUnavailableError: Service unavailable.
+        """
+        from ai_ready_rag.db.database import SessionLocal
+
+        # Use hr tags if not specified (warming populates cache for common queries)
+        # TODO: Make this configurable - currently hardcoded to "hr" for testing
+        effective_tags = user_tags if user_tags is not None else ["hr"]
+
+        # Check if already cached
+        if self.cache and self.cache.enabled:
+            try:
+                print(f"[WARM] Checking cache for: {query[:50]}...", flush=True)
+                query_embedding = await self.cache.get_embedding(query)
+                cached = await self.cache.get(
+                    query=query,
+                    user_tags=effective_tags,
+                    query_embedding=query_embedding,
+                )
+                if cached:
+                    logger.debug(f"[WARM] Cache hit for query: {query[:50]}...")
+                    print("[WARM] Cache HIT - already cached", flush=True)
+                    return True
+                print("[WARM] Cache MISS - will generate", flush=True)
+            except Exception as e:
+                logger.warning(f"[WARM] Cache check failed: {e}")
+                print(f"[WARM] Cache check failed: {e}", flush=True)
+
+        # Generate response to populate cache
+        db = SessionLocal()
+        try:
+            request = RAGRequest(
+                query=query,
+                user_tags=effective_tags,
+                tenant_id="default",
+            )
+            print("[WARM] Calling RAG generate()...", flush=True)
+            response = await self.generate(request, db)
+            print(
+                f"[WARM] RAG response: confidence={response.confidence.overall}, "
+                f"citations={len(response.citations)}, grounded={response.grounded}",
+                flush=True,
+            )
+
+            # Check if response was actually cached (confidence >= min_confidence)
+            if self.cache and self.cache.enabled:
+                min_conf = self.cache.min_confidence
+                if response.confidence.overall < min_conf:
+                    logger.info(
+                        f"[WARM] Query skipped (confidence {response.confidence.overall} "
+                        f"< {min_conf}): {query[:50]}..."
+                    )
+                    print(
+                        f"[WARM] NOT CACHED: confidence {response.confidence.overall} "
+                        f"< min_confidence {min_conf}",
+                        flush=True,
+                    )
+                    return False  # Query processed but not cached
+
+            print("[WARM] Response will be cached", flush=True)
+            return True
+        except httpx.TimeoutException as e:
+            raise ConnectionTimeoutError(f"Timeout warming query: {e}") from e
+        except httpx.ConnectError as e:
+            raise ServiceUnavailableError(f"Service unavailable: {e}") from e
+        except Exception as e:
+            # Wrap connection-related errors
+            error_str = str(e).lower()
+            if "timeout" in error_str:
+                raise ConnectionTimeoutError(f"Timeout warming query: {e}") from e
+            if "connection" in error_str or "connect" in error_str:
+                raise ServiceUnavailableError(f"Service unavailable: {e}") from e
+            # Re-raise other errors
+            raise
+        finally:
+            db.close()
+
     def _cache_entry_to_response(self, entry: CacheEntry, elapsed_ms: float) -> RAGResponse:
         """Convert CacheEntry to RAGResponse.
 
@@ -615,7 +708,7 @@ class RAGService:
     async def get_quality_context(
         self,
         query: str,
-        user_tags: list[str],
+        user_tags: list[str] | None,
         tenant_id: str,
         max_chunks: int = 8,
     ) -> list[SearchResult]:
@@ -632,7 +725,8 @@ class RAGService:
 
         Args:
             query: User's question
-            user_tags: User's access tags
+            user_tags: User's access tags. None = no tag filtering
+                (system admin bypass), empty list = public only.
             tenant_id: Tenant identifier
             max_chunks: Maximum chunks to return
 
@@ -1182,8 +1276,9 @@ class RAGService:
         # 1.25 Check cache first (if enabled)
         if self.cache and self.cache.enabled:
             try:
-                # Get embedding for semantic cache lookup
-                query_embedding = await self.cache.get_embedding(request.query)
+                # Get or compute embedding for semantic cache lookup
+                # This enables semantic matching even for new query variations
+                query_embedding = await self._get_or_embed_query(request.query)
                 cached = await self.cache.get(
                     query=request.query,
                     user_tags=request.user_tags,
@@ -1348,7 +1443,7 @@ class RAGService:
                 await self.cache.put(request.query, query_embedding, response)
                 await self.cache.put_embedding(request.query, query_embedding)
             except Exception as e:
-                logger.warning(f"Failed to cache response: {e}")
+                logger.warning(f"[RAG] Failed to cache response: {e}")
 
         return response
 

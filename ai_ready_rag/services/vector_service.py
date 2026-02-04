@@ -530,7 +530,7 @@ class VectorService:
     async def search(
         self,
         query: str,
-        user_tags: list[str],
+        user_tags: list[str] | None,
         limit: int = 5,
         score_threshold: float = 0.0,
         tenant_id: str | None = None,
@@ -539,7 +539,8 @@ class VectorService:
 
         Args:
             query: Natural language query.
-            user_tags: Tags the user has access to (empty = public only).
+            user_tags: Tags the user has access to. None = no tag filtering
+                (system admin bypass), empty list = public only.
             limit: Maximum results to return (1-100, default: 5).
             score_threshold: Minimum similarity score (0.0-1.0, default: 0.0).
             tenant_id: Tenant to search within (defaults to service's tenant_id).
@@ -552,7 +553,9 @@ class VectorService:
 
         Note:
             Access control filter is applied BEFORE vector search (pre-retrieval).
-            Empty user_tags returns only documents with "public" tag.
+            - user_tags=None: No tag filtering (system admin cache warming)
+            - user_tags=[]: Only documents with "public" tag
+            - user_tags=["hr"]: Public + hr documents
         """
         tenant = tenant_id or self.tenant_id
 
@@ -563,7 +566,18 @@ class VectorService:
             raise SearchError(f"Failed to embed query: {e}") from e
 
         # Build access control filter
-        access_filter = self._build_access_filter(user_tags, tenant)
+        if user_tags is None:
+            # System admin: no tag filtering, tenant only
+            access_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="tenant_id",
+                        match=models.MatchValue(value=tenant),
+                    ),
+                ],
+            )
+        else:
+            access_filter = self._build_access_filter(user_tags, tenant)
 
         # Search Qdrant using query_points (newer API)
         try:

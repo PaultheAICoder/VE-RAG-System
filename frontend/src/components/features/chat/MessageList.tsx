@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { MessageSquare } from 'lucide-react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { MessageSquare, ArrowDown } from 'lucide-react';
 import type { ChatMessage } from '../../../types';
 import { MessageBubble } from './MessageBubble';
 
@@ -12,13 +12,29 @@ interface MessageListProps {
 export function MessageList({ messages, isLoading = false, typingMessage }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
-  // Auto-scroll to bottom when new messages arrive
+  const checkIfAtBottom = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return true;
+    const threshold = 100; // pixels from bottom
+    return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    setIsAtBottom(checkIfAtBottom());
+  }, [checkIfAtBottom]);
+
+  const scrollToBottom = useCallback(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  // Auto-scroll to bottom when new messages arrive (only if already at bottom)
   useEffect(() => {
-    if (bottomRef.current) {
+    if (isAtBottom && bottomRef.current) {
       bottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, typingMessage]);
+  }, [messages, typingMessage, isAtBottom]);
 
   // Empty state
   if (messages.length === 0 && !typingMessage && !isLoading) {
@@ -34,7 +50,8 @@ export function MessageList({ messages, isLoading = false, typingMessage }: Mess
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto px-4 py-6 space-y-6"
+      onScroll={handleScroll}
+      className="h-[500px] max-h-[60vh] relative overflow-y-auto px-4 py-6 space-y-6"
     >
       {/* Loading skeleton for initial load */}
       {isLoading && messages.length === 0 && (
@@ -63,6 +80,17 @@ export function MessageList({ messages, isLoading = false, typingMessage }: Mess
 
       {/* Scroll anchor */}
       <div ref={bottomRef} />
+
+      {/* Scroll to bottom button */}
+      {!isAtBottom && (
+        <button
+          onClick={scrollToBottom}
+          className="absolute bottom-4 right-4 p-2 rounded-full bg-primary text-white shadow-lg hover:bg-primary-dark transition-all opacity-90 hover:opacity-100"
+          aria-label="Scroll to bottom"
+        >
+          <ArrowDown size={20} />
+        </button>
+      )}
     </div>
   );
 }

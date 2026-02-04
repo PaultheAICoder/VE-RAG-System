@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI Ready RAG is an enterprise RAG (Retrieval-Augmented Generation) system for NVIDIA DGX Spark. It processes documents using Docling, stores vectors in ChromaDB (migrating to Qdrant), and uses Ollama for LLM inference. All components run locally for air-gap deployment.
 
-**Current Status:** v0.4.1 - Transitioning from Gradio standalone to FastAPI + Gradio backend architecture (target: Feb 13, 2026).
+**Current Status:** v0.4.1 - FastAPI backend with React frontend. Gradio UI is deprecated.
 
 ## Development Environment
 
@@ -45,8 +45,8 @@ pytest tests/ -v
 ruff check ai_ready_rag tests
 ruff format ai_ready_rag tests
 
-# Legacy Gradio app (old monolithic)
-python app.py
+# Legacy Gradio app (DEPRECATED - do not use)
+# python app.py
 ```
 
 **Environment Variables** (defaults work for local development):
@@ -57,22 +57,20 @@ python app.py
 
 ## Architecture
 
-### Current State (v0.4.1)
-Single monolithic `app.py` with Gradio UI on port 8501. Direct integration with Docling, ChromaDB, and Ollama.
-
-### Planned Architecture (see DEVELOPMENT_PLANS.md)
-FastAPI backend with Gradio mounted as sub-app:
+### Current Architecture
+FastAPI backend with React frontend:
 ```
-FastAPI (:8000)
-├── /api/auth/*      - JWT authentication
-├── /api/chat/*      - Chat sessions & messages
-├── /api/documents/* - Upload, list, delete, tag
-├── /api/tags/*      - Tag CRUD
-├── /api/users/*     - User management (admin)
-├── /api/admin/*     - System settings, audit logs
-├── /app/*           - Gradio UI (mounted)
+FastAPI (:8000)                    React (:5173 dev / :8000 prod)
+├── /api/auth/*      - JWT auth    ├── /chat        - Chat interface
+├── /api/chat/*      - Sessions    ├── /admin       - Admin dashboard
+├── /api/documents/* - Upload      ├── /login       - Authentication
+├── /api/tags/*      - Tag CRUD    └── Components   - Reusable UI
+├── /api/users/*     - User mgmt
+├── /api/admin/*     - Settings
 └── Middleware: CORS → Auth → Access Control → Audit
 ```
+
+**Frontend:** React is the current frontend. Gradio is deprecated and no longer used.
 
 **Key Components:**
 - **SQLite** - Users, sessions, chat history, tags, audit logs (WAL mode)
