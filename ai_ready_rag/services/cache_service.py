@@ -519,7 +519,7 @@ class CacheService:
 
         return CacheStats(
             enabled=self.enabled,
-            total_entries=len(self.memory),
+            total_entries=sqlite_count,  # SQLite is source of truth
             memory_entries=len(self.memory),
             sqlite_entries=sqlite_count,
             hit_count=self._hit_count,
