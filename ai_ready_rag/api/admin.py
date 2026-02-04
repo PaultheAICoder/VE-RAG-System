@@ -37,7 +37,7 @@ from ai_ready_rag.core.dependencies import (
     require_system_admin,
 )
 from ai_ready_rag.db.database import get_db
-from ai_ready_rag.db.models import Document, User, WarmingQueue
+from ai_ready_rag.db.models import Document, QuerySynonym, User, WarmingQueue
 from ai_ready_rag.services.document_service import DocumentService
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.services.model_service import ModelService, OllamaUnavailableError
@@ -4120,3 +4120,242 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
         logger.error(f"Cache warming job {job_id} failed: {e}")
     finally:
         db.close()
+
+
+# =============================================================================
+# Synonym CRUD Endpoints - Query Synonym Management
+# =============================================================================
+
+
+class SynonymCreate(BaseModel):
+    """Request model for creating a synonym."""
+
+    term: str
+    synonyms: list[str]
+
+
+class SynonymUpdate(BaseModel):
+    """Request model for updating a synonym."""
+
+    term: str | None = None
+    synonyms: list[str] | None = None
+    enabled: bool | None = None
+
+
+class SynonymResponse(BaseModel):
+    """Response model for a synonym."""
+
+    id: str
+    term: str
+    synonyms: list[str]
+    enabled: bool
+    created_by: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SynonymListResponse(BaseModel):
+    """Response model for paginated synonym list."""
+
+    synonyms: list[SynonymResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+@router.get("/synonyms", response_model=SynonymListResponse)
+async def list_synonyms(
+    page: int = Query(default=1, ge=1, description="Page number"),
+    page_size: int = Query(default=50, ge=1, le=100, description="Items per page"),
+    enabled: bool | None = Query(default=None, description="Filter by enabled status"),
+    search: str | None = Query(default=None, description="Search term (case-insensitive)"),
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """List synonyms with pagination and filtering.
+
+    System admin only.
+
+    Args:
+        page: Page number (1-indexed)
+        page_size: Items per page (max 100)
+        enabled: Filter by enabled status
+        search: Case-insensitive search on term field
+    """
+    query = db.query(QuerySynonym)
+
+    # Apply filters
+    if enabled is not None:
+        query = query.filter(QuerySynonym.enabled == enabled)
+
+    if search:
+        query = query.filter(QuerySynonym.term.ilike(f"%{search}%"))
+
+    # Get total count
+    total = query.count()
+
+    # Apply pagination
+    offset = (page - 1) * page_size
+    synonyms = query.order_by(QuerySynonym.term).offset(offset).limit(page_size).all()
+
+    # Parse JSON synonyms for each record
+    result = []
+    for syn in synonyms:
+        result.append(
+            SynonymResponse(
+                id=syn.id,
+                term=syn.term,
+                synonyms=json.loads(syn.synonyms),
+                enabled=syn.enabled,
+                created_by=syn.created_by,
+                created_at=syn.created_at,
+                updated_at=syn.updated_at,
+            )
+        )
+
+    return SynonymListResponse(
+        synonyms=result,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.post("/synonyms", response_model=SynonymResponse, status_code=status.HTTP_201_CREATED)
+async def create_synonym(
+    synonym_data: SynonymCreate,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Create a new synonym mapping.
+
+    System admin only.
+
+    Args:
+        synonym_data: Synonym term and list of synonyms
+    """
+    # Check for duplicate term
+    existing = db.query(QuerySynonym).filter(QuerySynonym.term == synonym_data.term).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Synonym for term '{synonym_data.term}' already exists",
+        )
+
+    synonym = QuerySynonym(
+        term=synonym_data.term,
+        synonyms=json.dumps(synonym_data.synonyms),
+        enabled=True,
+        created_by=current_user.id,
+    )
+    db.add(synonym)
+    db.commit()
+    db.refresh(synonym)
+
+    return SynonymResponse(
+        id=synonym.id,
+        term=synonym.term,
+        synonyms=json.loads(synonym.synonyms),
+        enabled=synonym.enabled,
+        created_by=synonym.created_by,
+        created_at=synonym.created_at,
+        updated_at=synonym.updated_at,
+    )
+
+
+@router.put("/synonyms/{synonym_id}", response_model=SynonymResponse)
+async def update_synonym(
+    synonym_id: str,
+    synonym_data: SynonymUpdate,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Update an existing synonym mapping.
+
+    System admin only.
+
+    Args:
+        synonym_id: ID of the synonym to update
+        synonym_data: Fields to update (partial update supported)
+    """
+    synonym = db.query(QuerySynonym).filter(QuerySynonym.id == synonym_id).first()
+    if not synonym:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Synonym not found",
+        )
+
+    # Update only provided fields
+    if synonym_data.term is not None:
+        # Check for duplicate term if changing
+        if synonym_data.term != synonym.term:
+            existing = db.query(QuerySynonym).filter(QuerySynonym.term == synonym_data.term).first()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Synonym for term '{synonym_data.term}' already exists",
+                )
+        synonym.term = synonym_data.term
+
+    if synonym_data.synonyms is not None:
+        synonym.synonyms = json.dumps(synonym_data.synonyms)
+
+    if synonym_data.enabled is not None:
+        synonym.enabled = synonym_data.enabled
+
+    db.commit()
+    db.refresh(synonym)
+
+    return SynonymResponse(
+        id=synonym.id,
+        term=synonym.term,
+        synonyms=json.loads(synonym.synonyms),
+        enabled=synonym.enabled,
+        created_by=synonym.created_by,
+        created_at=synonym.created_at,
+        updated_at=synonym.updated_at,
+    )
+
+
+@router.delete("/synonyms/{synonym_id}")
+async def delete_synonym(
+    synonym_id: str,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete a synonym mapping.
+
+    System admin only.
+
+    Args:
+        synonym_id: ID of the synonym to delete
+    """
+    synonym = db.query(QuerySynonym).filter(QuerySynonym.id == synonym_id).first()
+    if not synonym:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Synonym not found",
+        )
+
+    db.delete(synonym)
+    db.commit()
+
+    return {"success": True, "message": f"Synonym '{synonym.term}' deleted"}
+
+
+@router.post("/synonyms/invalidate-cache")
+async def invalidate_synonym_cache(
+    current_user: User = Depends(require_system_admin),
+):
+    """Invalidate the synonym cache.
+
+    System admin only. Call this after CRUD operations to ensure
+    RAG queries use the latest synonym mappings.
+    """
+    from ai_ready_rag.services.rag_service import invalidate_synonym_cache as do_invalidate
+
+    do_invalidate()
+    return {"success": True, "message": "Synonym cache invalidated"}
