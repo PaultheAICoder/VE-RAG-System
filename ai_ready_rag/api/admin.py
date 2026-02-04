@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+import bleach
 import httpx
 from fastapi import (
     APIRouter,
@@ -25,7 +26,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
@@ -37,7 +38,14 @@ from ai_ready_rag.core.dependencies import (
     require_system_admin,
 )
 from ai_ready_rag.db.database import get_db
-from ai_ready_rag.db.models import Document, QuerySynonym, User, WarmingQueue
+from ai_ready_rag.db.models import (
+    CuratedQA,
+    CuratedQAKeyword,
+    Document,
+    QuerySynonym,
+    User,
+    WarmingQueue,
+)
 from ai_ready_rag.services.document_service import DocumentService
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.services.model_service import ModelService, OllamaUnavailableError
@@ -45,6 +53,62 @@ from ai_ready_rag.services.settings_service import SettingsService, get_model_se
 from ai_ready_rag.services.warming_queue import WarmingQueueService
 
 logger = logging.getLogger(__name__)
+
+# HTML sanitization constants for curated Q&A
+ALLOWED_HTML_TAGS = ["p", "br", "strong", "em", "ul", "ol", "li", "a"]
+ALLOWED_HTML_ATTRS = {"a": ["href", "title"]}
+
+
+def sanitize_html(html: str) -> str:
+    """Sanitize HTML to prevent XSS."""
+    return bleach.clean(
+        html,
+        tags=ALLOWED_HTML_TAGS,
+        attributes=ALLOWED_HTML_ATTRS,
+        strip=True,
+    )
+
+
+def sync_qa_keywords(db: Session, qa_id: str, keywords: list[str]) -> None:
+    """Sync curated_qa_keywords table when Q&A is created/updated.
+
+    Deletes existing keywords for the Q&A and inserts new tokenized entries.
+
+    Args:
+        db: Database session
+        qa_id: ID of the CuratedQA record
+        keywords: List of keyword phrases
+    """
+    from ai_ready_rag.services.rag_service import tokenize_query
+
+    # Delete existing keywords
+    db.query(CuratedQAKeyword).filter(CuratedQAKeyword.qa_id == qa_id).delete()
+
+    # Insert tokenized keywords
+    for original_keyword in keywords:
+        tokens = tokenize_query(original_keyword)
+        for token in tokens:
+            db.add(
+                CuratedQAKeyword(
+                    qa_id=qa_id,
+                    keyword=token,
+                    original_keyword=original_keyword.lower().strip(),
+                )
+            )
+    db.flush()
+
+
+def delete_qa_keywords(db: Session, qa_id: str) -> None:
+    """Delete all keywords for a curated Q&A.
+
+    Note: This is also handled by CASCADE DELETE, but provided for explicit cleanup.
+
+    Args:
+        db: Database session
+        qa_id: ID of the CuratedQA record
+    """
+    db.query(CuratedQAKeyword).filter(CuratedQAKeyword.qa_id == qa_id).delete()
+
 
 # Module-level warming queue service (initialized lazily)
 _warming_queue: WarmingQueueService | None = None
@@ -4359,3 +4423,311 @@ async def invalidate_synonym_cache(
 
     do_invalidate()
     return {"success": True, "message": "Synonym cache invalidated"}
+
+
+# =============================================================================
+# Curated Q&A CRUD Endpoints - Admin-curated Q&A Management
+# =============================================================================
+
+
+class CuratedQACreate(BaseModel):
+    """Request model for creating a curated Q&A."""
+
+    keywords: list[str]
+    answer: str
+    source_reference: str
+    confidence: int = 85
+    priority: int = 0
+
+    @field_validator("source_reference")
+    @classmethod
+    def source_required(cls, v: str) -> str:
+        """Validate that source_reference is non-empty."""
+        if not v or not v.strip():
+            raise ValueError("source_reference is required for compliance")
+        return v.strip()
+
+
+class CuratedQAUpdate(BaseModel):
+    """Request model for updating a curated Q&A."""
+
+    keywords: list[str] | None = None
+    answer: str | None = None
+    source_reference: str | None = None
+    confidence: int | None = None
+    priority: int | None = None
+    enabled: bool | None = None
+
+
+class CuratedQAResponse(BaseModel):
+    """Response model for a curated Q&A."""
+
+    id: str
+    keywords: list[str]
+    answer: str
+    source_reference: str
+    confidence: int
+    priority: int
+    enabled: bool
+    access_count: int
+    last_accessed_at: datetime | None
+    created_by: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CuratedQAListResponse(BaseModel):
+    """Response model for paginated Q&A list."""
+
+    qa_pairs: list[CuratedQAResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+@router.get("/qa", response_model=CuratedQAListResponse)
+async def list_curated_qa(
+    page: int = Query(default=1, ge=1, description="Page number"),
+    page_size: int = Query(default=50, ge=1, le=100, description="Items per page"),
+    enabled: bool | None = Query(default=None, description="Filter by enabled status"),
+    search: str | None = Query(default=None, description="Search keywords (case-insensitive)"),
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """List curated Q&A pairs with pagination and filtering.
+
+    System admin only.
+
+    Args:
+        page: Page number (1-indexed)
+        page_size: Items per page (max 100)
+        enabled: Filter by enabled status
+        search: Case-insensitive search on keywords field
+    """
+    query = db.query(CuratedQA)
+
+    # Apply filters
+    if enabled is not None:
+        query = query.filter(CuratedQA.enabled == enabled)
+
+    if search:
+        # Search in keywords JSON (simple LIKE search)
+        query = query.filter(CuratedQA.keywords.ilike(f"%{search}%"))
+
+    # Get total count
+    total = query.count()
+
+    # Apply pagination with ordering by priority DESC, created_at DESC
+    offset = (page - 1) * page_size
+    qa_pairs = (
+        query.order_by(CuratedQA.priority.desc(), CuratedQA.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+
+    # Parse JSON keywords for each record
+    result = []
+    for qa in qa_pairs:
+        result.append(
+            CuratedQAResponse(
+                id=qa.id,
+                keywords=json.loads(qa.keywords),
+                answer=qa.answer,
+                source_reference=qa.source_reference,
+                confidence=qa.confidence,
+                priority=qa.priority,
+                enabled=qa.enabled,
+                access_count=qa.access_count,
+                last_accessed_at=qa.last_accessed_at,
+                created_by=qa.created_by,
+                created_at=qa.created_at,
+                updated_at=qa.updated_at,
+            )
+        )
+
+    return CuratedQAListResponse(
+        qa_pairs=result,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.post("/qa", response_model=CuratedQAResponse, status_code=status.HTTP_201_CREATED)
+async def create_curated_qa(
+    qa_data: CuratedQACreate,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Create a new curated Q&A pair.
+
+    System admin only. HTML in answer field is sanitized.
+    Keywords are synced to the curated_qa_keywords table for efficient matching.
+
+    Args:
+        qa_data: Q&A keywords, answer, source reference, and optional metadata
+    """
+    # Sanitize HTML in the answer
+    sanitized_answer = sanitize_html(qa_data.answer)
+
+    # Create the Q&A record
+    qa = CuratedQA(
+        keywords=json.dumps(qa_data.keywords),
+        answer=sanitized_answer,
+        source_reference=qa_data.source_reference,
+        confidence=qa_data.confidence,
+        priority=qa_data.priority,
+        enabled=True,
+        created_by=current_user.id,
+    )
+    db.add(qa)
+    db.flush()  # Get the ID before syncing keywords
+
+    # Sync keywords to the lookup table
+    sync_qa_keywords(db, qa.id, qa_data.keywords)
+
+    db.commit()
+    db.refresh(qa)
+
+    return CuratedQAResponse(
+        id=qa.id,
+        keywords=json.loads(qa.keywords),
+        answer=qa.answer,
+        source_reference=qa.source_reference,
+        confidence=qa.confidence,
+        priority=qa.priority,
+        enabled=qa.enabled,
+        access_count=qa.access_count,
+        last_accessed_at=qa.last_accessed_at,
+        created_by=qa.created_by,
+        created_at=qa.created_at,
+        updated_at=qa.updated_at,
+    )
+
+
+@router.put("/qa/{qa_id}", response_model=CuratedQAResponse)
+async def update_curated_qa(
+    qa_id: str,
+    qa_data: CuratedQAUpdate,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Update an existing curated Q&A pair.
+
+    System admin only. Partial updates supported.
+    If keywords are changed, they are re-synced to the lookup table.
+
+    Args:
+        qa_id: ID of the Q&A to update
+        qa_data: Fields to update (partial update supported)
+    """
+    qa = db.query(CuratedQA).filter(CuratedQA.id == qa_id).first()
+    if not qa:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Curated Q&A not found",
+        )
+
+    # Track if keywords changed for re-sync
+    keywords_changed = False
+
+    # Update only provided fields
+    if qa_data.keywords is not None:
+        qa.keywords = json.dumps(qa_data.keywords)
+        keywords_changed = True
+
+    if qa_data.answer is not None:
+        qa.answer = sanitize_html(qa_data.answer)
+
+    if qa_data.source_reference is not None:
+        if not qa_data.source_reference.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="source_reference cannot be empty",
+            )
+        qa.source_reference = qa_data.source_reference.strip()
+
+    if qa_data.confidence is not None:
+        qa.confidence = qa_data.confidence
+
+    if qa_data.priority is not None:
+        qa.priority = qa_data.priority
+
+    if qa_data.enabled is not None:
+        qa.enabled = qa_data.enabled
+
+    # Re-sync keywords if they changed
+    if keywords_changed:
+        sync_qa_keywords(db, qa.id, qa_data.keywords)
+
+    db.commit()
+    db.refresh(qa)
+
+    return CuratedQAResponse(
+        id=qa.id,
+        keywords=json.loads(qa.keywords),
+        answer=qa.answer,
+        source_reference=qa.source_reference,
+        confidence=qa.confidence,
+        priority=qa.priority,
+        enabled=qa.enabled,
+        access_count=qa.access_count,
+        last_accessed_at=qa.last_accessed_at,
+        created_by=qa.created_by,
+        created_at=qa.created_at,
+        updated_at=qa.updated_at,
+    )
+
+
+@router.delete("/qa/{qa_id}")
+async def delete_curated_qa(
+    qa_id: str,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete a curated Q&A pair.
+
+    System admin only. Keywords are automatically deleted via CASCADE.
+
+    Args:
+        qa_id: ID of the Q&A to delete
+    """
+    from ai_ready_rag.services.rag_service import invalidate_qa_cache
+
+    qa = db.query(CuratedQA).filter(CuratedQA.id == qa_id).first()
+    if not qa:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Curated Q&A not found",
+        )
+
+    # Get keywords for the response message
+    keywords = json.loads(qa.keywords)
+    first_keyword = keywords[0] if keywords else "unknown"
+
+    db.delete(qa)
+    db.commit()
+
+    # Invalidate cache after successful delete
+    invalidate_qa_cache()
+
+    return {"success": True, "message": f"Curated Q&A '{first_keyword}...' deleted"}
+
+
+@router.post("/qa/invalidate-cache")
+async def invalidate_curated_qa_cache(
+    current_user: User = Depends(require_system_admin),
+):
+    """Invalidate the curated Q&A cache.
+
+    System admin only. Call this after CRUD operations to ensure
+    RAG queries use the latest curated Q&A mappings.
+    """
+    from ai_ready_rag.services.rag_service import invalidate_qa_cache
+
+    invalidate_qa_cache()
+    return {"success": True, "message": "Curated Q&A cache invalidated"}
