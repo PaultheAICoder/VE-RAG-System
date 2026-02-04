@@ -1,7 +1,10 @@
+import { useMemo } from 'react';
 import { User, Bot } from 'lucide-react';
 import type { ChatMessage } from '../../../types';
 import { ConfidenceBadge } from './ConfidenceBadge';
 import { CitationCard } from './CitationCard';
+import { MarkdownContent } from './MarkdownContent';
+import { parseCitations } from '../../../utils/citationParser';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -42,6 +45,12 @@ function TypingIndicator() {
 export function MessageBubble({ message, isLoading = false }: MessageBubbleProps) {
   const isUser = message.role === 'user';
 
+  // Parse citations for assistant messages (memoized for performance)
+  const parsedContent = useMemo(() => {
+    if (isUser) return { text: message.content, citationMap: {} };
+    return parseCitations(message.content, message.sources);
+  }, [message.content, message.sources, isUser]);
+
   return (
     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
       {/* Avatar */}
@@ -73,8 +82,10 @@ export function MessageBubble({ message, isLoading = false }: MessageBubbleProps
         >
           {isLoading ? (
             <TypingIndicator />
-          ) : (
+          ) : isUser ? (
             <div className="whitespace-pre-wrap break-words">{message.content}</div>
+          ) : (
+            <MarkdownContent content={parsedContent.text} />
           )}
         </div>
 
@@ -83,7 +94,7 @@ export function MessageBubble({ message, isLoading = false }: MessageBubbleProps
           <div className="mt-2 space-y-2">
             {/* Citations */}
             {message.sources && message.sources.length > 0 && (
-              <CitationCard sources={message.sources} />
+              <CitationCard sources={message.sources} citationMap={parsedContent.citationMap} />
             )}
 
             {/* Confidence badge with breakdown and response time */}
