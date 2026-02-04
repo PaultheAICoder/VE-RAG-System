@@ -1276,8 +1276,9 @@ class RAGService:
         # 1.25 Check cache first (if enabled)
         if self.cache and self.cache.enabled:
             try:
-                # Get embedding for semantic cache lookup
-                query_embedding = await self.cache.get_embedding(request.query)
+                # Get or compute embedding for semantic cache lookup
+                # This enables semantic matching even for new query variations
+                query_embedding = await self._get_or_embed_query(request.query)
                 cached = await self.cache.get(
                     query=request.query,
                     user_tags=request.user_tags,
