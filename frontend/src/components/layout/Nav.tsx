@@ -31,7 +31,7 @@ export function Nav() {
   return (
     <nav className="sticky top-[52px] z-40 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
       <div className="max-w-7xl mx-auto px-4">
-        <div className="flex gap-1 overflow-x-auto">
+        <div className="flex gap-1 overflow-x-auto hide-scrollbar">
           {visibleItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.href;

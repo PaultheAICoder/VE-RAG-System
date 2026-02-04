@@ -70,6 +70,7 @@ export function ChatInput({ onSend, disabled = false, maxLength = 4000 }: ChatIn
               bg-gray-50 dark:bg-gray-800
               text-gray-900 dark:text-white
               placeholder-gray-400 dark:placeholder-gray-500
+              hide-scrollbar
               ${disabled
                 ? 'border-gray-200 dark:border-gray-700 cursor-not-allowed opacity-60'
                 : 'border-gray-300 dark:border-gray-600 focus:border-primary focus:ring-primary/50'
