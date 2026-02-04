@@ -218,7 +218,7 @@ export function SessionSidebar({
       )}
 
       {/* Session list */}
-      <div className="flex-1 overflow-y-auto p-2">
+      <div className="flex-1 overflow-y-auto p-2 hide-scrollbar">
         {isLoading ? (
           // Loading skeleton
           <div className="space-y-2">

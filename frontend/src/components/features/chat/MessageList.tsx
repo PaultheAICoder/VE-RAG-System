@@ -51,7 +51,7 @@ export function MessageList({ messages, isLoading = false, typingMessage }: Mess
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="flex-1 min-h-0 relative overflow-y-auto px-4 py-6 space-y-6"
+      className="flex-1 min-h-0 relative overflow-y-auto px-4 py-6 space-y-6 hide-scrollbar"
     >
       {/* Loading skeleton for initial load */}
       {isLoading && messages.length === 0 && (
