@@ -271,7 +271,7 @@ export function ChatView() {
   const sessionTitle = activeSession?.title || 'New Chat';
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-[calc(100vh-140px)]">
       {/* Sidebar */}
       <SessionSidebar
         sessions={sessions}
@@ -283,7 +283,7 @@ export function ChatView() {
       />
 
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {/* Chat header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
           <h1 className="text-lg font-semibold text-gray-900 dark:text-white truncate">
