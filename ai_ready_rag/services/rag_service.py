@@ -250,6 +250,56 @@ def calculate_coverage(answer: str, context: str) -> float:
 
 
 # -----------------------------------------------------------------------------
+# Synonym Cache and Helper Functions
+# -----------------------------------------------------------------------------
+
+# Module-level cache for synonym data
+_synonym_cache: list | None = None
+_synonym_cache_version: int = 0
+
+
+def invalidate_synonym_cache() -> None:
+    """Invalidate synonym cache (call on CRUD operations)."""
+    global _synonym_cache, _synonym_cache_version
+    _synonym_cache = None
+    _synonym_cache_version += 1
+    logger.debug(f"Synonym cache invalidated (version: {_synonym_cache_version})")
+
+
+def tokenize_query(query: str) -> set[str]:
+    """Extract normalized word tokens from query.
+
+    Extracts alphanumeric words, converts to lowercase, and filters
+    tokens shorter than 2 characters.
+
+    Args:
+        query: Input text to tokenize
+
+    Returns:
+        Set of normalized word tokens
+    """
+    words = re.findall(r"\b[a-zA-Z0-9]+\b", query.lower())
+    return {w for w in words if len(w) >= 2}
+
+
+def matches_keyword(keyword: str, query_tokens: set[str]) -> bool:
+    """Check if keyword matches query tokens using word-boundary matching.
+
+    For multi-word keywords, all tokens must be present in query_tokens.
+    This prevents false positives like "pto" matching "photo".
+
+    Args:
+        keyword: The keyword/phrase to match (e.g., "pto" or "paid time off")
+        query_tokens: Set of tokens from the user query
+
+    Returns:
+        True if all keyword tokens are present in query_tokens
+    """
+    keyword_tokens = tokenize_query(keyword)
+    return keyword_tokens.issubset(query_tokens)
+
+
+# -----------------------------------------------------------------------------
 # Token Budget Management
 # -----------------------------------------------------------------------------
 
