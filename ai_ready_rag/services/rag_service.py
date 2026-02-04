@@ -1441,6 +1441,24 @@ class RAGService:
             llm_score=llm_score,
         )
 
+        # Citation guard: If context was provided but LLM cited nothing, cap confidence
+        # and replace answer with standard message (don't show generic responses)
+        if len(final_chunks) > 0 and len(citations) == 0:
+            logger.warning(
+                f"[RAG] No citations despite {len(final_chunks)} context chunks - "
+                f"replacing generic answer and capping confidence to 30%"
+            )
+            answer = (
+                "I found relevant documents but was unable to extract a specific answer. "
+                "Please contact your HR department or refer to the employee handbook for assistance."
+            )
+            confidence = ConfidenceScore(
+                overall=min(confidence.overall, 30),
+                retrieval_score=confidence.retrieval_score,
+                coverage_score=confidence.coverage_score,
+                llm_score=confidence.llm_score,
+            )
+
         # 8. Determine action based on confidence threshold
         if confidence.overall >= self.confidence_threshold:
             action: Literal["CITE", "ROUTE"] = "CITE"
