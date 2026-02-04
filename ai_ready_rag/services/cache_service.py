@@ -328,10 +328,20 @@ class CacheService:
         """Get entry from SQLite by hash."""
         from ai_ready_rag.db.models import ResponseCache
 
+        # Refresh session to see latest data from other connections
+        self.db.expire_all()
+
         row = self.db.query(ResponseCache).filter(ResponseCache.query_hash == query_hash).first()
+        print(
+            f"[CACHE] _get_from_sqlite hash={query_hash[:16]}... row={'found' if row else 'None'}",
+            flush=True,
+        )
         if row:
             # Check TTL
+            age_hours = (datetime.utcnow() - row.created_at).total_seconds() / 3600
+            print(f"[CACHE] Entry age={age_hours:.1f}h, TTL={self.ttl_hours}h", flush=True)
             if datetime.utcnow() - row.created_at > timedelta(hours=self.ttl_hours):
+                print("[CACHE] Entry EXPIRED", flush=True)
                 return None  # Expired
             return self._row_to_entry(row)
         return None
