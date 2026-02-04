@@ -2422,6 +2422,39 @@ class CacheClearResponse(BaseModel):
     message: str
 
 
+# Cache Seed Models (Issue #153)
+class CacheSeedRequest(BaseModel):
+    """Request to seed cache with a curated response."""
+
+    query: str
+    answer: str
+    source_reference: str
+    confidence: int = 85
+
+    @field_validator("source_reference")
+    @classmethod
+    def source_required(cls, v: str) -> str:
+        """Validate that source_reference is non-empty."""
+        if not v or not v.strip():
+            raise ValueError("source_reference is required for compliance")
+        return v.strip()
+
+    @field_validator("query")
+    @classmethod
+    def query_required(cls, v: str) -> str:
+        """Validate that query is non-empty."""
+        if not v or not v.strip():
+            raise ValueError("query is required")
+        return v.strip()
+
+
+class CacheSeedResponse(BaseModel):
+    """Response after seeding cache."""
+
+    query_hash: str
+    message: str
+
+
 @router.get("/cache/top-queries", response_model=TopQueryResponse)
 async def get_top_queries(
     limit: int = Query(20, ge=1, le=100, description="Maximum queries to return"),
@@ -2752,6 +2785,59 @@ async def clear_cache(
     return CacheClearResponse(
         cleared_entries=cleared,
         message="Cache cleared successfully",
+    )
+
+
+@router.post("/cache/seed", response_model=CacheSeedResponse, status_code=status.HTTP_201_CREATED)
+async def seed_cache(
+    request: CacheSeedRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Seed cache with a curated question-answer pair.
+
+    Allows system admins to populate the cache with compliance-approved
+    responses. The source_reference is required for audit trail.
+
+    The response is stored with model_used="admin_seeded" to distinguish
+    from LLM-generated responses.
+
+    System admin only.
+    """
+    from ai_ready_rag.services.cache_service import CacheService
+
+    settings = get_settings()
+
+    # Sanitize HTML in the answer
+    sanitized_answer = sanitize_html(request.answer)
+
+    # Generate query embedding
+    try:
+        vector_service = get_vector_service(settings)
+        await vector_service.initialize()
+        embedding = await vector_service.embed(request.query)
+    except Exception as e:
+        logger.error(f"Failed to generate embedding for cache seed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Embedding service unavailable: {e}",
+        ) from e
+
+    # Seed the cache
+    cache_service = CacheService(db)
+    query_hash = await cache_service.seed_entry(
+        query=request.query,
+        embedding=embedding,
+        answer=sanitized_answer,
+        source_reference=request.source_reference,
+        confidence=request.confidence,
+    )
+
+    logger.info(f"Admin {current_user.email} seeded cache for query: {request.query[:50]}...")
+
+    return CacheSeedResponse(
+        query_hash=query_hash,
+        message="Cache entry seeded successfully",
     )
 
 

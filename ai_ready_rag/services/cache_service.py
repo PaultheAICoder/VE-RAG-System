@@ -501,6 +501,103 @@ class CacheService:
         print("[CACHE] Committed to SQLite", flush=True)
         logger.debug(f"Cached response for query: {query[:50]}...")
 
+    async def seed_entry(
+        self,
+        query: str,
+        embedding: list[float],
+        answer: str,
+        source_reference: str,
+        confidence: int = 85,
+    ) -> str:
+        """Seed cache with admin-curated response.
+
+        Used by admin seeding endpoint for compliance-approved answers.
+        Stores with model_used="admin_seeded" to distinguish from LLM-generated.
+
+        Args:
+            query: The question text
+            embedding: Pre-computed query embedding
+            answer: Sanitized HTML answer
+            source_reference: Required compliance citation
+            confidence: Confidence score (default 85)
+
+        Returns:
+            query_hash for reference
+        """
+        from ai_ready_rag.db.models import ResponseCache
+
+        query_hash = self._hash_query(query)
+
+        # Build synthetic citation from source_reference
+        sources = [
+            {
+                "document_id": "admin_seeded",
+                "document_name": source_reference,
+                "page_number": None,
+                "section": None,
+                "excerpt": source_reference,
+            }
+        ]
+
+        entry = CacheEntry(
+            query_hash=query_hash,
+            query_text=query,
+            query_embedding=embedding,
+            answer=answer,
+            sources=sources,
+            confidence_overall=confidence,
+            confidence_retrieval=1.0,  # Admin-approved = max retrieval confidence
+            confidence_coverage=1.0,  # Admin-approved = max coverage
+            confidence_llm=confidence,
+            generation_time_ms=0.0,  # No LLM generation
+            model_used="admin_seeded",
+            created_at=datetime.utcnow(),
+            last_accessed_at=datetime.utcnow(),
+            access_count=1,
+            document_ids=["admin_seeded"],
+        )
+
+        # Store in memory
+        self.memory.put(entry)
+
+        # Store in SQLite (upsert)
+        existing = (
+            self.db.query(ResponseCache).filter(ResponseCache.query_hash == query_hash).first()
+        )
+        if existing:
+            existing.answer = entry.answer
+            existing.sources = json.dumps(sources)
+            existing.confidence_overall = entry.confidence_overall
+            existing.confidence_retrieval = entry.confidence_retrieval
+            existing.confidence_coverage = entry.confidence_coverage
+            existing.confidence_llm = entry.confidence_llm
+            existing.generation_time_ms = entry.generation_time_ms
+            existing.model_used = entry.model_used
+            existing.document_ids = json.dumps(entry.document_ids)
+            existing.last_accessed_at = datetime.utcnow()
+            existing.access_count += 1
+            logger.info(f"Updated seeded cache entry (hash={query_hash[:12]}...)")
+        else:
+            row = ResponseCache(
+                query_hash=query_hash,
+                query_text=query,
+                query_embedding=json.dumps(embedding),
+                answer=entry.answer,
+                sources=json.dumps(sources),
+                confidence_overall=entry.confidence_overall,
+                confidence_retrieval=entry.confidence_retrieval,
+                confidence_coverage=entry.confidence_coverage,
+                confidence_llm=entry.confidence_llm,
+                generation_time_ms=entry.generation_time_ms,
+                model_used=entry.model_used,
+                document_ids=json.dumps(entry.document_ids),
+            )
+            self.db.add(row)
+            logger.info(f"Created seeded cache entry (hash={query_hash[:12]}...)")
+
+        self.db.commit()
+        return query_hash
+
     async def put_embedding(self, query: str, embedding: list[float]) -> None:
         """Store query embedding (Layer 3)."""
         if not self.enabled:
