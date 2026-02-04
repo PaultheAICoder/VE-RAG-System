@@ -48,17 +48,21 @@ SOURCEID_PATTERN = r"\[SourceId:\s*([a-f0-9-]{36}:\d+)\]"
 # Prompt Templates
 # -----------------------------------------------------------------------------
 
-RAG_SYSTEM_PROMPT = """You are a helpful assistant that answers questions based ONLY on the provided context.
+RAG_SYSTEM_PROMPT = """You are an Enterprise Knowledge Assistant.
+Answer ONLY using the provided CONTEXT below. Do not guess. Do not use outside knowledge.
 
-STRICT RULES:
-1. ONLY use information from the provided CONTEXT sections below
-2. If the context doesn't contain enough information, respond with: "I don't have enough information in the available documents to answer this question."
-3. NEVER use external knowledge or make assumptions beyond the context
-4. Cite sources using the exact SourceId provided (e.g., [SourceId: 550e8400-e29b-41d4-a716-446655440000:0])
-5. Be concise but thorough
-6. If partially answerable, answer what you can and note what's missing
+If the context does not contain the answer, respond exactly:
+NOT FOUND IN PROVIDED DOCUMENTS
 
-CONTEXT (each section has a SourceId for citation):
+Every factual statement MUST include a citation [SourceId: ...].
+
+WRONG (using general knowledge):
+"Vacation policies typically include... eligibility... accrual rates..."
+
+CORRECT (using context):
+"Example Dental provides a combined PTO bank [SourceId: xxx]. PTO requests must be submitted through the HR portal [SourceId: yyy]."
+
+CONTEXT:
 {context}
 
 PREVIOUS CONVERSATION:
@@ -875,17 +879,32 @@ class RAGService:
             )
 
             prompt = CONFIDENCE_PROMPT.format(
-                context_summary=context_summary[:2000],  # Truncate for eval
+                context_summary=context_summary[:4000],  # Reasonable limit for eval
                 query=query,
-                answer=answer[:1000],  # Truncate for eval
+                answer=answer[:2000],  # Reasonable limit for eval
             )
 
             response = await llm.ainvoke([("human", prompt)])
             score_text = response.content.strip()
 
             # Extract numeric score
-            score = int(re.search(r"\d+", score_text).group())
-            return min(100, max(0, score))
+            match = re.search(r"\d+", score_text)
+            if not match:
+                logger.warning(
+                    f"[RAG] LLM self-assessment returned non-numeric: '{score_text[:100]}'"
+                )
+                return 50  # Fallback to neutral
+
+            score = int(match.group())
+            score = min(100, max(0, score))
+
+            # Log low scores for diagnosis (debug level)
+            if score <= 20:
+                logger.debug(
+                    f"[RAG] Low LLM self-assessment: {score}% | Raw response: '{score_text[:50]}'"
+                )
+
+            return score
 
         except Exception as e:
             logger.warning(f"Hallucination check failed: {e}")
@@ -1365,6 +1384,14 @@ class RAGService:
             raise
 
         # 4-5. Generate response
+        # Debug logging: capture prompt details for diagnosis
+        logger.debug(
+            f"[RAG] Query: {request.query[:100]}... | "
+            f"Context chunks: {len(final_chunks)} | "
+            f"Context chars: {len(context_str)} | "
+            f"History entries: {len(chat_history)}"
+        )
+
         try:
             llm = ChatOllama(
                 base_url=self.ollama_url,
@@ -1380,6 +1407,12 @@ class RAGService:
 
             response = await llm.ainvoke(messages)
             answer = response.content
+
+            # Debug logging: capture LLM response
+            logger.debug(
+                f"[RAG] LLM response length: {len(answer)} chars | "
+                f"First 200 chars: {answer[:200]}..."
+            )
 
         except Exception as e:
             if "timeout" in str(e).lower():
