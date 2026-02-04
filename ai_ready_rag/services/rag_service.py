@@ -184,19 +184,35 @@ def extract_key_terms(text: str) -> set[str]:
     return {w for w in words if w not in STOPWORDS and len(w) >= 3}
 
 
-def expand_query(question: str) -> list[str]:
+def expand_query(question: str, db: Session | None = None) -> list[str]:
     """Expand query with related search terms for better recall.
 
     Business domain-specific expansions based on common query patterns.
-    Ported from Spark's working configuration.
+    Now includes database-managed synonyms with word-boundary matching.
 
     Args:
         question: Original user question
+        db: Optional database session for synonym lookup
 
     Returns:
         List of query variants (original + expansions)
     """
+    import json
+
     queries = [question]
+    query_tokens = tokenize_query(question)
+
+    # 1. Check database synonyms (if db provided)
+    if db is not None:
+        synonyms = get_cached_synonyms(db)
+        for syn in synonyms:
+            # Word-boundary match using existing helper
+            if matches_keyword(syn.term, query_tokens):
+                syn_list = json.loads(syn.synonyms)
+                queries.extend(syn_list)
+                logger.debug(f"Synonym expansion: '{syn.term}' -> {syn_list}")
+
+    # 2. Existing hardcoded patterns (fallback)
     q_lower = question.lower()
 
     # Customer/client queries
@@ -256,27 +272,168 @@ def calculate_coverage(answer: str, context: str) -> float:
 # Module-level cache for synonym data
 _synonym_cache: list | None = None
 _synonym_cache_version: int = 0
+_synonym_cache_time: datetime | None = None
 
 
 def invalidate_synonym_cache() -> None:
     """Invalidate synonym cache (call on CRUD operations)."""
-    global _synonym_cache, _synonym_cache_version
+    global _synonym_cache, _synonym_cache_version, _synonym_cache_time
     _synonym_cache = None
+    _synonym_cache_time = None
     _synonym_cache_version += 1
     logger.debug(f"Synonym cache invalidated (version: {_synonym_cache_version})")
+
+
+def get_cached_synonyms(db: Session) -> list:
+    """Get synonyms with in-memory caching (60s TTL + explicit invalidation).
+
+    Args:
+        db: Database session for querying synonyms
+
+    Returns:
+        List of enabled QuerySynonym records
+    """
+    global _synonym_cache, _synonym_cache_time
+    from ai_ready_rag.db.models import QuerySynonym
+
+    now = datetime.utcnow()
+    cache_expired = (
+        _synonym_cache is None
+        or _synonym_cache_time is None
+        or (now - _synonym_cache_time).total_seconds() > 60
+    )
+
+    if cache_expired:
+        _synonym_cache = db.query(QuerySynonym).filter(QuerySynonym.enabled.is_(True)).all()
+        _synonym_cache_time = now
+        logger.debug(f"Synonym cache refreshed: {len(_synonym_cache)} entries")
+
+    return _synonym_cache or []
 
 
 # Module-level cache for curated Q&A data
 _qa_cache: list | None = None
 _qa_cache_version: int = 0
+_qa_token_index: dict[str, set[str]] | None = None
+_qa_lookup: dict | None = None
+_qa_keywords_by_id: dict[str, list[str]] | None = None
+_qa_cache_time: datetime | None = None
 
 
 def invalidate_qa_cache() -> None:
     """Invalidate curated Q&A cache (call on CRUD operations)."""
-    global _qa_cache, _qa_cache_version
+    global \
+        _qa_cache, \
+        _qa_cache_version, \
+        _qa_token_index, \
+        _qa_lookup, \
+        _qa_keywords_by_id, \
+        _qa_cache_time
     _qa_cache = None
+    _qa_token_index = None
+    _qa_lookup = None
+    _qa_keywords_by_id = None
+    _qa_cache_time = None
     _qa_cache_version += 1
     logger.debug(f"Q&A cache invalidated (version: {_qa_cache_version})")
+
+
+def get_cached_qa(db: Session) -> tuple[dict[str, set[str]], dict, dict[str, list[str]]]:
+    """Get Q&A with in-memory caching (60s TTL + explicit invalidation).
+
+    Returns:
+        token_index: Maps single token -> set of candidate qa_ids
+        qa_lookup: Maps qa_id -> CuratedQA object (ordered by priority)
+        keywords_by_id: Maps qa_id -> list of original keywords for verification
+    """
+    global _qa_token_index, _qa_lookup, _qa_keywords_by_id, _qa_cache_time
+    import json
+
+    from ai_ready_rag.db.models import CuratedQA
+
+    now = datetime.utcnow()
+    cache_expired = (
+        _qa_token_index is None
+        or _qa_cache_time is None
+        or (now - _qa_cache_time).total_seconds() > 60
+    )
+
+    if cache_expired:
+        # Load all enabled Q&A pairs ordered by priority
+        qa_pairs = (
+            db.query(CuratedQA)
+            .filter(CuratedQA.enabled.is_(True))
+            .order_by(CuratedQA.priority.desc())
+            .all()
+        )
+
+        # Build token index and keyword lookup
+        _qa_token_index = {}
+        _qa_lookup = {}
+        _qa_keywords_by_id = {}
+
+        for qa in qa_pairs:
+            _qa_lookup[qa.id] = qa
+            keywords = json.loads(qa.keywords)
+            _qa_keywords_by_id[qa.id] = keywords
+
+            # Index each token from each keyword for fast candidate lookup
+            for kw in keywords:
+                for token in tokenize_query(kw):
+                    if token not in _qa_token_index:
+                        _qa_token_index[token] = set()
+                    _qa_token_index[token].add(qa.id)
+
+        _qa_cache_time = now
+        logger.debug(
+            f"Q&A cache refreshed: {len(_qa_lookup)} entries, {len(_qa_token_index)} tokens indexed"
+        )
+
+    return _qa_token_index or {}, _qa_lookup or {}, _qa_keywords_by_id or {}
+
+
+def check_curated_qa(query: str, db: Session):
+    """Check if query matches any curated Q&A pair by keyword.
+
+    Uses two-phase matching:
+    1. Token index lookup for candidate Q&A pairs (fast filter)
+    2. Full keyword verification using matches_keyword() (accurate match)
+
+    This handles multi-word keywords like "paid time off" correctly.
+
+    Args:
+        query: User's query string
+        db: Database session
+
+    Returns:
+        Matching CuratedQA object (highest priority), or None to proceed with RAG
+    """
+    token_index, qa_lookup, keywords_by_id = get_cached_qa(db)
+    query_tokens = tokenize_query(query)
+
+    # Phase 1: Find candidate Q&A IDs (any token match)
+    candidate_qa_ids: set[str] = set()
+    for token in query_tokens:
+        if token in token_index:
+            candidate_qa_ids.update(token_index[token])
+
+    if not candidate_qa_ids:
+        return None
+
+    # Phase 2: Verify full keyword match for each candidate
+    # Iterate in priority order (qa_lookup preserves insertion order from query)
+    for qa_id, qa in qa_lookup.items():
+        if qa_id not in candidate_qa_ids:
+            continue
+
+        # Check if ANY keyword fully matches the query
+        keywords = keywords_by_id.get(qa_id, [])
+        for keyword in keywords:
+            if matches_keyword(keyword, query_tokens):
+                logger.info(f"Curated Q&A match: '{keyword}' -> qa_id={qa_id}")
+                return qa
+
+    return None
 
 
 def tokenize_query(query: str) -> set[str]:
@@ -802,7 +959,14 @@ class RAGService:
         """
         # 1. Expand query if enabled
         if self.enable_query_expansion:
-            queries = expand_query(query)
+            # Get db session for synonym lookup (create temporary if needed)
+            from ai_ready_rag.db.database import SessionLocal
+
+            db_session = SessionLocal()
+            try:
+                queries = expand_query(query, db=db_session)
+            finally:
+                db_session.close()
             logger.debug(f"Query expansion: {len(queries)} variants")
         else:
             queries = [query]
@@ -1354,6 +1518,48 @@ class RAGService:
         # 1. Validate model
         model = request.model or self.default_model
         await self.validate_model(model)
+
+        # 0. Check curated Q&A first (highest priority - admin-approved answers)
+        curated_qa = check_curated_qa(request.query, db)
+        if curated_qa:
+            # Update access tracking
+            curated_qa.access_count += 1
+            curated_qa.last_accessed_at = datetime.utcnow()
+            db.commit()
+
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            # Build citation from source_reference
+            citation = Citation(
+                source_id=f"curated:{curated_qa.id}",
+                document_id=curated_qa.id,
+                document_name=curated_qa.source_reference,
+                chunk_index=0,
+                page_number=None,
+                section=curated_qa.source_reference,
+                relevance_score=1.0,
+                snippet=curated_qa.source_reference,
+                snippet_full=curated_qa.source_reference,
+            )
+
+            return RAGResponse(
+                answer=curated_qa.answer,
+                confidence=ConfidenceScore(
+                    overall=curated_qa.confidence,
+                    retrieval_score=1.0,
+                    coverage_score=1.0,
+                    llm_score=curated_qa.confidence,
+                ),
+                citations=[citation],
+                action="CITE",
+                route_to=None,
+                model_used="curated",
+                context_chunks_used=0,
+                context_tokens_used=0,
+                generation_time_ms=elapsed_ms,
+                grounded=True,
+                routing_decision=None,
+            )
 
         # 1.25 Check cache first (if enabled)
         if self.cache and self.cache.enabled:

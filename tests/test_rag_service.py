@@ -1045,3 +1045,449 @@ class TestRAGServiceIntegration:
         # Assert
         assert len(search_calls) > 0
         assert search_calls[0].get("tenant_id") == "test-tenant-123"
+
+
+# =============================================================================
+# Synonym Expansion Tests
+# =============================================================================
+
+
+class TestExpandQueryWithSynonyms:
+    """Test expand_query() with database synonyms."""
+
+    def test_expand_query_without_db(self, mock_settings):
+        """expand_query works without db (uses hardcoded patterns only)."""
+        from ai_ready_rag.services.rag_service import expand_query
+
+        queries = expand_query("What is our vacation policy?")
+
+        # Should include original
+        assert "What is our vacation policy?" in queries
+        # Should include hardcoded policy expansion
+        assert any("policy procedure" in q for q in queries)
+
+    def test_expand_query_with_db_synonyms(self, mock_settings, db):
+        """expand_query uses database synonyms when db provided."""
+        import json
+
+        from ai_ready_rag.db.models import QuerySynonym
+        from ai_ready_rag.services.rag_service import expand_query, invalidate_synonym_cache
+
+        # Create a test synonym
+        synonym = QuerySynonym(
+            term="vacation",
+            synonyms=json.dumps(["PTO", "paid time off", "time off"]),
+            enabled=True,
+        )
+        db.add(synonym)
+        db.commit()
+
+        # Invalidate cache to pick up new synonym
+        invalidate_synonym_cache()
+
+        queries = expand_query("What is our vacation policy?", db=db)
+
+        # Should include synonym expansions
+        assert "PTO" in queries
+        assert "paid time off" in queries
+
+    def test_expand_query_word_boundary_no_false_positive(self, mock_settings, db):
+        """Synonym matching respects word boundaries - no false positives."""
+        import json
+
+        from ai_ready_rag.db.models import QuerySynonym
+        from ai_ready_rag.services.rag_service import expand_query, invalidate_synonym_cache
+
+        # Create synonym for "pto"
+        synonym = QuerySynonym(
+            term="pto",
+            synonyms=json.dumps(["paid time off", "vacation"]),
+            enabled=True,
+        )
+        db.add(synonym)
+        db.commit()
+        invalidate_synonym_cache()
+
+        # "photo" should NOT match "pto"
+        queries = expand_query("Show me the photo gallery", db=db)
+        assert "paid time off" not in queries
+        assert "vacation" not in queries
+
+    def test_expand_query_word_boundary_positive_match(self, mock_settings, db):
+        """Synonym matching works for actual word matches."""
+        import json
+
+        from ai_ready_rag.db.models import QuerySynonym
+        from ai_ready_rag.services.rag_service import expand_query, invalidate_synonym_cache
+
+        # Create synonym for "pto"
+        synonym = QuerySynonym(
+            term="pto",
+            synonyms=json.dumps(["paid time off", "vacation"]),
+            enabled=True,
+        )
+        db.add(synonym)
+        db.commit()
+        invalidate_synonym_cache()
+
+        # "pto" should match
+        queries = expand_query("How do I request PTO?", db=db)
+        assert "paid time off" in queries or "vacation" in queries
+
+    def test_expand_query_disabled_synonyms_ignored(self, mock_settings, db):
+        """Disabled synonyms are not used."""
+        import json
+
+        from ai_ready_rag.db.models import QuerySynonym
+        from ai_ready_rag.services.rag_service import expand_query, invalidate_synonym_cache
+
+        synonym = QuerySynonym(
+            term="vacation",
+            synonyms=json.dumps(["PTO"]),
+            enabled=False,  # Disabled
+        )
+        db.add(synonym)
+        db.commit()
+        invalidate_synonym_cache()
+
+        queries = expand_query("vacation policy", db=db)
+
+        # Should NOT include PTO since synonym is disabled
+        assert "PTO" not in queries
+
+
+# =============================================================================
+# Curated Q&A Tests
+# =============================================================================
+
+
+class TestCuratedQA:
+    """Test curated Q&A matching."""
+
+    def test_check_curated_qa_exact_match(self, mock_settings, db):
+        """Exact keyword match returns Q&A."""
+        import json
+
+        from ai_ready_rag.db.models import CuratedQA
+        from ai_ready_rag.services.rag_service import check_curated_qa, invalidate_qa_cache
+
+        qa = CuratedQA(
+            keywords=json.dumps(["vacation policy"]),
+            answer="Employees receive 20 days of PTO annually.",
+            source_reference="Employee Handbook Section 5.1",
+            confidence=90,
+            priority=10,
+            enabled=True,
+        )
+        db.add(qa)
+        db.commit()
+        invalidate_qa_cache()
+
+        result = check_curated_qa("What is the vacation policy?", db)
+
+        assert result is not None
+        assert "20 days" in result.answer
+
+    def test_check_curated_qa_no_match(self, mock_settings, db):
+        """Returns None when no keywords match."""
+        import json
+
+        from ai_ready_rag.db.models import CuratedQA
+        from ai_ready_rag.services.rag_service import check_curated_qa, invalidate_qa_cache
+
+        qa = CuratedQA(
+            keywords=json.dumps(["401k", "retirement"]),
+            answer="401k info...",
+            source_reference="Benefits Guide",
+            confidence=85,
+            enabled=True,
+        )
+        db.add(qa)
+        db.commit()
+        invalidate_qa_cache()
+
+        result = check_curated_qa("What is the vacation policy?", db)
+
+        assert result is None
+
+    def test_check_curated_qa_priority_ordering(self, mock_settings, db):
+        """Higher priority Q&A returned when multiple match."""
+        import json
+
+        from ai_ready_rag.db.models import CuratedQA
+        from ai_ready_rag.services.rag_service import check_curated_qa, invalidate_qa_cache
+
+        # Lower priority
+        qa1 = CuratedQA(
+            keywords=json.dumps(["pto"]),
+            answer="Low priority answer",
+            source_reference="Source 1",
+            confidence=80,
+            priority=5,
+            enabled=True,
+        )
+        # Higher priority
+        qa2 = CuratedQA(
+            keywords=json.dumps(["pto"]),
+            answer="High priority answer",
+            source_reference="Source 2",
+            confidence=90,
+            priority=10,
+            enabled=True,
+        )
+        db.add_all([qa1, qa2])
+        db.commit()
+        invalidate_qa_cache()
+
+        result = check_curated_qa("How do I request PTO?", db)
+
+        assert result is not None
+        assert "High priority" in result.answer
+
+    def test_check_curated_qa_disabled_ignored(self, mock_settings, db):
+        """Disabled Q&A pairs are not matched."""
+        import json
+
+        from ai_ready_rag.db.models import CuratedQA
+        from ai_ready_rag.services.rag_service import check_curated_qa, invalidate_qa_cache
+
+        qa = CuratedQA(
+            keywords=json.dumps(["vacation"]),
+            answer="Disabled answer",
+            source_reference="Source",
+            confidence=85,
+            enabled=False,  # Disabled
+        )
+        db.add(qa)
+        db.commit()
+        invalidate_qa_cache()
+
+        result = check_curated_qa("vacation policy", db)
+
+        assert result is None
+
+    def test_check_curated_qa_multiword_keyword_match(self, mock_settings, db):
+        """Multi-word keywords like 'paid time off' match correctly."""
+        import json
+
+        from ai_ready_rag.db.models import CuratedQA
+        from ai_ready_rag.services.rag_service import check_curated_qa, invalidate_qa_cache
+
+        qa = CuratedQA(
+            keywords=json.dumps(["paid time off"]),
+            answer="PTO information...",
+            source_reference="HR Policy",
+            confidence=90,
+            enabled=True,
+        )
+        db.add(qa)
+        db.commit()
+        invalidate_qa_cache()
+
+        # Should match when all tokens present
+        result = check_curated_qa("How do I request paid time off?", db)
+        assert result is not None
+
+    def test_check_curated_qa_multiword_keyword_no_partial_match(self, mock_settings, db):
+        """Multi-word keywords don't match with partial tokens."""
+        import json
+
+        from ai_ready_rag.db.models import CuratedQA
+        from ai_ready_rag.services.rag_service import check_curated_qa, invalidate_qa_cache
+
+        qa = CuratedQA(
+            keywords=json.dumps(["paid time off"]),
+            answer="PTO information...",
+            source_reference="HR Policy",
+            confidence=90,
+            enabled=True,
+        )
+        db.add(qa)
+        db.commit()
+        invalidate_qa_cache()
+
+        # Should NOT match when only partial tokens present
+        result = check_curated_qa("How much time do I have?", db)
+        assert result is None  # "paid" and "off" missing
+
+    def test_check_curated_qa_case_insensitive(self, mock_settings, db):
+        """Keyword matching is case-insensitive."""
+        import json
+
+        from ai_ready_rag.db.models import CuratedQA
+        from ai_ready_rag.services.rag_service import check_curated_qa, invalidate_qa_cache
+
+        qa = CuratedQA(
+            keywords=json.dumps(["PTO"]),
+            answer="PTO answer...",
+            source_reference="HR Policy",
+            confidence=90,
+            enabled=True,
+        )
+        db.add(qa)
+        db.commit()
+        invalidate_qa_cache()
+
+        # Should match lowercase query
+        result = check_curated_qa("how do i request pto?", db)
+        assert result is not None
+
+
+# =============================================================================
+# Cache Invalidation Tests
+# =============================================================================
+
+
+class TestCacheInvalidation:
+    """Test cache behavior and invalidation."""
+
+    def test_synonym_cache_invalidation_refreshes(self, mock_settings, db):
+        """invalidate_synonym_cache() causes next call to refresh from db."""
+        import json
+
+        from ai_ready_rag.db.models import QuerySynonym
+        from ai_ready_rag.services.rag_service import (
+            get_cached_synonyms,
+            invalidate_synonym_cache,
+        )
+
+        # Create first synonym
+        syn1 = QuerySynonym(
+            term="test1",
+            synonyms=json.dumps(["synonym1"]),
+            enabled=True,
+        )
+        db.add(syn1)
+        db.commit()
+        invalidate_synonym_cache()
+
+        # First call should include syn1
+        result1 = get_cached_synonyms(db)
+        assert len(result1) >= 1
+
+        # Add another synonym
+        syn2 = QuerySynonym(
+            term="test2",
+            synonyms=json.dumps(["synonym2"]),
+            enabled=True,
+        )
+        db.add(syn2)
+        db.commit()
+
+        # Without invalidation, cache may be stale
+        # After invalidation, should refresh...
+
+        invalidate_synonym_cache()
+        result3 = get_cached_synonyms(db)
+
+        # Should now include both
+        assert len(result3) >= 2
+
+    def test_qa_cache_invalidation_refreshes(self, mock_settings, db):
+        """invalidate_qa_cache() causes next call to refresh from db."""
+        import json
+
+        from ai_ready_rag.db.models import CuratedQA
+        from ai_ready_rag.services.rag_service import get_cached_qa, invalidate_qa_cache
+
+        # Create first Q&A
+        qa1 = CuratedQA(
+            keywords=json.dumps(["test1"]),
+            answer="Answer 1",
+            source_reference="Source 1",
+            confidence=90,
+            enabled=True,
+        )
+        db.add(qa1)
+        db.commit()
+        invalidate_qa_cache()
+
+        # First call should include qa1
+        token_index1, qa_lookup1, _ = get_cached_qa(db)
+        assert len(qa_lookup1) >= 1
+
+        # Add another Q&A
+        qa2 = CuratedQA(
+            keywords=json.dumps(["test2"]),
+            answer="Answer 2",
+            source_reference="Source 2",
+            confidence=85,
+            enabled=True,
+        )
+        db.add(qa2)
+        db.commit()
+
+        # Invalidate and check
+        invalidate_qa_cache()
+        token_index2, qa_lookup2, _ = get_cached_qa(db)
+
+        # Should now include both
+        assert len(qa_lookup2) >= 2
+
+
+# =============================================================================
+# Helper Function Tests
+# =============================================================================
+
+
+class TestTokenizeQuery:
+    """Test tokenize_query helper function."""
+
+    def test_tokenize_query_basic(self):
+        """Basic tokenization works correctly."""
+        from ai_ready_rag.services.rag_service import tokenize_query
+
+        tokens = tokenize_query("How do I request PTO?")
+        assert "how" in tokens
+        assert "do" in tokens
+        assert "request" in tokens
+        assert "pto" in tokens
+
+    def test_tokenize_query_filters_short_tokens(self):
+        """Tokens shorter than 2 chars are filtered."""
+        from ai_ready_rag.services.rag_service import tokenize_query
+
+        tokens = tokenize_query("I a test question")
+        assert "i" not in tokens
+        assert "a" not in tokens
+        assert "test" in tokens
+        assert "question" in tokens
+
+    def test_tokenize_query_handles_numbers(self):
+        """Alphanumeric tokens including numbers are kept."""
+        from ai_ready_rag.services.rag_service import tokenize_query
+
+        tokens = tokenize_query("Form 401k benefit")
+        assert "401k" in tokens
+
+
+class TestMatchesKeyword:
+    """Test matches_keyword helper function."""
+
+    def test_matches_keyword_single_word_match(self):
+        """Single word keyword matches when present."""
+        from ai_ready_rag.services.rag_service import matches_keyword
+
+        result = matches_keyword("pto", {"pto", "request"})
+        assert result is True
+
+    def test_matches_keyword_single_word_no_match(self):
+        """Single word keyword doesn't match when absent."""
+        from ai_ready_rag.services.rag_service import matches_keyword
+
+        result = matches_keyword("pto", {"photo", "gallery"})
+        assert result is False
+
+    def test_matches_keyword_multiword_all_present(self):
+        """Multi-word keyword matches when all tokens present."""
+        from ai_ready_rag.services.rag_service import matches_keyword
+
+        result = matches_keyword("paid time off", {"paid", "time", "off", "request"})
+        assert result is True
+
+    def test_matches_keyword_multiword_partial_no_match(self):
+        """Multi-word keyword doesn't match with missing tokens."""
+        from ai_ready_rag.services.rag_service import matches_keyword
+
+        result = matches_keyword("paid time off", {"time", "request"})
+        assert result is False
