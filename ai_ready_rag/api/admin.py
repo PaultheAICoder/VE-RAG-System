@@ -4395,6 +4395,8 @@ async def create_synonym(
             detail=f"Synonym for term '{synonym_data.term}' already exists",
         )
 
+    from ai_ready_rag.services.rag_service import invalidate_synonym_cache
+
     synonym = QuerySynonym(
         term=synonym_data.term,
         synonyms=json.dumps(synonym_data.synonyms),
@@ -4404,6 +4406,9 @@ async def create_synonym(
     db.add(synonym)
     db.commit()
     db.refresh(synonym)
+
+    # Invalidate cache after successful create
+    invalidate_synonym_cache()
 
     return SynonymResponse(
         id=synonym.id,
@@ -4459,6 +4464,11 @@ async def update_synonym(
     db.commit()
     db.refresh(synonym)
 
+    # Invalidate cache after successful update
+    from ai_ready_rag.services.rag_service import invalidate_synonym_cache
+
+    invalidate_synonym_cache()
+
     return SynonymResponse(
         id=synonym.id,
         term=synonym.term,
@@ -4492,6 +4502,11 @@ async def delete_synonym(
 
     db.delete(synonym)
     db.commit()
+
+    # Invalidate cache after successful delete
+    from ai_ready_rag.services.rag_service import invalidate_synonym_cache
+
+    invalidate_synonym_cache()
 
     return {"success": True, "message": f"Synonym '{synonym.term}' deleted"}
 
@@ -4679,6 +4694,11 @@ async def create_curated_qa(
     db.commit()
     db.refresh(qa)
 
+    # Invalidate cache after successful create
+    from ai_ready_rag.services.rag_service import invalidate_qa_cache
+
+    invalidate_qa_cache()
+
     return CuratedQAResponse(
         id=qa.id,
         keywords=json.loads(qa.keywords),
@@ -4752,6 +4772,11 @@ async def update_curated_qa(
 
     db.commit()
     db.refresh(qa)
+
+    # Invalidate cache after successful update
+    from ai_ready_rag.services.rag_service import invalidate_qa_cache
+
+    invalidate_qa_cache()
 
     return CuratedQAResponse(
         id=qa.id,
