@@ -13,6 +13,7 @@ export function MessageList({ messages, isLoading = false, typingMessage }: Mess
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const prevMessageCountRef = useRef(messages.length);
 
   const checkIfAtBottom = useCallback(() => {
     const container = containerRef.current;
@@ -25,15 +26,32 @@ export function MessageList({ messages, isLoading = false, typingMessage }: Mess
     setIsAtBottom(checkIfAtBottom());
   }, [checkIfAtBottom]);
 
-  const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = useCallback((instant = false) => {
+    bottomRef.current?.scrollIntoView({ behavior: instant ? 'instant' : 'smooth' });
   }, []);
 
-  // Auto-scroll to bottom when new messages arrive (only if already at bottom)
+  // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
-    if (isAtBottom && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    const messageCountChanged = messages.length !== prevMessageCountRef.current;
+    const lastMessage = messages[messages.length - 1];
+
+    // Always scroll when:
+    // 1. User sends a new message (role === 'user')
+    // 2. Typing indicator appears (assistant is responding)
+    // 3. New assistant message arrives and user was at bottom
+    const shouldScroll =
+      (messageCountChanged && lastMessage?.role === 'user') || // User sent message
+      typingMessage !== null || // Typing indicator shown
+      (messageCountChanged && isAtBottom); // New message and was at bottom
+
+    if (shouldScroll && bottomRef.current) {
+      // Use instant scroll for user messages to feel more responsive
+      const useInstant = lastMessage?.role === 'user';
+      bottomRef.current.scrollIntoView({ behavior: useInstant ? 'instant' : 'smooth' });
+      setIsAtBottom(true);
     }
+
+    prevMessageCountRef.current = messages.length;
   }, [messages, typingMessage, isAtBottom]);
 
   // Empty state
