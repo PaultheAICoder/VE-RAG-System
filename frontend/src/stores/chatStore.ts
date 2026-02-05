@@ -171,12 +171,21 @@ export const useChatStore = create<ChatState>()(
         }),
 
       // Message actions
-      setMessages: (messages) => set({ messages }),
+      setMessages: (messages) => {
+        console.log('[ChatStore] setMessages', { count: messages.length });
+        set({ messages });
+      },
 
-      addMessage: (message) =>
+      addMessage: (message) => {
+        console.log('[ChatStore] addMessage', {
+          id: message.id,
+          role: message.role,
+          contentPreview: message.content?.slice(0, 50),
+        });
         set((state) => ({
           messages: [...state.messages, message],
-        })),
+        }));
+      },
 
       updateMessage: (id, updates) =>
         set((state) => ({
@@ -185,12 +194,21 @@ export const useChatStore = create<ChatState>()(
           ),
         })),
 
-      replaceOptimisticMessage: (tempId, realMessage) =>
+      replaceOptimisticMessage: (tempId, realMessage) => {
+        const { messages } = get();
+        const found = messages.some((m) => m.id === tempId);
+        console.log('[ChatStore] replaceOptimisticMessage', {
+          tempId,
+          realId: realMessage.id,
+          found,
+          messageIds: messages.map((m) => m.id),
+        });
         set((state) => ({
           messages: state.messages.map((m) =>
             m.id === tempId ? realMessage : m
           ),
-        })),
+        }));
+      },
 
       removeMessage: (id) =>
         set((state) => ({
@@ -211,21 +229,48 @@ export const useChatStore = create<ChatState>()(
       setPendingMessageId: (id) => set({ pendingMessageId: id }),
 
       // Sync from backend (backend is source of truth)
-      syncFromBackend: (messages) => {
-        const { pendingMessageId } = get();
+      syncFromBackend: (backendMessages) => {
+        const { pendingMessageId, messages: currentMessages } = get();
 
-        // If we have a pending message ID, check if response has arrived
-        // A response is indicated by an assistant message following the user message
+        console.log('[ChatStore] syncFromBackend called', {
+          pendingMessageId,
+          currentMessageCount: currentMessages.length,
+          backendMessageCount: backendMessages.length,
+          currentIds: currentMessages.map((m) => m.id),
+          backendIds: backendMessages.map((m) => m.id),
+        });
+
+        // If we have a pending message (send in progress), merge carefully
+        if (pendingMessageId) {
+          const pendingMessage = currentMessages.find((m) => m.id === pendingMessageId);
+
+          if (pendingMessage) {
+            console.log('[ChatStore] Has pending message, preserving it', {
+              pendingId: pendingMessageId,
+              pendingContent: pendingMessage.content?.slice(0, 50),
+            });
+
+            // Check if backend already has this message (by content match since IDs differ)
+            const backendHasPending = backendMessages.some(
+              (m) => m.role === 'user' && m.content === pendingMessage.content
+            );
+
+            if (!backendHasPending) {
+              // Backend doesn't have our pending message yet, preserve it
+              console.log('[ChatStore] Backend missing pending, preserving optimistic message');
+              set({ messages: [...backendMessages, pendingMessage] });
+              return;
+            }
+          }
+        }
+
+        // Check if response has arrived (new assistant message)
         let shouldClearPending = false;
         if (pendingMessageId) {
-          // Find index of the pending user message (the temp ID might have been replaced)
-          // Check if there's an assistant message that wasn't there before
-          const lastAssistantMessage = [...messages]
+          const lastAssistantMessage = [...backendMessages]
             .reverse()
             .find((m) => m.role === 'assistant');
 
-          // If the last assistant message is newer than what we had, response arrived
-          const currentMessages = get().messages;
           const currentLastAssistant = [...currentMessages]
             .reverse()
             .find((m) => m.role === 'assistant');
@@ -236,11 +281,12 @@ export const useChatStore = create<ChatState>()(
               lastAssistantMessage.id !== currentLastAssistant.id)
           ) {
             shouldClearPending = true;
+            console.log('[ChatStore] New assistant message detected, clearing pending');
           }
         }
 
         set({
-          messages,
+          messages: backendMessages,
           ...(shouldClearPending
             ? { pendingMessageId: null, typingMessage: null }
             : {}),
