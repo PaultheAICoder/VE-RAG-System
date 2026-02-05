@@ -202,15 +202,31 @@ def expand_query(question: str, db: Session | None = None) -> list[str]:
     queries = [question]
     query_tokens = tokenize_query(question)
 
-    # 1. Check database synonyms (if db provided)
+    # 1. Check database synonyms (if db provided) - BIDIRECTIONAL
     if db is not None:
         synonyms = get_cached_synonyms(db)
         for syn in synonyms:
-            # Word-boundary match using existing helper
+            syn_list = json.loads(syn.synonyms)
+
+            # Forward match: term in query -> add synonyms
             if matches_keyword(syn.term, query_tokens):
-                syn_list = json.loads(syn.synonyms)
                 queries.extend(syn_list)
-                logger.debug(f"Synonym expansion: '{syn.term}' -> {syn_list}")
+                logger.debug(f"Synonym expansion (forward): '{syn.term}' -> {syn_list}")
+
+            # Reverse match: any synonym in query -> add term + other synonyms
+            else:
+                for synonym in syn_list:
+                    if matches_keyword(synonym, query_tokens):
+                        # Add the term
+                        queries.append(syn.term)
+                        # Add other synonyms (excluding the matched one)
+                        other_synonyms = [s for s in syn_list if s != synonym]
+                        queries.extend(other_synonyms)
+                        logger.debug(
+                            f"Synonym expansion (reverse): '{synonym}' -> "
+                            f"['{syn.term}'] + {other_synonyms}"
+                        )
+                        break  # Only expand once per synonym group
 
     # 2. Existing hardcoded patterns (fallback)
     q_lower = question.lower()
@@ -1522,6 +1538,13 @@ class RAGService:
         # 0. Check curated Q&A first (highest priority - admin-approved answers)
         curated_qa = check_curated_qa(request.query, db)
         if curated_qa:
+            # Re-fetch from current session to avoid DetachedInstanceError
+            # (cached objects are not bound to the current db session)
+            from ai_ready_rag.db.models import CuratedQA
+
+            qa_id = curated_qa.id
+            curated_qa = db.query(CuratedQA).filter(CuratedQA.id == qa_id).first()
+
             # Update access tracking
             curated_qa.access_count += 1
             curated_qa.last_accessed_at = datetime.utcnow()

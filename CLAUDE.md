@@ -36,7 +36,7 @@ cd ~/projects/VE-RAG-System
 source .venv/bin/activate
 
 # Run FastAPI backend (new architecture)
-python -m uvicorn ai_ready_rag.main:app --reload --port 8000
+python -m uvicorn ai_ready_rag.main:app --host 0.0.0.0 --port 8502
 
 # Run tests
 pytest tests/ -v
@@ -49,6 +49,11 @@ ruff format ai_ready_rag tests
 # python app.py
 ```
 
+**Development Server:** `http://localhost:8502`
+
+**Test Credentials:**
+- **Admin:** admin@test.com / npassword2002!
+
 **Environment Variables** (defaults work for local development):
 - `OLLAMA_BASE_URL` - Ollama server (default: http://localhost:11434)
 - `EMBEDDING_MODEL` - Embedding model (default: nomic-embed-text)
@@ -60,7 +65,7 @@ ruff format ai_ready_rag tests
 ### Current Architecture
 FastAPI backend with React frontend:
 ```
-FastAPI (:8000)                    React (:5173 dev / :8000 prod)
+FastAPI (:8502)                    React (:5173 dev / :8502 prod)
 ├── /api/auth/*      - JWT auth    ├── /chat        - Chat interface
 ├── /api/chat/*      - Sessions    ├── /admin       - Admin dashboard
 ├── /api/documents/* - Upload      ├── /login       - Authentication

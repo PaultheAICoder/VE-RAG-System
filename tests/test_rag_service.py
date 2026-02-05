@@ -1155,6 +1155,31 @@ class TestExpandQueryWithSynonyms:
         # Should NOT include PTO since synonym is disabled
         assert "PTO" not in queries
 
+    def test_expand_query_bidirectional_synonym(self, mock_settings, db):
+        """Synonym expansion works bidirectionally - synonym in query adds term."""
+        import json
+
+        from ai_ready_rag.db.models import QuerySynonym
+        from ai_ready_rag.services.rag_service import expand_query, invalidate_synonym_cache
+
+        # Create synonym: pto -> [vacation, time off]
+        synonym = QuerySynonym(
+            term="pto",
+            synonyms=json.dumps(["vacation", "time off"]),
+            enabled=True,
+        )
+        db.add(synonym)
+        db.commit()
+        invalidate_synonym_cache()
+
+        # Query contains "vacation" (a synonym), should expand to include "pto" (the term)
+        queries = expand_query("What is the vacation policy?", db=db)
+
+        # Should include the term (reverse direction)
+        assert "pto" in queries
+        # Should include other synonyms
+        assert "time off" in queries
+
 
 # =============================================================================
 # Curated Q&A Tests

@@ -4,6 +4,7 @@
  */
 
 import ReactMarkdown from 'react-markdown';
+import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
@@ -109,7 +110,7 @@ export function MarkdownContent({ content, className = '' }: MarkdownContentProp
     <div className={`markdown-content ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeSanitize]}
+        rehypePlugins={[rehypeRaw, rehypeSanitize]}
         components={components}
       >
         {content}

@@ -1673,6 +1673,46 @@ class ReindexJobResponse(BaseModel):
     auto_skip_failures: bool = False
 
 
+def _reindex_job_to_response(job) -> ReindexJobResponse:
+    """Convert a ReindexJob to ReindexJobResponse."""
+    import json
+
+    # Calculate progress percentage
+    if job.total_documents > 0:
+        progress = (job.processed_documents / job.total_documents) * 100
+    else:
+        progress = 0.0
+
+    # Parse settings_changed JSON if present
+    settings_changed = None
+    if job.settings_changed:
+        try:
+            settings_changed = json.loads(job.settings_changed)
+        except (json.JSONDecodeError, TypeError):
+            settings_changed = None
+
+    return ReindexJobResponse(
+        id=job.id,
+        status=job.status,
+        total_documents=job.total_documents,
+        processed_documents=job.processed_documents,
+        failed_documents=job.failed_documents,
+        progress_percent=round(progress, 1),
+        current_document_id=job.current_document_id,
+        error_message=job.error_message,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+        created_at=job.created_at,
+        settings_changed=settings_changed,
+        last_error=job.last_error,
+        retry_count=job.retry_count or 0,
+        max_retries=job.max_retries or 3,
+        paused_at=job.paused_at,
+        paused_reason=job.paused_reason,
+        auto_skip_failures=job.auto_skip_failures or False,
+    )
+
+
 class ReindexEstimate(BaseModel):
     """Time estimate for reindex operation."""
 
@@ -1915,7 +1955,7 @@ async def start_reindex(
     # Start background worker
     background_tasks.add_task(run_reindex_job, job.id)
 
-    return _job_to_response(job)
+    return _reindex_job_to_response(job)
 
 
 @router.get("/reindex/status", response_model=ReindexJobResponse | None)
@@ -1937,7 +1977,7 @@ async def get_reindex_status(
     if not job:
         return None
 
-    return _job_to_response(job)
+    return _reindex_job_to_response(job)
 
 
 @router.post("/reindex/abort", response_model=ReindexJobResponse)
@@ -1966,7 +2006,7 @@ async def abort_reindex(
     job = service.abort_job(job.id)
     logger.warning(f"Admin {current_user.email} aborted reindex job {job.id}")
 
-    return _job_to_response(job)
+    return _reindex_job_to_response(job)
 
 
 @router.get("/reindex/history", response_model=list[ReindexJobResponse])
@@ -1986,10 +2026,12 @@ async def get_reindex_history(
     service = ReindexService(db)
     jobs = service.get_job_history(limit=limit)
 
-    return [_job_to_response(job) for job in jobs]
+    return [_reindex_job_to_response(job) for job in jobs]
 
 
-def _job_to_response(job) -> ReindexJobResponse:
+# Note: This function is shadowed by _job_to_response for WarmingJob below.
+# Use _reindex_job_to_response instead for ReindexJob conversions.
+def _legacy_reindex_job_to_response(job) -> ReindexJobResponse:
     """Convert ReindexJob model to response."""
     import json
 
@@ -2063,7 +2105,7 @@ async def pause_reindex(
     job = service.pause_job(job.id, reason="user_request")
     logger.info(f"Admin {current_user.email} paused reindex job {job.id}")
 
-    return _job_to_response(job)
+    return _reindex_job_to_response(job)
 
 
 @router.post("/reindex/resume", response_model=ReindexJobResponse)
@@ -2111,7 +2153,7 @@ async def resume_reindex(
     job = service.resume_job(job.id, action)
     logger.info(f"Admin {current_user.email} resumed reindex job {job.id} with action '{action}'")
 
-    return _job_to_response(job)
+    return _reindex_job_to_response(job)
 
 
 @router.get("/reindex/failures", response_model=ReindexFailuresResponse)
@@ -2211,7 +2253,7 @@ async def retry_reindex_document(
         f"Admin {current_user.email} marked document {document_id} for retry in job {job.id}"
     )
 
-    return _job_to_response(job)
+    return _reindex_job_to_response(job)
 
 
 # =============================================================================
