@@ -119,7 +119,7 @@ export function QAForm({
           label="Keywords"
           value={keywords}
           onChange={setKeywords}
-          placeholder="Type keyword and press Enter..."
+          placeholder="Type keyword and press Enter to add"
         />
         <p className="text-xs text-gray-500 -mt-2">
           Enter keywords/phrases that should trigger this curated response

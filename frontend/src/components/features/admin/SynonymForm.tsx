@@ -104,7 +104,7 @@ export function SynonymForm({
           label="Synonyms"
           value={synonyms}
           onChange={setSynonyms}
-          placeholder="Type synonym and press Enter"
+          placeholder="Type synonym and press Enter to add"
         />
         <p className="text-xs text-gray-500 -mt-2">
           Related terms that will be included in search queries
