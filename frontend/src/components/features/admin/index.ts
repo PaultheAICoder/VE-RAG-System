@@ -17,3 +17,4 @@ export { ClearCacheModal } from './ClearCacheModal';
 export { SynonymManager } from './SynonymManager';
 export { SynonymForm } from './SynonymForm';
 export { QAManager } from './QAManager';
+export { QAForm } from './QAForm';
