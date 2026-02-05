@@ -102,7 +102,7 @@ export function MessageList({ messages, isLoading = false, typingMessage }: Mess
       {/* Scroll to bottom button */}
       {!isAtBottom && (
         <button
-          onClick={scrollToBottom}
+          onClick={() => scrollToBottom()}
           className="absolute bottom-4 right-4 p-2 rounded-full bg-primary text-white shadow-lg hover:bg-primary-dark transition-all opacity-90 hover:opacity-100"
           aria-label="Scroll to bottom"
         >
