@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ai_ready_rag.api import admin, auth, chat, documents, health, setup, tags, users
+from ai_ready_rag.api import admin, auth, chat, documents, experimental, health, setup, tags, users
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import Document
@@ -136,6 +136,7 @@ app.include_router(tags.router, prefix="/api/tags", tags=["Tags"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
+app.include_router(experimental.router, prefix="/api", tags=["Experimental"])
 
 # Mount Gradio UI at /app if enabled
 print(f"Gradio enabled: {settings.enable_gradio}")
