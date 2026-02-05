@@ -187,7 +187,7 @@ class CacheService:
     def _close_session(self, db: Session) -> None:
         """Close a session if we own it (factory mode only)."""
         if self._owns_sessions:
-            self._close_session(db)
+            db.close()
 
     def _load_from_sqlite(self) -> None:
         """Warm memory cache from SQLite on startup."""
