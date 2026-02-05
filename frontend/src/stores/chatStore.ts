@@ -2,6 +2,37 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { ChatSession, ChatMessage } from '../types';
 
+// Track hydration state for components that need to wait
+let hasHydrated = false;
+const hydrationListeners: (() => void)[] = [];
+
+export const waitForHydration = (): Promise<void> => {
+  if (hasHydrated) return Promise.resolve();
+  return new Promise((resolve) => {
+    hydrationListeners.push(resolve);
+  });
+};
+
+export const useHasHydrated = () => {
+  const [hydrated, setHydrated] = React.useState(hasHydrated);
+  React.useEffect(() => {
+    if (hasHydrated) {
+      setHydrated(true);
+      return;
+    }
+    const listener = () => setHydrated(true);
+    hydrationListeners.push(listener);
+    return () => {
+      const idx = hydrationListeners.indexOf(listener);
+      if (idx !== -1) hydrationListeners.splice(idx, 1);
+    };
+  }, []);
+  return hydrated;
+};
+
+// Need React for the hook
+import * as React from 'react';
+
 interface ChatState {
   // Session state
   sessions: ChatSession[];
@@ -239,6 +270,12 @@ export const useChatStore = create<ChatState>()(
         messages: state.messages,
         pendingMessageId: state.pendingMessageId,
       }),
+      onRehydrateStorage: () => (_state) => {
+        // Mark hydration complete and notify listeners
+        hasHydrated = true;
+        hydrationListeners.forEach((listener) => listener());
+        hydrationListeners.length = 0;
+      },
     }
   )
 );

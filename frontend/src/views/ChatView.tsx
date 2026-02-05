@@ -8,7 +8,7 @@ import type {
   MessageListResponse,
   SendMessageResponse,
 } from '../types';
-import { useChatStore } from '../stores/chatStore';
+import { useChatStore, useHasHydrated } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
 import { SessionSidebar } from '../components/features/chat/SessionSidebar';
 import { MessageList } from '../components/features/chat/MessageList';
@@ -54,11 +54,16 @@ export function ChatView() {
   const user = useAuthStore((state) => state.user);
   const isAdmin = user?.role === 'admin' || user?.role === 'customer_admin';
 
-  // Load sessions on mount and sync with backend
+  // Wait for store hydration before loading
+  const hasHydrated = useHasHydrated();
+
+  // Load sessions on mount and sync with backend (only after hydration)
   useEffect(() => {
-    loadSessions();
+    if (hasHydrated) {
+      loadSessions();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [hasHydrated]);
 
   // Load messages when active session changes
   useEffect(() => {
