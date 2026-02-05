@@ -779,12 +779,26 @@ class WarmingWorker:
                     await self._interruptible_sleep(delay, job_id)
                 else:
                     # Max retries exhausted
+                    logger.error(
+                        f"[WARM] Query {line_number} failed after {max_retries} retries: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    print(
+                        f"[WARM] Query {line_number} EXHAUSTED retries: {type(e).__name__}: "
+                        f"{str(e)[:200]}",
+                        flush=True,
+                    )
                     self._record_failed_query(
                         job_id, query, line_number, str(e), type(e).__name__, attempt + 1
                     )
                     return (False, False)
             except Exception as e:
                 # Non-retryable error - fail immediately
+                logger.error(f"[WARM] Query {line_number} failed with {type(e).__name__}: {e}")
+                print(
+                    f"[WARM] Query {line_number} ERROR: {type(e).__name__}: {str(e)[:200]}",
+                    flush=True,
+                )
                 self._record_failed_query(
                     job_id, query, line_number, str(e), type(e).__name__, attempt + 1
                 )

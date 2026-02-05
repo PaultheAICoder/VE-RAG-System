@@ -777,11 +777,14 @@ class RAGService:
         """
         from ai_ready_rag.db.database import SessionLocal
 
+        print(f"[WARM] warm_cache() called for: {query[:50]}...", flush=True)
+
         # Use hr tags if not specified (warming populates cache for common queries)
         # TODO: Make this configurable - currently hardcoded to "hr" for testing
         effective_tags = user_tags if user_tags is not None else ["hr"]
 
         # Check if already cached
+        print(f"[WARM] Checking cache service... cache={self.cache is not None}", flush=True)
         if self.cache and self.cache.enabled:
             try:
                 print(f"[WARM] Checking cache for: {query[:50]}...", flush=True)
