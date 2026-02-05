@@ -10,3 +10,4 @@ export { Pagination } from './Pagination';
 export { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 export { Slider } from './Slider';
 export { TagInput } from './TagInput';
+export { RichTextEditor } from './RichTextEditor';

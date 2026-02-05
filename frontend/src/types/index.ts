@@ -614,3 +614,53 @@ export interface SynonymUpdate {
   synonyms?: string[];
   enabled?: boolean;
 }
+
+// =============================================================================
+// Curated Q&A Types
+// =============================================================================
+
+export interface CuratedQA {
+  id: string;
+  keywords: string[];
+  answer: string;
+  source_reference: string;
+  confidence: number;
+  priority: number;
+  enabled: boolean;
+  access_count: number;
+  last_accessed_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CuratedQACreate {
+  keywords: string[];
+  answer: string;
+  source_reference: string;
+  confidence?: number;
+  priority?: number;
+}
+
+export interface CuratedQAUpdate {
+  keywords?: string[];
+  answer?: string;
+  source_reference?: string;
+  confidence?: number;
+  priority?: number;
+  enabled?: boolean;
+}
+
+export interface CuratedQAListResponse {
+  qa_pairs: CuratedQA[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface CuratedQAListParams {
+  page?: number;
+  page_size?: number;
+  enabled?: boolean | null;
+  search?: string | null;
+}
