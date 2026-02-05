@@ -140,8 +140,35 @@ class MemoryCache:
 class CacheService:
     """Multi-layer RAG response cache with memory + SQLite backend."""
 
-    def __init__(self, db: Session):
-        self.db = db
+    def __init__(self, db_factory=None):
+        """Initialize cache service.
+
+        Args:
+            db_factory: Either a callable that returns a fresh Session,
+                       or a Session instance (for backwards compatibility).
+                       If None, uses SessionLocal from database module.
+        """
+        # Track whether we own sessions (factory mode) or not (legacy mode)
+        self._owns_sessions = True
+
+        # Support both factory and direct session for backwards compatibility
+        if db_factory is None:
+            from ai_ready_rag.db.database import SessionLocal
+
+            self._db_factory = SessionLocal
+        elif callable(db_factory) and not isinstance(db_factory, Session):
+            self._db_factory = db_factory
+        else:
+            # Legacy: direct session passed - wrap in factory for compatibility
+            # Note: This is deprecated and may cause DetachedInstanceError
+            self._legacy_session = db_factory
+            self._db_factory = lambda: db_factory
+            self._owns_sessions = False  # Don't close sessions we don't own
+            logger.warning(
+                "CacheService initialized with direct session (deprecated). "
+                "Use session factory for better reliability."
+            )
+
         self.memory = MemoryCache()
         self._invalidation_paused = False
         self._pending_invalidation = False
@@ -149,17 +176,31 @@ class CacheService:
         self._miss_count = 0
         self._load_from_sqlite()
 
+    def _get_session(self) -> Session:
+        """Get a database session.
+
+        Returns:
+            A database session. Caller should call _close_session() when done.
+        """
+        return self._db_factory()
+
+    def _close_session(self, db: Session) -> None:
+        """Close a session if we own it (factory mode only)."""
+        if self._owns_sessions:
+            self._close_session(db)
+
     def _load_from_sqlite(self) -> None:
         """Warm memory cache from SQLite on startup."""
         from ai_ready_rag.db.models import ResponseCache
 
+        db = self._get_session()
         try:
             # Calculate cutoff for TTL
             cutoff = datetime.utcnow() - timedelta(hours=self.ttl_hours)
 
             # Load up to max_entries most recently accessed (non-expired only)
             entries = (
-                self.db.query(ResponseCache)
+                db.query(ResponseCache)
                 .filter(ResponseCache.created_at >= cutoff)
                 .order_by(ResponseCache.last_accessed_at.desc())
                 .limit(self.max_entries)
@@ -172,6 +213,8 @@ class CacheService:
                 logger.info(f"Loaded {len(entries)} cache entries from SQLite")
         except Exception as e:
             logger.warning(f"Failed to load cache from SQLite: {e}")
+        finally:
+            self._close_session(db)
 
     def _row_to_entry(self, row: Any) -> CacheEntry:
         """Convert SQLAlchemy row to CacheEntry."""
@@ -328,32 +371,33 @@ class CacheService:
         """Get entry from SQLite by hash."""
         from ai_ready_rag.db.models import ResponseCache
 
-        # Refresh session to see latest data from other connections
-        self.db.expire_all()
-
-        row = self.db.query(ResponseCache).filter(ResponseCache.query_hash == query_hash).first()
-        print(
-            f"[CACHE] _get_from_sqlite hash={query_hash[:16]}... row={'found' if row else 'None'}",
-            flush=True,
-        )
-        if row:
-            # Check TTL using last_accessed_at (sliding expiration)
-            # Fall back to created_at if never accessed
-            check_time = row.last_accessed_at or row.created_at
-            age_hours = (datetime.utcnow() - check_time).total_seconds() / 3600
+        db = self._get_session()
+        try:
+            row = db.query(ResponseCache).filter(ResponseCache.query_hash == query_hash).first()
             print(
-                f"[CACHE] Entry age={age_hours:.1f}h since last access, TTL={self.ttl_hours}h",
+                f"[CACHE] _get_from_sqlite hash={query_hash[:16]}... row={'found' if row else 'None'}",
                 flush=True,
             )
-            if datetime.utcnow() - check_time > timedelta(hours=self.ttl_hours):
-                print("[CACHE] Entry EXPIRED", flush=True)
-                return None  # Expired
-            # Update last_accessed_at on hit
-            row.last_accessed_at = datetime.utcnow()
-            row.access_count = (row.access_count or 0) + 1
-            self.db.commit()
-            return self._row_to_entry(row)
-        return None
+            if row:
+                # Check TTL using last_accessed_at (sliding expiration)
+                # Fall back to created_at if never accessed
+                check_time = row.last_accessed_at or row.created_at
+                age_hours = (datetime.utcnow() - check_time).total_seconds() / 3600
+                print(
+                    f"[CACHE] Entry age={age_hours:.1f}h since last access, TTL={self.ttl_hours}h",
+                    flush=True,
+                )
+                if datetime.utcnow() - check_time > timedelta(hours=self.ttl_hours):
+                    print("[CACHE] Entry EXPIRED", flush=True)
+                    return None  # Expired
+                # Update last_accessed_at on hit
+                row.last_accessed_at = datetime.utcnow()
+                row.access_count = (row.access_count or 0) + 1
+                db.commit()
+                return self._row_to_entry(row)
+            return None
+        finally:
+            self._close_session(db)
 
     async def verify_access(self, entry: CacheEntry, user_tags: list[str] | None) -> bool:
         """Verify user can access all documents cited in cached response."""
@@ -366,26 +410,30 @@ class CacheService:
         # Lazy import to avoid circular dependency
         from ai_ready_rag.db.models import Document, Tag, document_tags
 
-        # Get user's tag IDs
-        user_tag_objs = self.db.query(Tag).filter(Tag.name.in_(user_tags)).all()
-        user_tag_ids = [t.id for t in user_tag_objs]
+        db = self._get_session()
+        try:
+            # Get user's tag IDs
+            user_tag_objs = db.query(Tag).filter(Tag.name.in_(user_tags)).all()
+            user_tag_ids = [t.id for t in user_tag_objs]
 
-        if not user_tag_ids:
-            return False  # User has no tags
+            if not user_tag_ids:
+                return False  # User has no tags
 
-        # Count accessible documents
-        accessible = (
-            self.db.query(Document)
-            .join(document_tags)
-            .filter(
-                Document.id.in_(entry.document_ids),
-                document_tags.c.tag_id.in_(user_tag_ids),
+            # Count accessible documents
+            accessible = (
+                db.query(Document)
+                .join(document_tags)
+                .filter(
+                    Document.id.in_(entry.document_ids),
+                    document_tags.c.tag_id.in_(user_tag_ids),
+                )
+                .distinct()
+                .count()
             )
-            .distinct()
-            .count()
-        )
 
-        return accessible == len(entry.document_ids)
+            return accessible == len(entry.document_ids)
+        finally:
+            self._close_session(db)
 
     async def get_embedding(self, query: str) -> list[float] | None:
         """Get cached embedding for query (Layer 3)."""
@@ -394,11 +442,15 @@ class CacheService:
 
         from ai_ready_rag.db.models import EmbeddingCache
 
-        query_hash = self._hash_query(query)
-        row = self.db.query(EmbeddingCache).filter(EmbeddingCache.query_hash == query_hash).first()
-        if row:
-            return json.loads(row.embedding)
-        return None
+        db = self._get_session()
+        try:
+            query_hash = self._hash_query(query)
+            row = db.query(EmbeddingCache).filter(EmbeddingCache.query_hash == query_hash).first()
+            if row:
+                return json.loads(row.embedding)
+            return None
+        finally:
+            self._close_session(db)
 
     async def put(
         self,
@@ -463,43 +515,47 @@ class CacheService:
         self.memory.put(entry)
 
         # Store in SQLite (upsert)
-        existing = (
-            self.db.query(ResponseCache).filter(ResponseCache.query_hash == query_hash).first()
-        )
-        if existing:
-            existing.answer = entry.answer
-            existing.sources = json.dumps(sources)
-            existing.confidence_overall = entry.confidence_overall
-            existing.confidence_retrieval = entry.confidence_retrieval
-            existing.confidence_coverage = entry.confidence_coverage
-            existing.confidence_llm = entry.confidence_llm
-            existing.generation_time_ms = entry.generation_time_ms
-            existing.model_used = entry.model_used
-            existing.document_ids = json.dumps(doc_ids)
-            existing.last_accessed_at = datetime.utcnow()
-            existing.access_count += 1
-            print(f"[CACHE] Updated existing entry (hash={query_hash[:12]}...)", flush=True)
-        else:
-            row = ResponseCache(
-                query_hash=query_hash,
-                query_text=query,
-                query_embedding=json.dumps(embedding),
-                answer=entry.answer,
-                sources=json.dumps(sources),
-                confidence_overall=entry.confidence_overall,
-                confidence_retrieval=entry.confidence_retrieval,
-                confidence_coverage=entry.confidence_coverage,
-                confidence_llm=entry.confidence_llm,
-                generation_time_ms=entry.generation_time_ms,
-                model_used=entry.model_used,
-                document_ids=json.dumps(doc_ids),
+        db = self._get_session()
+        try:
+            existing = (
+                db.query(ResponseCache).filter(ResponseCache.query_hash == query_hash).first()
             )
-            self.db.add(row)
-            print(f"[CACHE] Created new entry (hash={query_hash[:12]}...)", flush=True)
+            if existing:
+                existing.answer = entry.answer
+                existing.sources = json.dumps(sources)
+                existing.confidence_overall = entry.confidence_overall
+                existing.confidence_retrieval = entry.confidence_retrieval
+                existing.confidence_coverage = entry.confidence_coverage
+                existing.confidence_llm = entry.confidence_llm
+                existing.generation_time_ms = entry.generation_time_ms
+                existing.model_used = entry.model_used
+                existing.document_ids = json.dumps(doc_ids)
+                existing.last_accessed_at = datetime.utcnow()
+                existing.access_count += 1
+                print(f"[CACHE] Updated existing entry (hash={query_hash[:12]}...)", flush=True)
+            else:
+                row = ResponseCache(
+                    query_hash=query_hash,
+                    query_text=query,
+                    query_embedding=json.dumps(embedding),
+                    answer=entry.answer,
+                    sources=json.dumps(sources),
+                    confidence_overall=entry.confidence_overall,
+                    confidence_retrieval=entry.confidence_retrieval,
+                    confidence_coverage=entry.confidence_coverage,
+                    confidence_llm=entry.confidence_llm,
+                    generation_time_ms=entry.generation_time_ms,
+                    model_used=entry.model_used,
+                    document_ids=json.dumps(doc_ids),
+                )
+                db.add(row)
+                print(f"[CACHE] Created new entry (hash={query_hash[:12]}...)", flush=True)
 
-        self.db.commit()
-        print("[CACHE] Committed to SQLite", flush=True)
-        logger.debug(f"Cached response for query: {query[:50]}...")
+            db.commit()
+            print("[CACHE] Committed to SQLite", flush=True)
+            logger.debug(f"Cached response for query: {query[:50]}...")
+        finally:
+            self._close_session(db)
 
     async def seed_entry(
         self,
@@ -561,42 +617,46 @@ class CacheService:
         self.memory.put(entry)
 
         # Store in SQLite (upsert)
-        existing = (
-            self.db.query(ResponseCache).filter(ResponseCache.query_hash == query_hash).first()
-        )
-        if existing:
-            existing.answer = entry.answer
-            existing.sources = json.dumps(sources)
-            existing.confidence_overall = entry.confidence_overall
-            existing.confidence_retrieval = entry.confidence_retrieval
-            existing.confidence_coverage = entry.confidence_coverage
-            existing.confidence_llm = entry.confidence_llm
-            existing.generation_time_ms = entry.generation_time_ms
-            existing.model_used = entry.model_used
-            existing.document_ids = json.dumps(entry.document_ids)
-            existing.last_accessed_at = datetime.utcnow()
-            existing.access_count += 1
-            logger.info(f"Updated seeded cache entry (hash={query_hash[:12]}...)")
-        else:
-            row = ResponseCache(
-                query_hash=query_hash,
-                query_text=query,
-                query_embedding=json.dumps(embedding),
-                answer=entry.answer,
-                sources=json.dumps(sources),
-                confidence_overall=entry.confidence_overall,
-                confidence_retrieval=entry.confidence_retrieval,
-                confidence_coverage=entry.confidence_coverage,
-                confidence_llm=entry.confidence_llm,
-                generation_time_ms=entry.generation_time_ms,
-                model_used=entry.model_used,
-                document_ids=json.dumps(entry.document_ids),
+        db = self._get_session()
+        try:
+            existing = (
+                db.query(ResponseCache).filter(ResponseCache.query_hash == query_hash).first()
             )
-            self.db.add(row)
-            logger.info(f"Created seeded cache entry (hash={query_hash[:12]}...)")
+            if existing:
+                existing.answer = entry.answer
+                existing.sources = json.dumps(sources)
+                existing.confidence_overall = entry.confidence_overall
+                existing.confidence_retrieval = entry.confidence_retrieval
+                existing.confidence_coverage = entry.confidence_coverage
+                existing.confidence_llm = entry.confidence_llm
+                existing.generation_time_ms = entry.generation_time_ms
+                existing.model_used = entry.model_used
+                existing.document_ids = json.dumps(entry.document_ids)
+                existing.last_accessed_at = datetime.utcnow()
+                existing.access_count += 1
+                logger.info(f"Updated seeded cache entry (hash={query_hash[:12]}...)")
+            else:
+                row = ResponseCache(
+                    query_hash=query_hash,
+                    query_text=query,
+                    query_embedding=json.dumps(embedding),
+                    answer=entry.answer,
+                    sources=json.dumps(sources),
+                    confidence_overall=entry.confidence_overall,
+                    confidence_retrieval=entry.confidence_retrieval,
+                    confidence_coverage=entry.confidence_coverage,
+                    confidence_llm=entry.confidence_llm,
+                    generation_time_ms=entry.generation_time_ms,
+                    model_used=entry.model_used,
+                    document_ids=json.dumps(entry.document_ids),
+                )
+                db.add(row)
+                logger.info(f"Created seeded cache entry (hash={query_hash[:12]}...)")
 
-        self.db.commit()
-        return query_hash
+            db.commit()
+            return query_hash
+        finally:
+            self._close_session(db)
 
     async def put_embedding(self, query: str, embedding: list[float]) -> None:
         """Store query embedding (Layer 3)."""
@@ -605,19 +665,23 @@ class CacheService:
 
         from ai_ready_rag.db.models import EmbeddingCache
 
-        query_hash = self._hash_query(query)
+        db = self._get_session()
+        try:
+            query_hash = self._hash_query(query)
 
-        existing = (
-            self.db.query(EmbeddingCache).filter(EmbeddingCache.query_hash == query_hash).first()
-        )
-        if not existing:
-            row = EmbeddingCache(
-                query_hash=query_hash,
-                query_text=query,
-                embedding=json.dumps(embedding),
+            existing = (
+                db.query(EmbeddingCache).filter(EmbeddingCache.query_hash == query_hash).first()
             )
-            self.db.add(row)
-            self.db.commit()
+            if not existing:
+                row = EmbeddingCache(
+                    query_hash=query_hash,
+                    query_text=query,
+                    embedding=json.dumps(embedding),
+                )
+                db.add(row)
+                db.commit()
+        finally:
+            self._close_session(db)
 
     def invalidate_all(self, reason: str) -> int:
         """Clear entire cache. Returns entries removed."""
@@ -631,9 +695,13 @@ class CacheService:
         memory_count = self.memory.clear()
 
         # Clear SQLite tables
-        sqlite_count = self.db.query(ResponseCache).delete()
-        self.db.query(EmbeddingCache).delete()
-        self.db.commit()
+        db = self._get_session()
+        try:
+            sqlite_count = db.query(ResponseCache).delete()
+            db.query(EmbeddingCache).delete()
+            db.commit()
+        finally:
+            self._close_session(db)
 
         total = memory_count + sqlite_count
         logger.info(f"Cache invalidated: {total} entries (reason: {reason})")
@@ -643,38 +711,52 @@ class CacheService:
         """Remove entries older than TTL. Returns entries removed."""
         from ai_ready_rag.db.models import ResponseCache
 
-        cutoff = datetime.utcnow() - timedelta(hours=self.ttl_hours)
-        removed = self.db.query(ResponseCache).filter(ResponseCache.created_at < cutoff).delete()
-        self.db.commit()
-        logger.info(f"Evicted {removed} expired cache entries")
-        return removed
+        db = self._get_session()
+        try:
+            cutoff = datetime.utcnow() - timedelta(hours=self.ttl_hours)
+            removed = db.query(ResponseCache).filter(ResponseCache.created_at < cutoff).delete()
+            db.commit()
+            logger.info(f"Evicted {removed} expired cache entries")
+            return removed
+        finally:
+            self._close_session(db)
 
     def get_stats(self) -> CacheStats:
         """Get cache statistics."""
         from ai_ready_rag.db.models import ResponseCache
 
-        sqlite_count = self.db.query(ResponseCache).count()
+        db = self._get_session()
+        try:
+            sqlite_count = db.query(ResponseCache).count()
 
-        return CacheStats(
-            enabled=self.enabled,
-            total_entries=sqlite_count,  # SQLite is source of truth
-            memory_entries=len(self.memory),
-            sqlite_entries=sqlite_count,
-            hit_count=self._hit_count,
-            miss_count=self._miss_count,
-        )
+            return CacheStats(
+                enabled=self.enabled,
+                total_entries=sqlite_count,  # SQLite is source of truth
+                memory_entries=len(self.memory),
+                sqlite_entries=sqlite_count,
+                hit_count=self._hit_count,
+                miss_count=self._miss_count,
+            )
+        finally:
+            self._close_session(db)
 
     def _log_access(self, query_hash: str, query_text: str, was_hit: bool) -> None:
         """Log cache access for frequency tracking."""
         from ai_ready_rag.db.models import CacheAccessLog
 
-        log = CacheAccessLog(
-            query_hash=query_hash,
-            query_text=query_text,
-            was_hit=was_hit,
-        )
-        self.db.add(log)
-        self.db.commit()
+        db = self._get_session()
+        try:
+            log = CacheAccessLog(
+                query_hash=query_hash,
+                query_text=query_text,
+                was_hit=was_hit,
+            )
+            db.add(log)
+            db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to log cache access: {e}")
+        finally:
+            self._close_session(db)
 
     # ----- Cache Warming -----
 
@@ -694,26 +776,30 @@ class CacheService:
 
         from ai_ready_rag.db.models import CacheAccessLog
 
-        results = (
-            self.db.query(
-                CacheAccessLog.query_text,
-                func.count().label("access_count"),
-                func.max(CacheAccessLog.accessed_at).label("last_accessed"),
+        db = self._get_session()
+        try:
+            results = (
+                db.query(
+                    CacheAccessLog.query_text,
+                    func.count().label("access_count"),
+                    func.max(CacheAccessLog.accessed_at).label("last_accessed"),
+                )
+                .group_by(CacheAccessLog.query_hash)
+                .order_by(func.count().desc())
+                .limit(limit)
+                .all()
             )
-            .group_by(CacheAccessLog.query_hash)
-            .order_by(func.count().desc())
-            .limit(limit)
-            .all()
-        )
 
-        return [
-            {
-                "query_text": r.query_text,
-                "access_count": r.access_count,
-                "last_accessed": r.last_accessed,
-            }
-            for r in results
-        ]
+            return [
+                {
+                    "query_text": r.query_text,
+                    "access_count": r.access_count,
+                    "last_accessed": r.last_accessed,
+                }
+                for r in results
+            ]
+        finally:
+            self._close_session(db)
 
     # ----- Batch Context -----
 

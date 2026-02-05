@@ -127,8 +127,7 @@ class WarmingWorker:
 
                 if job:
                     self._current_job_id = job.id
-                    logger.info(f"[WARM] Acquired job {job.id} ({job.total_queries} queries)")
-                    print(f"[WARM] Acquired job {job.id} ({job.total_queries} queries)", flush=True)
+                    # Note: _acquire_job_lease already logs acquisition
 
                     try:
                         await self._process_job(job)
@@ -160,6 +159,9 @@ class WarmingWorker:
                             db.close()
                 else:
                     # No job available, wait before checking again
+                    logger.debug(
+                        f"[WARM] No jobs available, sleeping {self.settings.warming_scan_interval_seconds}s"
+                    )
                     await asyncio.sleep(self.settings.warming_scan_interval_seconds)
 
             except asyncio.CancelledError:
@@ -180,47 +182,87 @@ class WarmingWorker:
         Returns:
             WarmingQueue job if acquired, None otherwise.
         """
-        now = datetime.utcnow()
-        lease_expires = now + timedelta(minutes=self.settings.warming_lease_duration_minutes)
+        import time
 
-        # Find oldest pending job or job with expired lease
-        job = (
-            db.query(WarmingQueue)
-            .filter(
-                (WarmingQueue.status == "pending")
-                | (
-                    (WarmingQueue.status == "running")
-                    & (WarmingQueue.worker_lease_expires_at < now)
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            now = datetime.utcnow()
+            lease_expires = now + timedelta(minutes=self.settings.warming_lease_duration_minutes)
+
+            # Find oldest pending job or job with expired lease
+            job = (
+                db.query(WarmingQueue)
+                .filter(
+                    (WarmingQueue.status == "pending")
+                    | (
+                        (WarmingQueue.status == "running")
+                        & (WarmingQueue.worker_lease_expires_at < now)
+                    )
                 )
+                .order_by(WarmingQueue.created_at)
+                .first()
             )
-            .order_by(WarmingQueue.created_at)
-            .first()
-        )
 
-        if not job:
-            return None
+            if not job:
+                logger.debug(f"[WARM] No pending/stale jobs found (attempt {attempt + 1})")
+                return None
 
-        # Try to acquire the lease atomically
-        updated = (
-            db.query(WarmingQueue)
-            .filter(
-                WarmingQueue.id == job.id,
-                (WarmingQueue.worker_id.is_(None)) | (WarmingQueue.worker_lease_expires_at < now),
+            job_id = job.id
+            job_status = job.status
+            logger.debug(
+                f"[WARM] Found job {job_id[:8]}... (status={job_status}), "
+                f"attempting to acquire lease (attempt {attempt + 1})"
             )
-            .update(
-                {
-                    "worker_id": self.worker_id,
-                    "worker_lease_expires_at": lease_expires,
-                    "status": "running",
-                    "started_at": now if job.started_at is None else job.started_at,
-                }
-            )
-        )
-        db.commit()
 
-        if updated:
-            db.refresh(job)
-            return job
+            # Try to acquire the lease atomically
+            try:
+                updated = (
+                    db.query(WarmingQueue)
+                    .filter(
+                        WarmingQueue.id == job_id,
+                        (WarmingQueue.worker_id.is_(None))
+                        | (WarmingQueue.worker_lease_expires_at < now),
+                    )
+                    .update(
+                        {
+                            "worker_id": self.worker_id,
+                            "worker_lease_expires_at": lease_expires,
+                            "status": "running",
+                            "started_at": now if job.started_at is None else job.started_at,
+                        }
+                    )
+                )
+                db.commit()
+
+                if updated:
+                    db.refresh(job)
+                    logger.info(
+                        f"[WARM] Acquired job {job_id[:8]}... "
+                        f"(worker={self.worker_id}, lease_expires={lease_expires})"
+                    )
+                    print(
+                        f"[WARM] Acquired job {job_id[:8]}... ({job.total_queries} queries)",
+                        flush=True,
+                    )
+                    return job
+                else:
+                    # Race condition - another worker acquired the job
+                    logger.warning(
+                        f"[WARM] Race condition: job {job_id[:8]}... was acquired by another worker"
+                    )
+                    # Brief backoff before retry
+                    if attempt < max_attempts - 1:
+                        time.sleep(0.1 * (attempt + 1))
+                    continue
+
+            except Exception as e:
+                logger.error(f"[WARM] Error acquiring job lease: {e}")
+                db.rollback()
+                if attempt < max_attempts - 1:
+                    time.sleep(0.1 * (attempt + 1))
+                continue
+
+        logger.warning(f"[WARM] Failed to acquire job after {max_attempts} attempts")
         return None
 
     def _renew_lease(self, db, job_id: str) -> bool:
@@ -758,7 +800,7 @@ class WarmingWorker:
         error_message: str,
         error_type: str,
         retry_count: int,
-    ) -> None:
+    ) -> bool:
         """Record a failed query in the database.
 
         Args:
@@ -768,6 +810,9 @@ class WarmingWorker:
             error_message: Error message.
             error_type: Exception class name.
             retry_count: Number of retries attempted.
+
+        Returns:
+            True if recording succeeded, False if it failed.
         """
         db = SessionLocal()
         try:
@@ -795,8 +840,22 @@ class WarmingWorker:
                     "error_type": error_type,
                 },
             )
+            return True
         except Exception as e:
-            logger.error(f"[WARM] Failed to record failed query: {e}")
+            # Log comprehensive details since DB record failed
+            logger.error(
+                f"[WARM] Failed to record failed query in database: {e}\n"
+                f"  Job ID: {job_id}\n"
+                f"  Line: {line_number}\n"
+                f"  Query: {query[:100]}...\n"
+                f"  Original error: {error_type}: {error_message[:200]}\n"
+                f"  Retry count: {retry_count}"
+            )
+            print(
+                f"[WARM] WARNING: Could not record failed query (line {line_number}): {e}",
+                flush=True,
+            )
+            return False
         finally:
             db.close()
 

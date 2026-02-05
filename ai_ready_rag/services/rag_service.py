@@ -112,6 +112,7 @@ class RAGRequest:
     chat_history: list[ChatMessage] | None = None
     model: str | None = None
     max_context_chunks: int | None = None  # None = use database setting
+    is_warming: bool = False  # True when called from warming worker (skip access tracking)
 
 
 @dataclass
@@ -752,8 +753,9 @@ class RAGService:
         if self._cache_service is None:
             from ai_ready_rag.db.database import SessionLocal
 
-            db = SessionLocal()
-            self._cache_service = CacheService(db)
+            # Pass session factory, not a session instance
+            # CacheService will create fresh sessions for each operation
+            self._cache_service = CacheService(db_factory=SessionLocal)
         return self._cache_service
 
     async def warm_cache(self, query: str, user_tags: list[str] | None = None) -> bool:
@@ -805,6 +807,7 @@ class RAGService:
                 query=query,
                 user_tags=effective_tags,
                 tenant_id="default",
+                is_warming=True,  # Skip access tracking during warming
             )
             print("[WARM] Calling RAG generate()...", flush=True)
             response = await self.generate(request, db)
@@ -1545,10 +1548,11 @@ class RAGService:
             qa_id = curated_qa.id
             curated_qa = db.query(CuratedQA).filter(CuratedQA.id == qa_id).first()
 
-            # Update access tracking
-            curated_qa.access_count += 1
-            curated_qa.last_accessed_at = datetime.utcnow()
-            db.commit()
+            # Update access tracking (skip during warming to reduce DB writes)
+            if not request.is_warming:
+                curated_qa.access_count += 1
+                curated_qa.last_accessed_at = datetime.utcnow()
+                db.commit()
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 

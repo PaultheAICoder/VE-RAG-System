@@ -591,6 +591,7 @@ class TestTTLExpiration:
             model_used="llama3.2",
             document_ids=json.dumps([]),
             created_at=old_time,
+            last_accessed_at=old_time,  # Both created and last_accessed must be old
         )
         db.add(expired_row)
         db.commit()
