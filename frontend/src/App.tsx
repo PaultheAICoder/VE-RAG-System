@@ -8,6 +8,7 @@ import { TagsView } from './views/TagsView';
 import { UsersView } from './views/UsersView';
 import { SettingsView } from './views/SettingsView';
 import { HealthView } from './views/HealthView';
+import { RAGQualityView } from './views/RAGQualityView';
 
 // Simple login page for development
 const LoginPage = () => {
@@ -78,6 +79,7 @@ function App() {
                 <Route path="/documents" element={<DocumentsView />} />
                 <Route path="/tags" element={<TagsView />} />
                 <Route path="/users" element={<UsersView />} />
+                <Route path="/rag-quality" element={<RAGQualityView />} />
                 <Route path="/settings" element={<SettingsView />} />
                 <Route path="/health" element={<HealthView />} />
               </Routes>

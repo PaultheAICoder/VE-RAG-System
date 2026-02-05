@@ -6,6 +6,7 @@ import {
   Users,
   Settings,
   Activity,
+  Sparkles,
 } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
 import type { NavItem, UserRole } from '../../types';
@@ -15,6 +16,7 @@ const navItems: NavItem[] = [
   { href: '/documents', label: 'Documents', icon: FileText, roles: ['admin', 'customer_admin', 'user'] },
   { href: '/tags', label: 'Tags', icon: Tags, roles: ['admin', 'customer_admin'] },
   { href: '/users', label: 'Users', icon: Users, roles: ['admin', 'customer_admin'] },
+  { href: '/rag-quality', label: 'RAG Quality', icon: Sparkles, roles: ['admin'] },
   { href: '/settings', label: 'Settings', icon: Settings, roles: ['admin'] },
   { href: '/health', label: 'Health', icon: Activity, roles: ['admin'] },
 ];

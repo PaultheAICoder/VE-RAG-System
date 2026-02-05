@@ -14,3 +14,5 @@ export { CacheStatsCard } from './CacheStatsCard';
 export { CacheTopQueriesCard } from './CacheTopQueriesCard';
 export { CacheWarmingCard } from './CacheWarmingCard';
 export { ClearCacheModal } from './ClearCacheModal';
+export { SynonymManager } from './SynonymManager';
+export { QAManager } from './QAManager';
