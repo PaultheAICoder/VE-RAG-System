@@ -575,3 +575,42 @@ export interface BulkDeleteSessionsResponse {
   failed_ids: string[];
   total_messages_deleted: number;
 }
+
+// =============================================================================
+// Synonym Management Types
+// =============================================================================
+
+export interface Synonym {
+  id: string;
+  term: string;
+  synonyms: string[];
+  enabled: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SynonymListResponse {
+  synonyms: Synonym[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface SynonymListParams {
+  page?: number;
+  page_size?: number;
+  enabled?: boolean | null;
+  search?: string | null;
+}
+
+export interface SynonymCreate {
+  term: string;
+  synonyms: string[];
+}
+
+export interface SynonymUpdate {
+  term?: string;
+  synonyms?: string[];
+  enabled?: boolean;
+}

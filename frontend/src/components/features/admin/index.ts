@@ -15,4 +15,5 @@ export { CacheTopQueriesCard } from './CacheTopQueriesCard';
 export { CacheWarmingCard } from './CacheWarmingCard';
 export { ClearCacheModal } from './ClearCacheModal';
 export { SynonymManager } from './SynonymManager';
+export { SynonymForm } from './SynonymForm';
 export { QAManager } from './QAManager';
