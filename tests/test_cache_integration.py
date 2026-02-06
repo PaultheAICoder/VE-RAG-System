@@ -383,6 +383,7 @@ class TestCacheWarming:
         with (
             patch("ai_ready_rag.config.get_settings") as mock_get_settings,
             patch("ai_ready_rag.db.database.SessionLocal") as mock_session,
+            patch("ai_ready_rag.services.factory.get_vector_service") as mock_get_vs,
             patch("ai_ready_rag.services.rag_service.RAGService") as mock_rag_class,
         ):
             mock_settings = MagicMock()
@@ -391,6 +392,10 @@ class TestCacheWarming:
 
             mock_db = MagicMock()
             mock_session.return_value = mock_db
+
+            mock_vector_service = MagicMock()
+            mock_vector_service.initialize = AsyncMock()
+            mock_get_vs.return_value = mock_vector_service
 
             mock_rag_service = MagicMock()
             mock_rag_service.generate = AsyncMock()
@@ -415,6 +420,7 @@ class TestCacheWarming:
         with (
             patch("ai_ready_rag.config.get_settings") as mock_get_settings,
             patch("ai_ready_rag.db.database.SessionLocal") as mock_session,
+            patch("ai_ready_rag.services.factory.get_vector_service") as mock_get_vs,
             patch("ai_ready_rag.services.rag_service.RAGService") as mock_rag_class,
         ):
             mock_settings = MagicMock()
@@ -423,6 +429,10 @@ class TestCacheWarming:
 
             mock_db = MagicMock()
             mock_session.return_value = mock_db
+
+            mock_vector_service = MagicMock()
+            mock_vector_service.initialize = AsyncMock()
+            mock_get_vs.return_value = mock_vector_service
 
             mock_rag_service = MagicMock()
             # First query fails, second succeeds

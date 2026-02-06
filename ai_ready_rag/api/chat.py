@@ -3,7 +3,7 @@
 import json
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -42,7 +42,6 @@ from ai_ready_rag.services.rag_service import (
     RAGService,
 )
 from ai_ready_rag.services.settings_service import SettingsService
-from ai_ready_rag.services.vector_service import VectorService
 
 # Settings key for runtime chat model override
 CHAT_MODEL_KEY = "chat_model"
@@ -470,6 +469,7 @@ async def get_messages(
 async def send_message(
     session_id: str,
     message: MessageCreate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SendMessageResponse:
@@ -554,24 +554,17 @@ async def send_message(
         model=message.model,
     )
 
-    # 5. Call RAGService
+    # 5. Call RAGService (injected via Depends — vector_service is a singleton)
     try:
-        vector_service = VectorService(
-            qdrant_url=settings.qdrant_url,
-            ollama_url=settings.ollama_base_url,
-            collection_name=settings.qdrant_collection,
-            embedding_model=settings.embedding_model,
-            embedding_dimension=settings.embedding_dimension,
-            max_tokens=settings.embedding_max_tokens,
-            tenant_id=settings.default_tenant_id,
-        )
-        await vector_service.initialize()
-
         # Check for runtime model override from admin settings
         settings_service = SettingsService(db)
         chat_model = settings_service.get(CHAT_MODEL_KEY) or settings.chat_model
 
-        rag_service = RAGService(settings, vector_service, default_model=chat_model)
+        rag_service = RAGService(
+            settings,
+            vector_service=request.app.state.vector_service,
+            default_model=chat_model,
+        )
         response = await rag_service.generate(rag_request, db)
 
     except ModelNotAllowedError as e:

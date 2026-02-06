@@ -5,7 +5,7 @@ These endpoints are for testing new features before production.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
@@ -28,7 +28,8 @@ router = APIRouter(prefix="/experimental", tags=["experimental"])
 
 @router.post("/presentations/generate", response_model=PresentationResponse)
 async def generate_presentation(
-    request: GeneratePresentationRequest,
+    payload: GeneratePresentationRequest,
+    http_request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -53,20 +54,20 @@ async def generate_presentation(
 
     logger.info(
         f"[SLIDES] User {current_user.email} generating presentation: "
-        f"topic='{request.topic[:50]}...', slides={request.num_slides}, tags={user_tags}"
+        f"topic='{payload.topic[:50]}...', slides={payload.num_slides}, tags={user_tags}"
     )
 
     try:
-        # Initialize services
-        rag_service = RAGService(settings)
+        # Initialize services (vector_service is a singleton from app.state)
+        rag_service = RAGService(settings, vector_service=http_request.app.state.vector_service)
         slide_generator = SlideGeneratorService(rag_service, settings)
 
         # Generate presentation
         presentation = await slide_generator.generate_presentation(
-            topic=request.topic,
+            topic=payload.topic,
             user_tags=user_tags,
-            num_slides=request.num_slides,
-            template=request.template,
+            num_slides=payload.num_slides,
+            template=payload.template,
         )
 
         # Convert to response

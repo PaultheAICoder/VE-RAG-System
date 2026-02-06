@@ -2,6 +2,7 @@
 
 import logging
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -14,35 +15,17 @@ from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.error_handlers import register_error_handlers
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import Document
+from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.workers.warming_cleanup import WarmingCleanupService
 from ai_ready_rag.workers.warming_worker import WarmingWorker, recover_stale_jobs
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Global warming worker instance (managed by startup/shutdown events)
-warming_worker: WarmingWorker | None = None
-# Global warming cleanup service instance (managed by startup/shutdown events)
-warming_cleanup: WarmingCleanupService | None = None
 
-
-app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
-    description="Enterprise RAG system with authentication and access control",
-    docs_url="/api/docs" if settings.debug else None,
-    redoc_url="/api/redoc" if settings.debug else None,
-)
-
-# Register global error handlers (AppError → JSON responses)
-register_error_handlers(app)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Application startup: initialize services."""
-    global warming_worker, warming_cleanup
-
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan: initialize and cleanup services."""
     logger.info("=" * 60)
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     logger.info(f"  ENV_PROFILE: {settings.env_profile}")
@@ -59,7 +42,16 @@ async def startup_event():
     # Track server start time for uptime calculation
     app.state.start_time = time.time()
 
+    # Store settings in app.state for Depends() access
+    app.state.settings = settings
+
     init_db()
+
+    # Initialize VectorService once (expensive — singleton for app lifetime)
+    vector_service = get_vector_service(settings)
+    await vector_service.initialize()
+    app.state.vector_service = vector_service
+    logger.info("VectorService initialized (singleton)")
 
     # Recover stuck documents from previous crashes
     db = SessionLocal()
@@ -79,7 +71,7 @@ async def startup_event():
     # Initialize and start DB-based WarmingWorker
     from ai_ready_rag.services.rag_service import RAGService
 
-    rag_service = RAGService(settings)
+    rag_service = RAGService(settings, vector_service=vector_service)
     warming_worker = WarmingWorker(rag_service, settings)
     await warming_worker.start()
 
@@ -97,26 +89,29 @@ async def startup_event():
     print("WarmingCleanupService started", flush=True)
     logger.info("WarmingCleanupService started")
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Application shutdown: cleanup services."""
-    global warming_worker, warming_cleanup
+    # Shutdown
+    await warming_cleanup.stop()
+    logger.info("WarmingCleanupService stopped")
 
-    # Stop WarmingCleanupService
-    if warming_cleanup:
-        await warming_cleanup.stop()
-        warming_cleanup = None
-        logger.info("WarmingCleanupService stopped")
-
-    # Stop WarmingWorker
-    if warming_worker:
-        await warming_worker.stop()
-        warming_worker = None
-        logger.info("WarmingWorker stopped")
+    await warming_worker.stop()
+    logger.info("WarmingWorker stopped")
 
     print("Shutting down...", flush=True)
 
+
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    description="Enterprise RAG system with authentication and access control",
+    docs_url="/api/docs" if settings.debug else None,
+    redoc_url="/api/redoc" if settings.debug else None,
+    lifespan=lifespan,
+)
+
+# Register global error handlers (AppError → JSON responses)
+register_error_handlers(app)
 
 # CORS middleware
 app.add_middleware(
