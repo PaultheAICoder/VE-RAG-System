@@ -1,6 +1,6 @@
 # VE-RAG-System Scaffold Alignment Specification
 
-**Version:** 3.0
+**Version:** 3.1
 **Status:** FINAL - Ready for Sign-off
 **Author:** Architecture Team
 **Date:** 2026-02-06
@@ -22,6 +22,7 @@
 | 2.0 | 2026-02-06 | Architecture Team | Spec review feedback: Drop ServiceContainer → FastAPI Depends() chain; global error handlers only; drop-and-recreate tables (pre-MVP); defer Alembic + SQLAlchemy 2.0 Mapped[] syntax to post-MVP; trim config migration to 23 settings (5.1+5.2 only); add PRAGMA foreign_keys=ON; add Redis to architecture invariants; reduced effort from 97h → 75h |
 | 2.1 | 2026-02-06 | Architecture Team | Engineering team feedback: Import migration checklist with re-export pattern (6.2.7); transaction boundary rules (4.6.1); experimental endpoints excluded from scope (1.2); per-setting config acceptance criteria (12.5); debug override policy with 1h TTL (16.6.1); phase-level test checkpoints (9.4); data safety clause with auto-backup (7.3.1); Redis failure policy with degraded mode (15.3.4); release guardrail for v0.5.0-rc (11.2); password min default 8 for dev |
 | 3.0 | 2026-02-06 | Architecture Team | Final consistency pass: reconciled Phase 2 task numbering (6.2 ↔ 11.1 Gantt); fixed Section 6.2 effort (16h → 22h); removed stale Alembic references (7.2, 8.1); corrected deferred settings count (26 → 48); marked FINAL for sign-off |
+| 3.1 | 2026-02-06 | Architecture Team | Frontend alignment: Added Task 1.4 (frontend error handling, Option B — update client.ts to parse new error format); added frontend SSE rewiring to Phase 10; qualified "React frontend" out-of-scope to exclude error handling + Jobs API rewiring; updated effort 75h → 77h |
 
 ---
 
@@ -63,7 +64,7 @@ This specification defines the refactoring effort to align the VE-RAG-System cod
 - Exception handling standardization
 
 **Out of Scope:**
-- React frontend changes (already well-architected)
+- React frontend changes — except: (a) `client.ts` error format update for new global error handlers (Phase 1, Task 1.4) and (b) SSE/polling rewiring for unified Jobs API (Phase 10)
 - RAG pipeline algorithm changes
 - New feature development
 - Performance optimization (beyond removing dead code)
@@ -83,14 +84,14 @@ This specification defines the refactoring effort to align the VE-RAG-System cod
 
 | Phase | Effort | Risk |
 |-------|--------|------|
-| Phase 1: Critical Fixes | 7 hours | Low |
+| Phase 1: Critical Fixes | 8 hours | Low |
 | Phase 2: Architecture (Hybrid Layout) | 22 hours | Medium |
 | Phase 3: Modernization | 4 hours | Low |
 | Phase 4: Quality | 8 hours | Low |
 | Phase 5: Config Migration to SQLite (High-Priority Only) | 4 hours | Low |
-| Phase 6-10: Unified Background Tasks (ARQ) | 24 hours | Medium |
+| Phase 6-10: Unified Background Tasks (ARQ) | 25 hours | Medium |
 | Phase 11: Observability & Logging | 6 hours | Low |
-| **Total** | **75 hours** | **Medium** |
+| **Total** | **77 hours** | **Medium** |
 
 **Phase 2 Breakdown:**
 - Schemas directory (8 files): 4 hours
@@ -121,7 +122,7 @@ This specification defines the refactoring effort to align the VE-RAG-System cod
 - Phase 7: Migrate Document Processing: 6 hours
 - Phase 8: Migrate Cache Warming: 6 hours
 - Phase 9: Migrate Reindexing: 4 hours
-- Phase 10: Jobs API & Cleanup: 4 hours
+- Phase 10: Jobs API, Frontend SSE Rewiring & Cleanup: 5 hours
 
 **Phase 11 Breakdown (Observability & Logging):**
 - Logging infrastructure setup (structlog): 1 hour
@@ -1009,7 +1010,7 @@ app = FastAPI(lifespan=lifespan)
 
 ## 6. Detailed Implementation Plan
 
-### 6.1 Phase 1: Critical Fixes (7 hours)
+### 6.1 Phase 1: Critical Fixes (8 hours)
 
 #### Task 1.1: Remove Gradio (1 hour)
 
@@ -1272,6 +1273,50 @@ async def upload_document(
 ```bash
 # Should return 0 results
 grep -n "HTTPException" ai_ready_rag/services/document_service.py
+```
+
+#### Task 1.4: Frontend Error Handling Update (1 hour)
+
+**Decision: Option B** — Update frontend `client.ts` to parse new structured error format.
+
+**Rationale:** The new global error handlers return `{"error": {"code": "...", "message": "...", "context": {...}}}` instead of FastAPI's default `{"detail": "..."}`. Rather than constraining the backend to the old format, update the frontend to read both formats for backward compatibility.
+
+**File:** `frontend/src/api/client.ts`
+
+```typescript
+// BEFORE:
+const error = await response.json().catch(() => ({ detail: 'Request failed' }));
+throw new Error(error.detail || `HTTP ${response.status}`);
+
+// AFTER:
+const errorBody = await response.json().catch(() => ({}));
+const message = errorBody.error?.message || errorBody.detail || `HTTP ${response.status}`;
+const errorObj = new Error(message);
+(errorObj as any).code = errorBody.error?.code;
+(errorObj as any).context = errorBody.error?.context;
+throw errorObj;
+```
+
+**Error code mapping for document uploads:**
+
+The global error handlers in `core/error_handlers.py` must map domain exceptions to error codes that match what `UploadErrorMessage.tsx` expects:
+
+| Domain Exception | `error.code` | Frontend expects |
+|---|---|---|
+| `DuplicateDocumentError` | `DUPLICATE_FILE` | `DUPLICATE_FILE` |
+| `DocumentValidationError("Invalid file type")` | `INVALID_FILE_TYPE` | `INVALID_FILE_TYPE` |
+| `DocumentValidationError("File too large")` | `FILE_TOO_LARGE` | `FILE_TOO_LARGE` |
+| `DocumentValidationError("No tags")` | `NO_TAGS` | `NO_TAGS` |
+| `InvalidTagError` | `INVALID_TAGS` | `INVALID_TAGS` |
+| `DocumentStorageError` | `STORAGE_QUOTA_EXCEEDED` | `STORAGE_QUOTA_EXCEEDED` |
+
+For `DUPLICATE_FILE` responses, the error handler must include `existing_filename` and `uploaded_at` in `context` so `UploadErrorMessage.tsx` can display them.
+
+**Verification:**
+```bash
+# Frontend builds without errors
+cd frontend && npm run build
+# Error display works for both old and new format
 ```
 
 ### 6.2 Phase 2: Architecture Alignment (22 hours)
@@ -2148,7 +2193,7 @@ Week 5 (continued):
 | M9: Phase 11 Complete | Day 26 | Structured logging (10 key events) |
 | M10: Release v0.5.0 | Day 28 | All changes merged, deployed, tagged |
 
-**Release guardrail:** Phases 1-4 (39h) constitute a self-contained, releasable **v0.5.0-rc** that delivers the core architecture improvements (Gradio removal, FKs, repositories, BaseService, error handlers, Depends() chain, tests). If Phases 6-11 (ARQ + Logging, 30h) cannot be completed in the target window, they can be deferred to **v0.6.0** without blocking the architecture refactor. Phase 5 (Config, 4h) can ship with either release.
+**Release guardrail:** Phases 1-4 (40h) constitute a self-contained, releasable **v0.5.0-rc** that delivers the core architecture improvements (Gradio removal, FKs, repositories, BaseService, error handlers, Depends() chain, tests). If Phases 6-11 (ARQ + Logging, 30h) cannot be completed in the target window, they can be deferred to **v0.6.0** without blocking the architecture refactor. Phase 5 (Config, 4h) can ship with either release.
 
 ---
 
@@ -2163,6 +2208,9 @@ Week 5 (continued):
 - [ ] Global error handlers registered in `core/error_handlers.py`
 - [ ] All existing tests pass
 - [ ] Manual smoke test passes on staging
+- [ ] Frontend `client.ts` reads both `error.message` (new) and `detail` (old) formats
+- [ ] Document upload errors return correct `error_code` values matching `UploadErrorMessage.tsx`
+- [ ] `cd frontend && npm run build` succeeds
 
 ### 12.2 Phase 2 Acceptance (Hybrid Layout)
 
@@ -2248,12 +2296,16 @@ Week 5 (continued):
 - [ ] Jobs survive server restart (test: enqueue job, restart server, job completes)
 - [ ] Legacy files deleted: warming_worker.py, warming_queue.py, reindex_worker.py
 
-### 12.8 Phase 10 Acceptance (Jobs API)
+### 12.8 Phase 10 Acceptance (Jobs API + Frontend Rewiring)
 
 - [ ] `GET /api/jobs/{id}/status` returns job status and progress
 - [ ] `GET /api/jobs/{id}/stream` delivers real-time SSE updates
 - [ ] `POST /api/jobs/{id}/cancel` sets cancellation flag
-- [ ] Frontend updated to use new job polling/streaming
+- [ ] `CacheWarmingCard.tsx` uses `/api/jobs/{id}/stream` for SSE progress
+- [ ] Reindex UI uses `/api/jobs/{id}/status` for polling
+- [ ] Cancel buttons use `/api/jobs/{id}/cancel`
+- [ ] No references to old warming/reindex-specific status endpoints in frontend
+- [ ] SSE reconnection logic works with new endpoint
 - [ ] Legacy warming/reindex tables removed from models
 - [ ] No `BackgroundTasks.add_task()` calls remain in codebase
 - [ ] `data/warming_queue/` directory removed
@@ -3889,6 +3941,7 @@ grep "rag_query_complete" app.log | tail -100 | jq '.cache_hit' | sort | uniq -c
 | `ai_ready_rag/db/database.py` | MODIFY | Add PRAGMA foreign_keys=ON on connect |
 | `ai_ready_rag/api/documents.py` | MODIFY | Remove try/except, rely on global handlers |
 | `requirements-*.txt` | MODIFY | Remove gradio |
+| `frontend/src/api/client.ts` | MODIFY | Parse new error format (reads both `error.message` and `detail`) |
 
 #### Phase 2: Architecture (Hybrid Layout)
 | File | Action | Notes |
@@ -3987,10 +4040,12 @@ grep "rag_query_complete" app.log | tail -100 | jq '.cache_hit' | sort | uniq -c
 | `ai_ready_rag/services/reindex_worker.py` | DELETE | Replaced by ARQ task |
 | `ai_ready_rag/services/reindex_service.py` | DELETE | Merged into task |
 
-#### Phase 10: Jobs API & Cleanup
+#### Phase 10: Jobs API, Frontend Rewiring & Cleanup
 | File | Action | Notes |
 |------|--------|-------|
 | `ai_ready_rag/api/jobs.py` | CREATE | Job status/progress API |
+| `frontend/src/components/features/admin/CacheWarmingCard.tsx` | MODIFY | Rewire SSE to `/api/jobs/{id}/stream` |
+| `frontend/src/api/admin.ts` | MODIFY | Replace warming/reindex endpoints with Jobs API |
 | `ai_ready_rag/db/models/warming.py` | DELETE | Legacy warming tables |
 | `ai_ready_rag/db/models/reindex.py` | DELETE | Legacy reindex tables |
 | `data/warming_queue/` | DELETE | File-based queue directory |
@@ -4011,10 +4066,10 @@ grep "rag_query_complete" app.log | tail -100 | jq '.cache_hit' | sort | uniq -c
 | Action | Count |
 |--------|-------|
 | CREATE | 42 |
-| MODIFY | 31 |
+| MODIFY | 34 |
 | DELETE | 12 |
 | MOVE | 2 |
-| **Total** | **87** |
+| **Total** | **90** |
 
 ### Appendix B: Reference Documents
 
