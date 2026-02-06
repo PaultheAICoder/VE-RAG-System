@@ -1,46 +1,15 @@
 """User management endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.core.dependencies import require_admin
 from ai_ready_rag.core.security import generate_temporary_password, hash_password
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import Tag, User
+from ai_ready_rag.schemas.user import TagAssignment, UserCreate, UserResponse, UserUpdate
 
 router = APIRouter()
-
-
-class UserCreate(BaseModel):
-    email: EmailStr
-    display_name: str
-    password: str
-    role: str = "user"
-
-
-class UserUpdate(BaseModel):
-    email: EmailStr | None = None
-    display_name: str | None = None
-    role: str | None = None
-    is_active: bool | None = None
-
-
-class UserResponse(BaseModel):
-    id: str
-    email: str
-    display_name: str
-    role: str
-    is_active: bool
-    must_reset_password: bool
-    tags: list[dict] = []
-
-    class Config:
-        from_attributes = True
-
-
-class TagAssignment(BaseModel):
-    tag_ids: list[str]
 
 
 @router.get("", response_model=list[UserResponse])
