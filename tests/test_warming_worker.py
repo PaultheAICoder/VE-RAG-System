@@ -12,7 +12,7 @@ from ai_ready_rag.core.exceptions import (
     ServiceUnavailableError,
     WarmingCancelledException,
 )
-from ai_ready_rag.services.warming_worker import (
+from ai_ready_rag.workers.warming_worker import (
     RETRYABLE_EXCEPTIONS,
     WarmingWorker,
     recover_stale_jobs,
@@ -222,7 +222,7 @@ class TestRecoverStaleJobs:
         job_id = job.id
 
         # Override SessionLocal for test
-        with patch("ai_ready_rag.services.warming_worker.SessionLocal", return_value=db):
+        with patch("ai_ready_rag.workers.warming_worker.SessionLocal", return_value=db):
             count = await recover_stale_jobs()
 
         # Query the job again from the same session

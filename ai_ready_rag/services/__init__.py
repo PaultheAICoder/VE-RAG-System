@@ -31,13 +31,13 @@ from ai_ready_rag.services.vector_utils import (
     validate_tag,
     validate_tags_for_ingestion,
 )
-from ai_ready_rag.services.warming_cleanup import WarmingCleanupService
 from ai_ready_rag.services.warming_queue import (
     InvalidStateTransition,
     WarmingJob,
     WarmingQueueService,
 )
-from ai_ready_rag.services.warming_worker import WarmingWorker, recover_stale_jobs
+from ai_ready_rag.workers.warming_cleanup import WarmingCleanupService
+from ai_ready_rag.workers.warming_worker import WarmingWorker, recover_stale_jobs
 
 __all__ = [
     # Cache Service
