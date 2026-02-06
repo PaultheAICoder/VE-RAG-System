@@ -46,7 +46,7 @@ class TestWarmingWorkerStartup:
     async def test_warming_worker_can_be_instantiated(self):
         """Verify WarmingWorker can be created with valid config."""
         from ai_ready_rag.config import get_settings
-        from ai_ready_rag.services.warming_worker import WarmingWorker
+        from ai_ready_rag.workers.warming_worker import WarmingWorker
 
         settings = get_settings()
 
@@ -62,7 +62,7 @@ class TestWarmingWorkerStartup:
     async def test_warming_worker_starts_and_stops(self):
         """Verify WarmingWorker lifecycle works correctly."""
         from ai_ready_rag.config import get_settings
-        from ai_ready_rag.services.warming_worker import WarmingWorker
+        from ai_ready_rag.workers.warming_worker import WarmingWorker
 
         settings = get_settings()
 
