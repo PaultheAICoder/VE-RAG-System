@@ -3,7 +3,6 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.api.setup import is_setup_required
@@ -12,33 +11,15 @@ from ai_ready_rag.core.dependencies import get_current_user
 from ai_ready_rag.core.security import create_access_token, hash_password, verify_password
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import User
+from ai_ready_rag.schemas.auth import (
+    LoginRequest,
+    LoginResponse,
+    SetupRequest,
+    UserBasicResponse,
+)
 
 router = APIRouter()
 settings = get_settings()
-
-
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class UserResponse(BaseModel):
-    id: str
-    email: str
-    display_name: str
-    role: str
-    is_active: bool
-
-    class Config:
-        from_attributes = True
-
-
-class LoginResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
-    user: UserResponse
-    setup_required: bool = False  # True if admin needs to complete first-run setup
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -98,20 +79,14 @@ async def logout(response: Response, current_user: User = Depends(get_current_us
     return {"message": "Logged out successfully"}
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=UserBasicResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
     """Get current authenticated user."""
     return current_user
 
 
 # Bootstrap endpoint for creating first admin (only works when no users exist)
-class SetupRequest(BaseModel):
-    email: EmailStr
-    password: str
-    display_name: str
-
-
-@router.post("/setup", response_model=UserResponse)
+@router.post("/setup", response_model=UserBasicResponse)
 async def setup_admin(setup_data: SetupRequest, db: Session = Depends(get_db)):
     """Create first admin user (only works when no users exist)."""
     existing = db.query(User).first()

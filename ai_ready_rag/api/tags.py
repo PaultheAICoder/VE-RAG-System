@@ -1,42 +1,14 @@
 """Tag management endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.core.dependencies import get_current_user, require_admin
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import Tag, User
+from ai_ready_rag.schemas.tag import TagCreate, TagResponse, TagUpdate
 
 router = APIRouter()
-
-
-class TagCreate(BaseModel):
-    name: str
-    display_name: str
-    description: str | None = None
-    color: str = "#6B7280"
-    owner_id: str | None = None
-
-
-class TagUpdate(BaseModel):
-    display_name: str | None = None
-    description: str | None = None
-    color: str | None = None
-    owner_id: str | None = None
-
-
-class TagResponse(BaseModel):
-    id: str
-    name: str
-    display_name: str
-    description: str | None
-    color: str
-    owner_id: str | None
-    is_system: bool
-
-    class Config:
-        from_attributes = True
 
 
 @router.get("", response_model=list[TagResponse])

@@ -4,57 +4,23 @@ These endpoints are for testing new features before production.
 """
 
 import logging
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.dependencies import get_current_user
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import User
+from ai_ready_rag.schemas.experimental import (
+    GeneratePresentationRequest,
+    PresentationResponse,
+    SlideResponse,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/experimental", tags=["experimental"])
-
-
-# --- Request/Response Models ---
-
-
-class GeneratePresentationRequest(BaseModel):
-    """Request to generate a presentation."""
-
-    topic: str = Field(
-        ..., min_length=5, max_length=500, description="Presentation topic or question"
-    )
-    num_slides: int = Field(default=5, ge=3, le=10, description="Number of content slides")
-    template: Literal["executive", "detailed", "marketing"] = Field(
-        default="executive",
-        description="Presentation style template",
-    )
-
-
-class SlideResponse(BaseModel):
-    """Single slide in response."""
-
-    slide_number: int
-    title: str
-    bullet_points: list[str]
-    citations: list[str]
-    speaker_notes: str
-
-
-class PresentationResponse(BaseModel):
-    """Generated presentation response."""
-
-    title: str
-    subtitle: str
-    slides: list[SlideResponse]
-    total_sources: int
-    generation_steps: list[str]
-    markdown: str  # Markdown formatted version
 
 
 # --- Endpoints ---
