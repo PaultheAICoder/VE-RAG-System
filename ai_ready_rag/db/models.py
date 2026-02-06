@@ -36,7 +36,7 @@ document_tags = Table(
     "document_tags",
     Base.metadata,
     Column("document_id", String, ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True),
-    Column("tag_id", String, ForeignKey("tags.id"), primary_key=True),
+    Column("tag_id", String, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
 )
 
 
@@ -91,7 +91,7 @@ class Document(Base):
     status = Column(String, default="pending")
     error_message = Column(Text, nullable=True)
     chunk_count = Column(Integer, nullable=True)
-    uploaded_by = Column(String, nullable=False)
+    uploaded_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     uploaded_at = Column(DateTime, default=datetime.utcnow)
     processed_at = Column(DateTime, nullable=True)
 
@@ -110,7 +110,7 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, nullable=False)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     title = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -147,7 +147,7 @@ class AuditLog(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     level = Column(String, nullable=False)
     event_type = Column(String, nullable=False, index=True)
-    user_id = Column(String, nullable=True)
+    user_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     user_email = Column(String, nullable=True)
     action = Column(String, nullable=False)
     resource_type = Column(String, nullable=True)

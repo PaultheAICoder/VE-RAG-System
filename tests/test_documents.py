@@ -786,11 +786,10 @@ class TestUploadReplace:
 
             assert response2.status_code == status.HTTP_409_CONFLICT
             data = response2.json()
-            # Check for structured error response
-            assert "detail" in data
-            detail = data["detail"]
-            assert detail["error_code"] == "DUPLICATE_FILE"
-            assert detail["existing_id"] == doc1_id
+            # Check for structured error response (flat format from global error handler)
+            assert data["detail"] == "Duplicate file detected"
+            assert data["error_code"] == "DUPLICATE_FILE"
+            assert data["existing_id"] == doc1_id
         finally:
             # Cleanup
             doc_dir = upload_dir / doc1_id
@@ -843,14 +842,13 @@ class TestEnhanced409Response:
 
             assert response2.status_code == status.HTTP_409_CONFLICT
             data = response2.json()
-            detail = data["detail"]
 
-            # Verify all required fields in structured response
-            assert detail["detail"] == "Duplicate file detected"
-            assert detail["error_code"] == "DUPLICATE_FILE"
-            assert detail["existing_id"] == doc1_id
-            assert detail["existing_filename"] == "structured_test.txt"
-            assert "uploaded_at" in detail
+            # Verify all required fields in structured response (flat format)
+            assert data["detail"] == "Duplicate file detected"
+            assert data["error_code"] == "DUPLICATE_FILE"
+            assert data["existing_id"] == doc1_id
+            assert data["existing_filename"] == "structured_test.txt"
+            assert "uploaded_at" in data
         finally:
             # Cleanup
             doc_dir = upload_dir / doc1_id

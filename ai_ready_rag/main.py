@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ai_ready_rag.api import admin, auth, chat, documents, experimental, health, setup, tags, users
 from ai_ready_rag.config import get_settings
+from ai_ready_rag.core.error_handlers import register_error_handlers
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import Document
 from ai_ready_rag.services.warming_cleanup import WarmingCleanupService
@@ -33,14 +34,13 @@ app = FastAPI(
     redoc_url="/api/redoc" if settings.debug else None,
 )
 
+# Register global error handlers (AppError → JSON responses)
+register_error_handlers(app)
+
 
 @app.on_event("startup")
 async def startup_event():
-    """Application startup: initialize services.
-
-    NOTE: Using on_event instead of lifespan because Gradio's mount_gradio_app
-    replaces the lifespan context, causing our startup code to never run.
-    """
+    """Application startup: initialize services."""
     global warming_worker, warming_cleanup
 
     logger.info("=" * 60)
@@ -138,24 +138,6 @@ app.include_router(documents.router, prefix="/api/documents", tags=["Documents"]
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(experimental.router, prefix="/api", tags=["Experimental"])
 
-# Mount Gradio UI at /app if enabled
-print(f"Gradio enabled: {settings.enable_gradio}")
-if settings.enable_gradio:
-    try:
-        import gradio as gr
-
-        from ai_ready_rag.ui import create_app
-
-        gradio_app = create_app()
-        app = gr.mount_gradio_app(app, gradio_app, path="/app")
-        print("Gradio UI mounted at /app")
-    except Exception as e:
-        print(f"Failed to mount Gradio: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-
 # Serve React frontend static files if dist exists
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 if FRONTEND_DIR.exists():
@@ -171,8 +153,8 @@ if FRONTEND_DIR.exists():
     @app.get("/{path:path}")
     async def serve_spa(path: str):
         """Catch-all for SPA client-side routing."""
-        # Don't intercept API or Gradio routes - return proper 404
-        if path.startswith("api/") or path.startswith("app/"):
+        # Don't intercept API routes - return proper 404
+        if path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
 
         # Serve static files if they exist
@@ -192,7 +174,7 @@ else:
             "version": settings.app_version,
             "docs": "/api/docs" if settings.debug else "disabled",
             "health": "/api/health",
-            "ui": "/app" if settings.enable_gradio else "disabled",
+            "frontend": "React (build frontend/dist for production)",
         }
 
 

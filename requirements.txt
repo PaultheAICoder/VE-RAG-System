@@ -30,9 +30,6 @@ langchain-ollama>=0.2.0
 # Vector Store - requires onnxruntime
 # chromadb>=0.5.0  # Uncomment on DGX Spark / Linux with onnxruntime support
 
-# Web UI
-gradio>=5.0.0
-
 # Utilities
 aiohttp
 numpy

@@ -3,10 +3,20 @@
 import shutil
 from pathlib import Path
 
-from fastapi import HTTPException, UploadFile, status
+from fastapi import UploadFile
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import Settings
+from ai_ready_rag.core.exceptions import (
+    DuplicateFileError,
+    FileStorageError,
+    FileTooLargeError,
+    InvalidFileTypeError,
+    InvalidTagsError,
+    NoTagsError,
+    StorageQuotaExceededError,
+    ValidationError,
+)
 from ai_ready_rag.db.models import Document, Tag
 from ai_ready_rag.utils.file_utils import (
     compute_file_hash,
@@ -83,34 +93,24 @@ class DocumentService:
         """
         # Validate file exists
         if not file.filename:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No file provided",
-            )
+            raise ValidationError("No file provided")
 
         # Validate file extension
         extension = get_file_extension(file.filename)
         if not validate_file_extension(file.filename, self.settings.allowed_extensions):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File type '{extension}' not allowed. Allowed: {', '.join(self.settings.allowed_extensions)}",
+            raise InvalidFileTypeError(
+                f"File type '{extension}' not allowed. Allowed: {', '.join(self.settings.allowed_extensions)}"
             )
 
         # Validate tags
         if not tag_ids:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="At least one tag is required",
-            )
+            raise NoTagsError("At least one tag is required")
 
         tags = self.db.query(Tag).filter(Tag.id.in_(tag_ids)).all()
         if len(tags) != len(tag_ids):
             found_ids = {t.id for t in tags}
             missing = [tid for tid in tag_ids if tid not in found_ids]
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid tag IDs: {missing}",
-            )
+            raise InvalidTagsError(f"Invalid tag IDs: {missing}")
 
         # Read file content to check size
         content = await file.read()
@@ -119,19 +119,17 @@ class DocumentService:
         # Validate file size
         max_size = self.settings.max_upload_size_mb * 1024 * 1024
         if file_size > max_size:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File too large. Max size: {self.settings.max_upload_size_mb}MB",
+            raise FileTooLargeError(
+                f"File too large. Max size: {self.settings.max_upload_size_mb}MB"
             )
 
         # Check storage quota
         current_usage = get_storage_usage(self.storage_path)
         max_storage = self.settings.max_storage_gb * 1024 * 1024 * 1024
         if current_usage + file_size > max_storage:
-            raise HTTPException(
-                status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
-                detail={
-                    "message": "Storage quota exceeded",
+            raise StorageQuotaExceededError(
+                "Storage quota exceeded",
+                context={
                     "current_usage_gb": round(current_usage / (1024**3), 2),
                     "max_storage_gb": self.settings.max_storage_gb,
                     "file_size_mb": round(file_size / (1024**2), 2),
@@ -166,10 +164,7 @@ class DocumentService:
                 f.write(content)
         except OSError as e:
             self.db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to save file: {e}",
-            ) from e
+            raise FileStorageError(f"Failed to save file: {e}") from e
 
         # Compute content hash
         content_hash = compute_file_hash(file_path)
@@ -210,11 +205,9 @@ class DocumentService:
                 # Expunge the pending document from session (don't rollback - let caller handle)
                 self.db.expunge(document)
 
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "detail": "Duplicate file detected",
-                        "error_code": "DUPLICATE_FILE",
+                raise DuplicateFileError(
+                    "Duplicate file detected",
+                    context={
                         "existing_id": existing_id,
                         "existing_filename": existing_filename,
                         "uploaded_at": existing_uploaded_at,

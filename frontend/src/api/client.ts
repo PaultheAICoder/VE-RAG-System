@@ -26,7 +26,10 @@ class APIClient {
         useAuthStore.getState().logout();
       }
       const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-      throw new Error(error.detail || `HTTP ${response.status}`);
+      const message = typeof error.detail === 'string' ? error.detail : `HTTP ${response.status}`;
+      const err = new Error(message);
+      (err as Error & { response?: unknown }).response = error;
+      throw err;
     }
     // Handle empty responses (204 No Content or empty body)
     const text = await response.text();

@@ -1,6 +1,94 @@
 """Custom exceptions for the AI Ready RAG application."""
 
 
+# -----------------------------------------------------------------------------
+# Application Base Error
+# -----------------------------------------------------------------------------
+
+
+class AppError(Exception):
+    """Base application error with HTTP semantics.
+
+    All domain exceptions that should map to HTTP responses inherit from this.
+    The global error handler in error_handlers.py catches these and returns
+    a consistent JSON response.
+    """
+
+    status_code: int = 500
+    error_code: str = "INTERNAL_ERROR"
+
+    def __init__(self, detail: str = "An unexpected error occurred", context: dict | None = None):
+        self.detail = detail
+        self.context = context
+        super().__init__(self.detail)
+
+
+# -----------------------------------------------------------------------------
+# Document Service Exceptions
+# -----------------------------------------------------------------------------
+
+
+class ValidationError(AppError):
+    """Generic validation error (400)."""
+
+    status_code = 400
+    error_code = "VALIDATION_ERROR"
+
+
+class InvalidFileTypeError(AppError):
+    """File type not in allowed extensions (400)."""
+
+    status_code = 400
+    error_code = "INVALID_FILE_TYPE"
+
+
+class NoTagsError(AppError):
+    """No tags provided for document upload (400)."""
+
+    status_code = 400
+    error_code = "NO_TAGS"
+
+
+class InvalidTagsError(AppError):
+    """One or more tag IDs not found (400)."""
+
+    status_code = 400
+    error_code = "INVALID_TAGS"
+
+
+class FileTooLargeError(AppError):
+    """File exceeds maximum upload size (400)."""
+
+    status_code = 400
+    error_code = "FILE_TOO_LARGE"
+
+
+class StorageQuotaExceededError(AppError):
+    """Storage quota would be exceeded (507)."""
+
+    status_code = 507
+    error_code = "STORAGE_QUOTA_EXCEEDED"
+
+
+class FileStorageError(AppError):
+    """Failed to write file to disk (500)."""
+
+    status_code = 500
+    error_code = "PROCESSING_FAILED"
+
+
+class DuplicateFileError(AppError):
+    """File with same content hash already exists (409)."""
+
+    status_code = 409
+    error_code = "DUPLICATE_FILE"
+
+
+# -----------------------------------------------------------------------------
+# Vector Service Exceptions
+# -----------------------------------------------------------------------------
+
+
 class VectorServiceError(Exception):
     """Base exception for vector service errors.
 
