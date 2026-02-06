@@ -2047,13 +2047,16 @@ async def warm_cache_task(queries: list[str], triggered_by: str) -> None:
     """
     from ai_ready_rag.config import get_settings
     from ai_ready_rag.db.database import SessionLocal
+    from ai_ready_rag.services.factory import get_vector_service
     from ai_ready_rag.services.rag_service import RAGRequest, RAGService
 
     settings = get_settings()
     db = SessionLocal()
 
     try:
-        rag_service = RAGService(settings)
+        vector_service = get_vector_service(settings)
+        await vector_service.initialize()
+        rag_service = RAGService(settings, vector_service=vector_service)
         warmed = 0
 
         for i, query in enumerate(queries):
@@ -3678,21 +3681,13 @@ async def _warm_file_task(job_id: str, triggered_by: str) -> None:
     db = SessionLocal()
 
     try:
-        # Initialize vector service properly
-        from ai_ready_rag.services.vector_service import VectorService
+        # Initialize vector service via factory
+        from ai_ready_rag.services.factory import get_vector_service as create_vector_service
 
-        vector_service = VectorService(
-            qdrant_url=settings.qdrant_url,
-            ollama_url=settings.ollama_base_url,
-            collection_name=settings.qdrant_collection,
-            embedding_model=get_model_setting("embedding_model", settings.embedding_model),
-            embedding_dimension=settings.embedding_dimension,
-            max_tokens=settings.embedding_max_tokens,
-            tenant_id=settings.default_tenant_id,
-        )
+        vector_service = create_vector_service(settings)
         await vector_service.initialize()
 
-        rag_service = RAGService(settings, vector_service)
+        rag_service = RAGService(settings, vector_service=vector_service)
 
         # Get admin user's tags for proper access control
         # System admins bypass tag filtering during cache warming

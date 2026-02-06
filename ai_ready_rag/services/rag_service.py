@@ -3,13 +3,15 @@
 Orchestrates: retrieve -> prompt -> generate -> evaluate.
 """
 
+from __future__ import annotations
+
 import logging
 import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 from langchain_ollama import ChatOllama
@@ -37,6 +39,9 @@ from ai_ready_rag.services.rag_constants import (
 )
 from ai_ready_rag.services.settings_service import get_rag_setting
 from ai_ready_rag.services.vector_service import SearchResult
+
+if TYPE_CHECKING:
+    from ai_ready_rag.services.protocols import VectorServiceProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -635,29 +640,29 @@ class RAGService:
     def __init__(
         self,
         settings: Settings,
-        vector_service: "SearchResult | None" = None,
-        ollama_url: str | None = None,
+        vector_service: VectorServiceProtocol | None = None,
+        cache_service: CacheService | None = None,
         default_model: str | None = None,
     ):
         """Initialize RAG service.
 
         Args:
             settings: Application settings (used for non-tunable config like URLs)
-            vector_service: Optional VectorService override (uses factory if None)
-            ollama_url: Optional Ollama URL override
+            vector_service: VectorService instance (uses factory if None for backward compat)
+            cache_service: CacheService instance (lazy-created if None)
             default_model: Optional default model override
         """
         self.settings = settings
         self._vector_service = vector_service
-        self.ollama_url = ollama_url or settings.ollama_base_url
+        self.ollama_url = settings.ollama_base_url
         self.default_model = default_model or settings.chat_model
         # Non-tunable settings from config (not exposed in UI)
         self.max_chunks_per_doc = settings.rag_max_chunks_per_doc
         self.chunk_overlap_threshold = settings.rag_chunk_overlap_threshold
         self.dedup_candidates_cap = settings.rag_dedup_candidates_cap
         self.enable_hallucination_check = settings.rag_enable_hallucination_check
-        # Cache service (lazy-loaded)
-        self._cache_service: CacheService | None = None
+        # Cache service (explicit or lazy-loaded for backward compat)
+        self._cache_service: CacheService | None = cache_service
 
     # -------------------------------------------------------------------------
     # Dynamic settings from database (single source of truth)

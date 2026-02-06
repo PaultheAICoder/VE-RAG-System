@@ -18,29 +18,17 @@ import pytest
 class TestWarmingWorkerStartup:
     """Verify WarmingWorker starts correctly with the application."""
 
-    def test_warming_worker_global_exists(self):
-        """Verify warming_worker global is defined in main module."""
+    def test_lifespan_defined(self):
+        """Verify lifespan context manager is defined in main module."""
         from ai_ready_rag import main
 
-        assert hasattr(main, "warming_worker"), "warming_worker global not defined"
+        assert hasattr(main, "lifespan"), "lifespan function not defined"
 
-    def test_warming_cleanup_global_exists(self):
-        """Verify warming_cleanup global is defined in main module."""
-        from ai_ready_rag import main
-
-        assert hasattr(main, "warming_cleanup"), "warming_cleanup global not defined"
-
-    def test_startup_event_defined(self):
-        """Verify startup event handler is registered."""
+    def test_app_has_lifespan(self):
+        """Verify app uses lifespan context manager."""
         from ai_ready_rag.main import app
 
-        # Check that on_event handlers are registered
-        startup_handlers = [
-            route for route in app.router.on_startup if "startup_event" in str(route)
-        ]
-        assert len(startup_handlers) > 0 or hasattr(app, "router"), (
-            "Startup event should be registered"
-        )
+        assert app.router.lifespan_context is not None, "App should have lifespan configured"
 
     @pytest.mark.asyncio
     async def test_warming_worker_can_be_instantiated(self):

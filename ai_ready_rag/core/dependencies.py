@@ -1,4 +1,8 @@
-"""FastAPI dependencies for authentication and authorization."""
+"""FastAPI dependencies for authentication, authorization, and service injection."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -7,6 +11,12 @@ from sqlalchemy.orm import Session
 from ai_ready_rag.core.security import decode_token
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import User
+
+if TYPE_CHECKING:
+    from ai_ready_rag.config import Settings
+    from ai_ready_rag.services.protocols import VectorServiceProtocol
+    from ai_ready_rag.services.rag_service import RAGService
+    from ai_ready_rag.services.settings_service import SettingsService
 
 security = HTTPBearer(auto_error=False)
 
@@ -125,3 +135,41 @@ async def require_system_admin(current_user: User = Depends(get_current_user)) -
             status_code=status.HTTP_403_FORBIDDEN, detail="System admin access required"
         )
     return current_user
+
+
+# ---------------------------------------------------------------------------
+# Service factories (injected via Depends())
+# ---------------------------------------------------------------------------
+
+
+def get_app_settings(request: Request) -> Settings:
+    """Get application settings from app.state (set in lifespan)."""
+    return request.app.state.settings
+
+
+def get_vector_service(request: Request) -> VectorServiceProtocol:
+    """Get singleton VectorService from app.state (initialized in lifespan)."""
+    return request.app.state.vector_service
+
+
+def get_settings_service(db: Session = Depends(get_db)) -> SettingsService:
+    """Get SettingsService (per-request, lightweight)."""
+    from ai_ready_rag.services.settings_service import SettingsService
+
+    return SettingsService(db)
+
+
+def get_rag_service(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> RAGService:
+    """Get RAGService with singleton vector_service + per-request db."""
+    from ai_ready_rag.services.rag_service import RAGService
+
+    app_settings = request.app.state.settings
+    vector_service = request.app.state.vector_service
+
+    return RAGService(
+        settings=app_settings,
+        vector_service=vector_service,
+    )

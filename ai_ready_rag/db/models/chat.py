@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from ai_ready_rag.db.database import Base
@@ -11,6 +11,7 @@ from ai_ready_rag.db.models.base import TimestampMixin, generate_uuid
 
 class ChatSession(TimestampMixin, Base):
     __tablename__ = "chat_sessions"
+    __table_args__ = (Index("idx_chat_sessions_user_id", "user_id"),)
 
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
@@ -23,6 +24,7 @@ class ChatSession(TimestampMixin, Base):
 
 class ChatMessage(TimestampMixin, Base):
     __tablename__ = "chat_messages"
+    __table_args__ = (Index("idx_chat_messages_session_id", "session_id"),)
 
     id = Column(String, primary_key=True, default=generate_uuid)
     session_id = Column(String, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False)

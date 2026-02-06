@@ -308,15 +308,8 @@ class TestSendMessage:
 
     def test_send_message_success(self, client, user_headers, test_session, mock_rag_response):
         """Send message and receive response."""
-        # Mock VectorService and RAGService
-        with (
-            patch("ai_ready_rag.api.chat.VectorService") as mock_vector_class,
-            patch("ai_ready_rag.api.chat.RAGService") as mock_rag_class,
-        ):
-            mock_vector_instance = MagicMock()
-            mock_vector_instance.initialize = AsyncMock()
-            mock_vector_class.return_value = mock_vector_instance
-
+        # Mock RAGService (VectorService is singleton from app.state)
+        with patch("ai_ready_rag.api.chat.RAGService") as mock_rag_class:
             mock_rag_instance = MagicMock()
             mock_rag_instance.generate = AsyncMock(return_value=mock_rag_response)
             mock_rag_class.return_value = mock_rag_instance
@@ -347,15 +340,8 @@ class TestSendMessage:
         self, client, user_headers, test_session, mock_rag_response_routed
     ):
         """Message routed when confidence low."""
-        # Mock VectorService and RAGService
-        with (
-            patch("ai_ready_rag.api.chat.VectorService") as mock_vector_class,
-            patch("ai_ready_rag.api.chat.RAGService") as mock_rag_class,
-        ):
-            mock_vector_instance = MagicMock()
-            mock_vector_instance.initialize = AsyncMock()
-            mock_vector_class.return_value = mock_vector_instance
-
+        # Mock RAGService (VectorService is singleton from app.state)
+        with patch("ai_ready_rag.api.chat.RAGService") as mock_rag_class:
             mock_rag_instance = MagicMock()
             mock_rag_instance.generate = AsyncMock(return_value=mock_rag_response_routed)
             mock_rag_class.return_value = mock_rag_instance
@@ -405,15 +391,8 @@ class TestSendMessage:
 
     def test_send_message_ollama_unavailable(self, client, user_headers, test_session):
         """503 when Ollama unavailable."""
-        # Mock VectorService and RAGService
-        with (
-            patch("ai_ready_rag.api.chat.VectorService") as mock_vector_class,
-            patch("ai_ready_rag.api.chat.RAGService") as mock_rag_class,
-        ):
-            mock_vector_instance = MagicMock()
-            mock_vector_instance.initialize = AsyncMock()
-            mock_vector_class.return_value = mock_vector_instance
-
+        # Mock RAGService (VectorService is singleton from app.state)
+        with patch("ai_ready_rag.api.chat.RAGService") as mock_rag_class:
             mock_rag_instance = MagicMock()
             mock_rag_instance.generate = AsyncMock(
                 side_effect=LLMConnectionError("Cannot connect to Ollama")
