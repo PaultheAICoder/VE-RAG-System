@@ -364,7 +364,7 @@ async def test_slide_generator():
         num_slides=4,
     )
 
-    print(generator.to_markdown(presentation))
+    logger.info(generator.to_markdown(presentation))
     return presentation
 
 

@@ -782,17 +782,17 @@ class RAGService:
         """
         from ai_ready_rag.db.database import SessionLocal
 
-        print(f"[WARM] warm_cache() called for: {query[:50]}...", flush=True)
+        logger.debug(f"[WARM] warm_cache() called for: {query[:50]}...")
 
         # Use hr tags if not specified (warming populates cache for common queries)
         # TODO: Make this configurable - currently hardcoded to "hr" for testing
         effective_tags = user_tags if user_tags is not None else ["hr"]
 
         # Check if already cached
-        print(f"[WARM] Checking cache service... cache={self.cache is not None}", flush=True)
+        logger.debug(f"[WARM] Checking cache service... cache={self.cache is not None}")
         if self.cache and self.cache.enabled:
             try:
-                print(f"[WARM] Checking cache for: {query[:50]}...", flush=True)
+                logger.debug(f"[WARM] Checking cache for: {query[:50]}...")
                 query_embedding = await self.cache.get_embedding(query)
                 cached = await self.cache.get(
                     query=query,
@@ -801,12 +801,10 @@ class RAGService:
                 )
                 if cached:
                     logger.debug(f"[WARM] Cache hit for query: {query[:50]}...")
-                    print("[WARM] Cache HIT - already cached", flush=True)
                     return True
-                print("[WARM] Cache MISS - will generate", flush=True)
+                logger.debug("[WARM] Cache MISS - will generate")
             except Exception as e:
                 logger.warning(f"[WARM] Cache check failed: {e}")
-                print(f"[WARM] Cache check failed: {e}", flush=True)
 
         # Generate response to populate cache
         db = SessionLocal()
@@ -817,12 +815,11 @@ class RAGService:
                 tenant_id="default",
                 is_warming=True,  # Skip access tracking during warming
             )
-            print("[WARM] Calling RAG generate()...", flush=True)
+            logger.debug("[WARM] Calling RAG generate()...")
             response = await self.generate(request, db)
-            print(
+            logger.debug(
                 f"[WARM] RAG response: confidence={response.confidence.overall}, "
-                f"citations={len(response.citations)}, grounded={response.grounded}",
-                flush=True,
+                f"citations={len(response.citations)}, grounded={response.grounded}"
             )
 
             # Check if response was actually cached (confidence >= min_confidence)
@@ -833,14 +830,13 @@ class RAGService:
                         f"[WARM] Query skipped (confidence {response.confidence.overall} "
                         f"< {min_conf}): {query[:50]}..."
                     )
-                    print(
+                    logger.debug(
                         f"[WARM] NOT CACHED: confidence {response.confidence.overall} "
-                        f"< min_confidence {min_conf}",
-                        flush=True,
+                        f"< min_confidence {min_conf}"
                     )
                     return False  # Query processed but not cached
 
-            print("[WARM] Response will be cached", flush=True)
+            logger.debug("[WARM] Response will be cached")
             return True
         except httpx.TimeoutException as e:
             raise ConnectionTimeoutError(f"Timeout warming query: {e}") from e

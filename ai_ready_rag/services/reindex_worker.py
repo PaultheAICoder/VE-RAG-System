@@ -27,7 +27,7 @@ async def run_reindex_job(job_id: str) -> None:
     from ai_ready_rag.services.processing_service import ProcessingService
 
     logger.info(f"[REINDEX WORKER] Starting reindex job {job_id}")
-    print(f"[REINDEX WORKER] Starting reindex job {job_id}", flush=True)
+    logger.info(f"[REINDEX WORKER] Starting reindex job {job_id}")
 
     settings = get_settings()
     db = SessionLocal()
@@ -56,7 +56,7 @@ async def run_reindex_job(job_id: str) -> None:
         failed = 0
 
         logger.info(f"[REINDEX] Processing {total_docs} documents")
-        print(f"[REINDEX WORKER] Processing {total_docs} documents", flush=True)
+        logger.info(f"[REINDEX WORKER] Processing {total_docs} documents")
 
         # Initialize vector service
         vector_service = get_vector_service(settings)
@@ -74,23 +74,23 @@ async def run_reindex_job(job_id: str) -> None:
 
             if current_status == "aborted":
                 logger.info(f"[REINDEX] Job {job_id} aborted by user")
-                print("[REINDEX WORKER] Job aborted", flush=True)
+                logger.info("[REINDEX WORKER] Job aborted")
                 break
 
             if current_status == "paused":
                 logger.info(f"[REINDEX] Job {job_id} paused, waiting for resume...")
-                print("[REINDEX WORKER] Job paused, waiting...", flush=True)
+                logger.info("[REINDEX WORKER] Job paused, waiting...")
                 # Wait for resume signal
                 while True:
                     await asyncio.sleep(2)
                     db.refresh(job)
                     if job.status == "running":
                         logger.info(f"[REINDEX] Job {job_id} resumed")
-                        print("[REINDEX WORKER] Job resumed", flush=True)
+                        logger.info("[REINDEX WORKER] Job resumed")
                         break
                     if job.status == "aborted":
                         logger.info(f"[REINDEX] Job {job_id} aborted while paused")
-                        print("[REINDEX WORKER] Job aborted while paused", flush=True)
+                        logger.info("[REINDEX WORKER] Job aborted while paused")
                         return
 
             # Update current document being processed
@@ -113,9 +113,8 @@ async def run_reindex_job(job_id: str) -> None:
                         f"[REINDEX] {processed}/{total_docs} - {doc.original_filename}: "
                         f"{result.chunk_count} chunks"
                     )
-                    print(
-                        f"[REINDEX WORKER] {processed}/{total_docs} - {doc.original_filename}: OK",
-                        flush=True,
+                    logger.info(
+                        f"[REINDEX WORKER] {processed}/{total_docs} - {doc.original_filename}: OK"
                     )
                 else:
                     # Record failure
@@ -130,9 +129,8 @@ async def run_reindex_job(job_id: str) -> None:
                         logger.warning(
                             f"[REINDEX] Paused due to failure: {doc.original_filename} - {result.error_message}"
                         )
-                        print(
-                            f"[REINDEX WORKER] PAUSED - {doc.original_filename}: {result.error_message}",
-                            flush=True,
+                        logger.warning(
+                            f"[REINDEX WORKER] PAUSED - {doc.original_filename}: {result.error_message}"
                         )
                         # Wait for resume
                         while True:
@@ -143,9 +141,8 @@ async def run_reindex_job(job_id: str) -> None:
                                 if job.current_document_id == doc.id and job.retry_count > 0:
                                     # Retry was requested - don't increment processed, try again
                                     logger.info(f"[REINDEX] Retrying {doc.original_filename}")
-                                    print(
-                                        f"[REINDEX WORKER] Retrying {doc.original_filename}",
-                                        flush=True,
+                                    logger.info(
+                                        f"[REINDEX WORKER] Retrying {doc.original_filename}"
                                     )
                                     # Re-attempt this document (loop will handle it)
                                     continue
@@ -153,10 +150,7 @@ async def run_reindex_job(job_id: str) -> None:
                                     # Skip was requested
                                     processed += 1  # Count as processed (skipped)
                                     logger.info(f"[REINDEX] Skipping {doc.original_filename}")
-                                    print(
-                                        f"[REINDEX WORKER] Skipped {doc.original_filename}",
-                                        flush=True,
-                                    )
+                                    logger.info(f"[REINDEX WORKER] Skipped {doc.original_filename}")
                                 break
                             if job.status == "aborted":
                                 logger.info(f"[REINDEX] Job {job_id} aborted while paused")
@@ -169,9 +163,8 @@ async def run_reindex_job(job_id: str) -> None:
                             f"[REINDEX] {processed}/{total_docs} - {doc.original_filename}: "
                             f"FAILED (auto-skip) - {result.error_message}"
                         )
-                        print(
-                            f"[REINDEX WORKER] {processed}/{total_docs} - {doc.original_filename}: FAILED (skipped)",
-                            flush=True,
+                        logger.warning(
+                            f"[REINDEX WORKER] {processed}/{total_docs} - {doc.original_filename}: FAILED (skipped)"
                         )
 
             except Exception as e:
@@ -184,9 +177,8 @@ async def run_reindex_job(job_id: str) -> None:
 
                 if job.status == "paused":
                     failed += 1
-                    print(
-                        f"[REINDEX WORKER] PAUSED - {doc.original_filename}: {error_msg}",
-                        flush=True,
+                    logger.warning(
+                        f"[REINDEX WORKER] PAUSED - {doc.original_filename}: {error_msg}"
                     )
                     # Wait for resume
                     while True:
@@ -210,14 +202,11 @@ async def run_reindex_job(job_id: str) -> None:
         if job.status == "running":
             reindex_service.update_job_status(job_id, "completed")
             logger.info(f"[REINDEX] Job {job_id} completed: {processed} processed, {failed} failed")
-            print(
-                f"[REINDEX WORKER] COMPLETED: {processed} processed, {failed} failed",
-                flush=True,
-            )
+            logger.info(f"[REINDEX WORKER] COMPLETED: {processed} processed, {failed} failed")
 
     except Exception as e:
         logger.exception(f"[REINDEX] Fatal error in reindex job {job_id}: {e}")
-        print(f"[REINDEX WORKER] FATAL ERROR: {e}", flush=True)
+        logger.error(f"[REINDEX WORKER] FATAL ERROR: {e}")
         try:
             reindex_service = ReindexService(db)
             reindex_service.update_job_status(job_id, "failed", str(e))
