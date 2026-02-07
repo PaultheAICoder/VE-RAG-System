@@ -10,7 +10,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ai_ready_rag.api import admin, auth, chat, documents, experimental, health, setup, tags, users
+from ai_ready_rag.api import (
+    admin,
+    auth,
+    chat,
+    documents,
+    experimental,
+    health,
+    jobs,
+    setup,
+    tags,
+    users,
+)
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.error_handlers import register_error_handlers
 from ai_ready_rag.core.redis import close_redis_pool, get_redis_pool
@@ -139,6 +150,7 @@ app.include_router(tags.router, prefix="/api/tags", tags=["Tags"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
+app.include_router(jobs.router, prefix="/api/jobs", tags=["Jobs"])
 app.include_router(experimental.router, prefix="/api", tags=["Experimental"])
 
 # Serve React frontend static files if dist exists
