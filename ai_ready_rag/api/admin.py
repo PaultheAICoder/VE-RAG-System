@@ -35,6 +35,7 @@ from ai_ready_rag.core.dependencies import (
     require_admin,
     require_system_admin,
 )
+from ai_ready_rag.core.redis import get_redis_pool
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import (
     CuratedQA,
@@ -1825,8 +1826,17 @@ async def start_reindex(
 
     logger.info(f"Admin {current_user.email} started reindex job {job.id}")
 
-    # Start background worker
-    background_tasks.add_task(run_reindex_job, job.id)
+    # Enqueue via ARQ if Redis available, otherwise fall back to BackgroundTasks
+    redis = await get_redis_pool()
+    if redis:
+        try:
+            await redis.enqueue_job("reindex_knowledge_base", job.id)
+            logger.info(f"Reindex job {job.id} enqueued via ARQ")
+        except Exception as e:
+            logger.warning(f"ARQ enqueue failed for reindex, falling back: {e}")
+            background_tasks.add_task(run_reindex_job, job.id)
+    else:
+        background_tasks.add_task(run_reindex_job, job.id)
 
     return _reindex_job_to_response(job)
 
@@ -2227,16 +2237,36 @@ async def warm_cache(
             detail="At least one query is required.",
         )
 
-    # Start background warming
-    background_tasks.add_task(
-        warm_cache_task,
-        queries=request.queries,
-        triggered_by=current_user.id,
-    )
-
-    logger.info(
-        f"Admin {current_user.email} started cache warming with {len(request.queries)} queries"
-    )
+    # Enqueue via ARQ if Redis available, otherwise fall back to BackgroundTasks
+    redis = await get_redis_pool()
+    if redis:
+        try:
+            await redis.enqueue_job("warm_cache", request.queries, current_user.id)
+            logger.info(
+                f"Admin {current_user.email} started cache warming with "
+                f"{len(request.queries)} queries (ARQ)"
+            )
+        except Exception as e:
+            logger.warning(f"ARQ enqueue failed for warming, falling back: {e}")
+            background_tasks.add_task(
+                warm_cache_task,
+                queries=request.queries,
+                triggered_by=current_user.id,
+            )
+            logger.info(
+                f"Admin {current_user.email} started cache warming with "
+                f"{len(request.queries)} queries (BackgroundTasks)"
+            )
+    else:
+        background_tasks.add_task(
+            warm_cache_task,
+            queries=request.queries,
+            triggered_by=current_user.id,
+        )
+        logger.info(
+            f"Admin {current_user.email} started cache warming with "
+            f"{len(request.queries)} queries (BackgroundTasks)"
+        )
 
     return CacheWarmResponse(
         queued=len(request.queries),
