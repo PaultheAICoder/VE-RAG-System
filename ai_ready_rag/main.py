@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from ai_ready_rag.api import admin, auth, chat, documents, experimental, health, setup, tags, users
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.error_handlers import register_error_handlers
+from ai_ready_rag.core.redis import close_redis_pool, get_redis_pool
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import Document
 from ai_ready_rag.services.factory import get_vector_service
@@ -52,6 +53,13 @@ async def lifespan(app: FastAPI):
     await vector_service.initialize()
     app.state.vector_service = vector_service
     logger.info("VectorService initialized (singleton)")
+
+    # Initialize Redis connection pool (None if unavailable — degraded mode)
+    redis_pool = await get_redis_pool()
+    if redis_pool:
+        logger.info("Redis connected — ARQ task queue available")
+    else:
+        logger.warning("Redis unavailable — running in degraded mode (BackgroundTasks fallback)")
 
     # Recover stuck documents from previous crashes
     db = SessionLocal()
@@ -95,6 +103,8 @@ async def lifespan(app: FastAPI):
 
     await warming_worker.stop()
     logger.info("WarmingWorker stopped")
+
+    await close_redis_pool()
 
     logger.info("Shutting down...")
 
