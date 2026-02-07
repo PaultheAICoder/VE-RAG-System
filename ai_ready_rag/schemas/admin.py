@@ -363,6 +363,46 @@ class SettingsAuditResponse(BaseModel):
 
 
 # =============================================================================
+# Security Settings
+# =============================================================================
+
+
+class SecuritySettingsResponse(BaseModel):
+    """Response containing security settings."""
+
+    jwt_expiration_hours: int
+    password_min_length: int
+    bcrypt_rounds: int
+
+
+class SecuritySettingsRequest(BaseModel):
+    """Request to update security settings."""
+
+    jwt_expiration_hours: int | None = None
+    password_min_length: int | None = None
+    bcrypt_rounds: int | None = None
+
+
+# =============================================================================
+# Feature Flags
+# =============================================================================
+
+
+class FeatureFlagsResponse(BaseModel):
+    """Response containing feature flag settings."""
+
+    enable_rag: bool
+    skip_setup_wizard: bool
+
+
+class FeatureFlagsRequest(BaseModel):
+    """Request to update feature flags."""
+
+    enable_rag: bool | None = None
+    skip_setup_wizard: bool | None = None
+
+
+# =============================================================================
 # Advanced Settings & Reindex
 # =============================================================================
 

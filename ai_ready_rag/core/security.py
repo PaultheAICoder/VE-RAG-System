@@ -8,13 +8,15 @@ import bcrypt
 import jwt
 
 from ai_ready_rag.config import get_settings
+from ai_ready_rag.services.settings_service import get_security_setting
 
 settings = get_settings()
 
 
 def hash_password(password: str) -> str:
     """Hash password using bcrypt."""
-    salt = bcrypt.gensalt(rounds=settings.bcrypt_rounds)
+    rounds = get_security_setting("bcrypt_rounds", settings.bcrypt_rounds)
+    salt = bcrypt.gensalt(rounds=rounds)
     return bcrypt.hashpw(password.encode(), salt).decode()
 
 
@@ -26,7 +28,8 @@ def verify_password(password: str, hashed: str) -> bool:
 def create_access_token(data: dict[str, Any], expires_delta: timedelta | None = None) -> str:
     """Create JWT access token."""
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(hours=settings.jwt_expiration_hours))
+    jwt_hours = get_security_setting("jwt_expiration_hours", settings.jwt_expiration_hours)
+    expire = datetime.utcnow() + (expires_delta or timedelta(hours=jwt_hours))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 

@@ -73,6 +73,8 @@ from ai_ready_rag.schemas.admin import (
     DocumentParsingInfo,
     EasyOCRStatus,
     EmbeddingsInfo,
+    FeatureFlagsRequest,
+    FeatureFlagsResponse,
     FileStats,
     InfrastructureStatus,
     KnowledgeBaseStatsResponse,
@@ -97,6 +99,8 @@ from ai_ready_rag.schemas.admin import (
     ResumeReindexRequest,
     RetrievalSettingsRequest,
     RetrievalSettingsResponse,
+    SecuritySettingsRequest,
+    SecuritySettingsResponse,
     SettingsAuditEntry,
     SettingsAuditResponse,
     StartReindexRequest,
@@ -1537,6 +1541,213 @@ async def update_advanced_settings(
         or ADVANCED_DEFAULTS["hnsw_ef_construct"],
         hnsw_m=service.get("hnsw_m") or ADVANCED_DEFAULTS["hnsw_m"],
         vector_backend=service.get("vector_backend") or ADVANCED_DEFAULTS["vector_backend"],
+    )
+
+
+# =============================================================================
+# Security Settings
+# =============================================================================
+
+SECURITY_DEFAULTS = {
+    "jwt_expiration_hours": 24,
+    "password_min_length": 12,
+    "bcrypt_rounds": 12,
+}
+
+
+@router.get("/settings/security", response_model=SecuritySettingsResponse)
+async def get_security_settings(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get current security settings.
+
+    Returns settings with fallback to config.py defaults.
+    System admin only.
+    """
+    service = SettingsService(db)
+    settings = get_settings()
+
+    return SecuritySettingsResponse(
+        jwt_expiration_hours=service.get_with_env_fallback(
+            "jwt_expiration_hours",
+            "JWT_EXPIRATION_HOURS",
+            settings.jwt_expiration_hours,
+        ),
+        password_min_length=service.get_with_env_fallback(
+            "password_min_length",
+            "PASSWORD_MIN_LENGTH",
+            settings.password_min_length,
+        ),
+        bcrypt_rounds=service.get_with_env_fallback(
+            "bcrypt_rounds",
+            "BCRYPT_ROUNDS",
+            settings.bcrypt_rounds,
+        ),
+    )
+
+
+@router.put("/settings/security", response_model=SecuritySettingsResponse)
+async def update_security_settings(
+    request: SecuritySettingsRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Update security settings.
+
+    Only updates fields that are provided (not None).
+    All changes are recorded in the audit log.
+    System admin only.
+    """
+    service = SettingsService(db)
+    settings = get_settings()
+
+    if request.jwt_expiration_hours is not None:
+        if not (1 <= request.jwt_expiration_hours <= 720):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="jwt_expiration_hours must be between 1 and 720 (30 days)",
+            )
+        service.set_with_audit(
+            "jwt_expiration_hours",
+            request.jwt_expiration_hours,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    if request.password_min_length is not None:
+        if not (8 <= request.password_min_length <= 128):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="password_min_length must be between 8 and 128",
+            )
+        service.set_with_audit(
+            "password_min_length",
+            request.password_min_length,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    if request.bcrypt_rounds is not None:
+        if not (4 <= request.bcrypt_rounds <= 31):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="bcrypt_rounds must be between 4 and 31",
+            )
+        service.set_with_audit(
+            "bcrypt_rounds",
+            request.bcrypt_rounds,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    logger.info(
+        f"Admin {current_user.email} updated security settings: "
+        f"{request.model_dump(exclude_none=True)}"
+    )
+
+    return SecuritySettingsResponse(
+        jwt_expiration_hours=service.get_with_env_fallback(
+            "jwt_expiration_hours",
+            "JWT_EXPIRATION_HOURS",
+            settings.jwt_expiration_hours,
+        ),
+        password_min_length=service.get_with_env_fallback(
+            "password_min_length",
+            "PASSWORD_MIN_LENGTH",
+            settings.password_min_length,
+        ),
+        bcrypt_rounds=service.get_with_env_fallback(
+            "bcrypt_rounds",
+            "BCRYPT_ROUNDS",
+            settings.bcrypt_rounds,
+        ),
+    )
+
+
+# =============================================================================
+# Feature Flags
+# =============================================================================
+
+FEATURE_FLAG_DEFAULTS = {
+    "enable_rag": True,
+    "skip_setup_wizard": False,
+}
+
+
+@router.get("/settings/feature-flags", response_model=FeatureFlagsResponse)
+async def get_feature_flags(
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get current feature flag settings.
+
+    Returns settings with fallback to config.py defaults.
+    System admin only.
+    """
+    service = SettingsService(db)
+    settings = get_settings()
+
+    return FeatureFlagsResponse(
+        enable_rag=service.get_with_env_fallback(
+            "enable_rag",
+            "ENABLE_RAG",
+            settings.enable_rag,
+        ),
+        skip_setup_wizard=service.get_with_env_fallback(
+            "skip_setup_wizard",
+            "SKIP_SETUP_WIZARD",
+            settings.skip_setup_wizard,
+        ),
+    )
+
+
+@router.put("/settings/feature-flags", response_model=FeatureFlagsResponse)
+async def update_feature_flags(
+    request: FeatureFlagsRequest,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Update feature flag settings.
+
+    Only updates fields that are provided (not None).
+    All changes are recorded in the audit log.
+    System admin only.
+    """
+    service = SettingsService(db)
+    settings = get_settings()
+
+    if request.enable_rag is not None:
+        service.set_with_audit(
+            "enable_rag",
+            request.enable_rag,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    if request.skip_setup_wizard is not None:
+        service.set_with_audit(
+            "skip_setup_wizard",
+            request.skip_setup_wizard,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    logger.info(
+        f"Admin {current_user.email} updated feature flags: {request.model_dump(exclude_none=True)}"
+    )
+
+    return FeatureFlagsResponse(
+        enable_rag=service.get_with_env_fallback(
+            "enable_rag",
+            "ENABLE_RAG",
+            settings.enable_rag,
+        ),
+        skip_setup_wizard=service.get_with_env_fallback(
+            "skip_setup_wizard",
+            "SKIP_SETUP_WIZARD",
+            settings.skip_setup_wizard,
+        ),
     )
 
 

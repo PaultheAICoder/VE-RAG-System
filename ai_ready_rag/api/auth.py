@@ -17,6 +17,7 @@ from ai_ready_rag.schemas.auth import (
     SetupRequest,
     UserBasicResponse,
 )
+from ai_ready_rag.services.settings_service import get_security_setting
 
 router = APIRouter()
 settings = get_settings()
@@ -41,7 +42,8 @@ async def login(
 
     # Create token
     token = create_access_token(data={"sub": user.id, "email": user.email, "role": user.role})
-    expires_in = settings.jwt_expiration_hours * 3600
+    jwt_hours = get_security_setting("jwt_expiration_hours", settings.jwt_expiration_hours)
+    expires_in = jwt_hours * 3600
 
     # Update last login
     user.last_login = datetime.utcnow()
