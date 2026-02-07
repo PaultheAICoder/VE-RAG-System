@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     app_name: str = "AI Ready RAG"
     app_version: str = "0.5.0"
     debug: bool = True
+    log_level: str = "INFO"
+    log_format: str = "json"  # "json" for production, "console" for dev
 
     # Server
     host: str = "0.0.0.0"

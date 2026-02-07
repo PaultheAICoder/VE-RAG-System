@@ -107,7 +107,7 @@ async def process_document_task(
     from ai_ready_rag.services.factory import get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingOptions, ProcessingService
 
-    print(f"[BACKGROUND TASK] Starting processing for document {document_id}", flush=True)
+    logger.info("document_processing_started", extra={"document_id": document_id})
 
     # Acquire semaphore to limit concurrent processing
     semaphore = get_processing_semaphore()
@@ -151,20 +151,22 @@ async def process_document_task(
             )
 
             if result.success:
-                print(
-                    f"[BACKGROUND TASK] Document {document_id} SUCCESS: {result.chunk_count} chunks",
-                    flush=True,
-                )
                 logger.info(
-                    f"Document {document_id} processed successfully: "
-                    f"{result.chunk_count} chunks in {result.processing_time_ms}ms"
+                    "document_processing_completed",
+                    extra={
+                        "document_id": document_id,
+                        "chunk_count": result.chunk_count,
+                        "processing_time_ms": result.processing_time_ms,
+                    },
                 )
             else:
-                print(
-                    f"[BACKGROUND TASK] Document {document_id} FAILED: {result.error_message}",
-                    flush=True,
+                logger.warning(
+                    "document_processing_failed",
+                    extra={
+                        "document_id": document_id,
+                        "error_message": result.error_message,
+                    },
                 )
-                logger.warning(f"Document {document_id} processing failed: {result.error_message}")
 
         except Exception as e:
             logger.exception(f"Unexpected error processing document {document_id}: {e}")
@@ -608,9 +610,9 @@ async def bulk_reprocess_documents(
     Resets all valid documents to pending and queues for background processing.
     Returns immediately - processing happens in background.
     """
-    print(
-        f"[BULK REPROCESS] Received request with {len(request.document_ids)} document IDs",
-        flush=True,
+    logger.info(
+        "bulk_reprocess_started",
+        extra={"requested_count": len(request.document_ids)},
     )
 
     queued = 0
@@ -618,7 +620,10 @@ async def bulk_reprocess_documents(
 
     # Get all documents in one query
     documents = db.query(Document).filter(Document.id.in_(request.document_ids)).all()
-    print(f"[BULK REPROCESS] Found {len(documents)} documents in database", flush=True)
+    logger.debug(
+        "bulk_reprocess_query",
+        extra={"found_count": len(documents)},
+    )
 
     doc_map = {doc.id: doc for doc in documents}
 
@@ -627,20 +632,24 @@ async def bulk_reprocess_documents(
 
         # Skip if not found
         if not document:
-            print(f"[BULK REPROCESS] Document {doc_id} NOT FOUND", flush=True)
+            logger.debug(
+                "bulk_reprocess_skip", extra={"document_id": doc_id, "reason": "not_found"}
+            )
             skipped_ids.append(doc_id)
             continue
 
         # Skip only if currently processing (to avoid double-processing)
         if document.status == "processing":
-            print(
-                f"[BULK REPROCESS] Document {doc_id} is currently processing - SKIPPED", flush=True
+            logger.debug(
+                "bulk_reprocess_skip",
+                extra={"document_id": doc_id, "reason": "already_processing"},
             )
             skipped_ids.append(doc_id)
             continue
 
-        print(
-            f"[BULK REPROCESS] Document {doc_id} status={document.status} -> processing", flush=True
+        logger.debug(
+            "bulk_reprocess_queuing",
+            extra={"document_id": doc_id, "previous_status": document.status},
         )
 
         # Track if we need to delete existing vectors (only for ready/failed with chunks)
@@ -662,11 +671,10 @@ async def bulk_reprocess_documents(
         queued += 1
 
     db.commit()
-    print(
-        f"[BULK REPROCESS] COMMITTED: Queued {queued} documents, skipped {len(skipped_ids)}",
-        flush=True,
+    logger.info(
+        "bulk_reprocess_completed",
+        extra={"queued": queued, "skipped": len(skipped_ids)},
     )
-    logger.info(f"Bulk reprocess: queued {queued} documents, skipped {len(skipped_ids)}")
 
     return BulkReprocessResponse(
         queued=queued,

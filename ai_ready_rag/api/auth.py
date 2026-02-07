@@ -1,5 +1,6 @@
 """Authentication endpoints."""
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -19,6 +20,7 @@ from ai_ready_rag.schemas.auth import (
 )
 from ai_ready_rag.services.settings_service import get_security_setting
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 settings = get_settings()
 
@@ -31,11 +33,27 @@ async def login(
     user = db.query(User).filter(User.email == credentials.email).first()
 
     if not user or not verify_password(credentials.password, user.password_hash):
+        logger.warning(
+            "login_failed",
+            extra={
+                "email": credentials.email,
+                "reason": "invalid_credentials",
+                "client_ip": request.client.host if request.client else None,
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
         )
 
     if not user.is_active:
+        logger.warning(
+            "login_failed",
+            extra={
+                "email": credentials.email,
+                "reason": "account_deactivated",
+                "user_id": user.id,
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="User account is deactivated"
         )
@@ -49,6 +67,11 @@ async def login(
     user.last_login = datetime.utcnow()
     user.login_count = (user.login_count or 0) + 1
     db.commit()
+
+    logger.info(
+        "login_success",
+        extra={"user_id": user.id, "email": user.email, "role": user.role},
+    )
 
     # Set cookie
     response.set_cookie(

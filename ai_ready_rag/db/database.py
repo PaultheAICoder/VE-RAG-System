@@ -1,5 +1,6 @@
 """Database connection and session management."""
 
+import logging
 import os
 from collections.abc import Generator
 
@@ -9,6 +10,7 @@ from sqlalchemy.pool import QueuePool
 
 from ai_ready_rag.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # Ensure data directory exists
@@ -46,7 +48,7 @@ Base = declarative_base()
 def init_db():
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
-    print(f"Database initialized: {settings.database_url}")
+    logger.info("database_initialized", extra={"database_url": settings.database_url})
 
 
 def get_db() -> Generator[Session, None, None]:
