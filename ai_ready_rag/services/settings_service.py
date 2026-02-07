@@ -20,6 +20,13 @@ RAG_SETTINGS_DEFAULTS = {
     "llm_confidence_threshold": 40,
 }
 
+# Default values for security settings
+SECURITY_DEFAULTS = {
+    "jwt_expiration_hours": 24,
+    "password_min_length": 12,
+    "bcrypt_rounds": 12,
+}
+
 # Default values for cache settings
 CACHE_SETTINGS_DEFAULTS = {
     "cache_enabled": True,
@@ -104,6 +111,35 @@ def get_rag_setting(key: str, default: Any = None) -> Any:
     # Use provided default or look up in our defaults dict
     if default is None:
         default = RAG_SETTINGS_DEFAULTS.get(key)
+
+    db = SessionLocal()
+    try:
+        setting = db.query(AdminSetting).filter(AdminSetting.key == key).first()
+        if setting is not None:
+            return json.loads(setting.value)
+        return default
+    finally:
+        db.close()
+
+
+def get_security_setting(key: str, default: Any = None) -> Any:
+    """Get a security setting from database with fallback to default.
+
+    This is a standalone function that creates its own db session,
+    suitable for use from security/auth modules which may not have a session.
+
+    Args:
+        key: Setting key (e.g., 'bcrypt_rounds', 'jwt_expiration_hours')
+        default: Default value if not found in database
+
+    Returns:
+        Setting value from database, or default if not found
+    """
+    from ai_ready_rag.db.database import SessionLocal
+
+    # Use provided default or look up in our defaults dict
+    if default is None:
+        default = SECURITY_DEFAULTS.get(key)
 
     db = SessionLocal()
     try:

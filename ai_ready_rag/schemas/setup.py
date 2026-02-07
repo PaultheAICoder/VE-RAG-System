@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, field_validator
 
+from ai_ready_rag.services.settings_service import get_security_setting
+
 
 class SetupStatusResponse(BaseModel):
     """Response for setup status check."""
@@ -20,8 +22,9 @@ class CompleteSetupRequest(BaseModel):
     @field_validator("new_password")
     @classmethod
     def password_min_length(cls, v: str) -> str:
-        if len(v) < 12:
-            raise ValueError("Password must be at least 12 characters long")
+        min_length = get_security_setting("password_min_length", 12)
+        if len(v) < min_length:
+            raise ValueError(f"Password must be at least {min_length} characters long")
         return v
 
     @field_validator("confirm_password")
