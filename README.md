@@ -1,129 +1,94 @@
-# Claude Code Configuration Template
+# AI Ready RAG
 
-A reusable agent system for issue-driven development workflows with pattern learning.
+Enterprise Retrieval-Augmented Generation system for NVIDIA DGX Spark. Processes documents using Docling, stores vectors in Qdrant, and uses Ollama for local LLM inference. All components run locally for air-gap deployment.
+
+## Architecture
+
+```
+React SPA (:5173 dev / :8502 prod)     FastAPI Backend (:8502)
+├── /chat        - Chat interface       ├── /api/auth/*      - JWT auth
+├── /admin       - Admin dashboard      ├── /api/chat/*      - Sessions + SSE
+├── /login       - Authentication       ├── /api/documents/* - Upload + process
+                                        ├── /api/tags/*      - Tag CRUD
+                                        ├── /api/users/*     - User management
+                                        ├── /api/admin/*     - Settings + cache
+                                        └── /api/health      - Health check
+```
+
+**Key Components:**
+- **SQLite** — Users, sessions, chat history, tags, cache, audit logs (WAL mode)
+- **Qdrant** — Vector storage with tag-based filtering for access control
+- **Ollama** — Local LLM inference (localhost:11434)
+- **Docling** — Document parsing with OCR, table extraction, semantic chunking
 
 ## Quick Start
 
-1. **Copy to your project root:**
-   ```bash
-   tar -xzvf claude-config-template.tar.gz -C /path/to/your/project/
-   ```
+### Prerequisites
 
-2. **Make hooks executable:**
-   ```bash
-   chmod +x .claude/hooks/*.py
-   ```
+- Python 3.12+
+- Node.js 18+ (for frontend)
+- [Ollama](https://ollama.ai/) running locally
+- [Qdrant](https://qdrant.tech/) running locally (Docker recommended)
 
-3. **Install PyYAML (recommended):**
-   ```bash
-   pip install pyyaml
-   ```
+### Backend Setup
 
-4. **Customize for your project:**
-   - Edit `.claude/context/project_stack.md` - Your tech stack
-   - Edit `.claude/rules/backend-patterns.md` - Your backend patterns
-   - Edit `.claude/rules/frontend-patterns.md` - Your frontend patterns
-   - Edit `.claude/rules/testing.md` - Your test setup
-   - Create `CLAUDE.md` in your project root with project-specific instructions
+```bash
+cd ~/projects/VE-RAG-System
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-wsl.txt
 
-5. **Start using:**
-   ```bash
-   claude
-   /orchestrate <issue_number>
-   ```
-
-## What's Included
-
-### Agents (`.claude/agents/`)
-| Agent | Purpose |
-|-------|---------|
-| `_base.md` | Shared behaviors inherited by all agents |
-| `map.md` | Codebase exploration |
-| `map-plan.md` | Combined mapping + planning for simple issues |
-| `plan.md` | Implementation planning |
-| `patch.md` | Code implementation |
-| `prove.md` | Verification and testing |
-| `test-planner.md` | Test generation |
-| `spec-reviewer.md` | Specification analysis |
-| `contract.md` | API contract definition |
-
-### Commands (`.claude/commands/`)
-| Command | Usage |
-|---------|-------|
-| `/orchestrate <issue>` | Main workflow - issue to PR |
-| `/learn` | Extract patterns from postmortems |
-| `/metrics` | View agent performance |
-| `/pr` | Create pull request |
-| `/bug` | Create bug issue |
-| `/feature` | Create feature issue |
-| `/spec-draft` | Draft a specification |
-| `/test-plan` | Generate test plan |
-
-### Hooks (`.claude/hooks/`)
-- `precompact_checkpoint.py` - Saves state before context compaction
-- `sessionstart_restore_state.py` - Restores state on session start
-
-### Workflow
-
-```
-GitHub Issue → /orchestrate → MAP-PLAN → PATCH → PROVE → PR
+# Run backend
+python -m uvicorn ai_ready_rag.main:app --host 0.0.0.0 --port 8502
 ```
 
-## Configuration Files to Customize
+### Frontend Setup
 
-### Required
-- `CLAUDE.md` (project root) - Main project instructions
-- `.claude/context/project_stack.md` - Your technology stack
-- `.claude/rules/backend-patterns.md` - Backend coding patterns
-- `.claude/rules/frontend-patterns.md` - Frontend coding patterns
-
-### Optional
-- `.claude/rules/testing.md` - Testing conventions
-- `.claude/memory/patterns-critical.md` - Critical patterns (learned over time)
-
-## Building Your Pattern Library
-
-1. Use `/orchestrate` to complete issues
-2. When issues fail, create postmortems:
-   ```
-   .claude/memory/postmortems/YYYY-MM-DD-description.md
-   ```
-3. Run `/learn` to extract patterns
-4. Patterns auto-load on session start
-
-## Directory Structure
-
-```
-your-project/
-├── .claude/
-│   ├── agents/           # Agent definitions
-│   ├── commands/         # Slash commands
-│   ├── context/          # Project context
-│   ├── hooks/            # Context preservation
-│   ├── memory/           # Learned patterns
-│   │   └── postmortems/  # Failure analysis
-│   ├── rules/            # Coding patterns
-│   ├── skills/           # Skill definitions
-│   ├── templates/        # Spec/artifact templates
-│   └── settings.json     # Hook configuration
-├── .agents/
-│   └── outputs/          # Agent artifacts (not in git)
-│       └── claude_checkpoints/
-└── CLAUDE.md             # Project instructions
+```bash
+cd frontend
+npm install
+npm run dev          # Development server (:5173)
+npm run build        # Production build → dist/
 ```
 
-## Artifacts
+### First-Time Setup
 
-Agent outputs go to `.agents/outputs/`:
-- `map-{issue}-{date}.md`
-- `plan-{issue}-{date}.md`
-- `patch-{issue}-{date}.md`
-- `prove-{issue}-{date}.md`
+1. Start the backend
+2. Navigate to `http://localhost:8502/api/setup` (or the frontend setup wizard)
+3. Create an admin account
+4. Upload documents and assign tags
 
-Add `.agents/` to `.gitignore`.
+## Development
 
-## Requirements
+```bash
+# Activate environment
+source .venv/bin/activate
 
-- Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
-- Python 3.8+ (for hooks)
-- PyYAML (optional but recommended): `pip install pyyaml`
+# Run tests
+pytest tests/ -v
+
+# Lint and format
+ruff check ai_ready_rag tests
+ruff format ai_ready_rag tests
+
+# Run with auto-reload
+python -m uvicorn ai_ready_rag.main:app --host 0.0.0.0 --port 8502 --reload
+```
+
+**Requirements files:**
+
+| File | Purpose |
+|------|---------|
+| `requirements-wsl.txt` | WSL2/Linux development (Ollama + Qdrant) |
+| `requirements-spark.txt` | DGX Spark production (Docling + Qdrant) |
+| `requirements-api.txt` | Minimal API testing (no RAG) |
+
+## Documentation
+
+- **[Architecture Decisions](docs/ARCHITECTURE.md)** — ADRs for key technical choices
+- **[WSL2 Setup Guide](docs/WSL2_SETUP.md)** — Complete development environment setup
+- **[CLAUDE.md](CLAUDE.md)** — AI assistant instructions for this codebase
+
+## License
+
+Proprietary - NVIDIA DGX Spark deployment.

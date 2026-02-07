@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     warming_checkpoint_interval: int = 10  # Save progress every N queries
 
     # Cache Warming - Worker settings
+    warming_max_concurrent_queries: int = 2  # Max concurrent Ollama calls during warming
     warming_checkpoint_time_seconds: int = 5  # Max seconds between checkpoints
     warming_lease_duration_minutes: int = 10  # Job lease duration
     warming_lease_renewal_seconds: int = 60  # Lease renewal interval

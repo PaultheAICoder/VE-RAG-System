@@ -58,6 +58,9 @@ class WarmingWorker:
         self._shutdown = asyncio.Event()
         self._current_job_id: str | None = None
 
+        # Semaphore to limit concurrent Ollama calls
+        self._query_semaphore = asyncio.Semaphore(self.settings.warming_max_concurrent_queries)
+
         # Progress estimation (EMA)
         self._query_durations: deque[float] = deque(maxlen=20)
 
@@ -240,9 +243,8 @@ class WarmingWorker:
                         f"[WARM] Acquired job {job_id[:8]}... "
                         f"(worker={self.worker_id}, lease_expires={lease_expires})"
                     )
-                    print(
-                        f"[WARM] Acquired job {job_id[:8]}... ({job.total_queries} queries)",
-                        flush=True,
+                    logger.info(
+                        f"[WARM] Acquired job {job_id[:8]}... ({job.total_queries} queries)"
                     )
                     return job
                 else:
@@ -441,7 +443,7 @@ class WarmingWorker:
                     db.close()
 
                 # Warm the query with cancel/pause support
-                print(f"[WARM] Processing query {line_number}: {query[:50]}...", flush=True)
+                logger.info(f"[WARM] Processing query {line_number}: {query[:50]}...")
                 start_time = asyncio.get_event_loop().time()
                 success, was_cached = await self._warm_query_with_cancel_check(
                     query, job.id, line_number
@@ -453,19 +455,15 @@ class WarmingWorker:
                     processed += 1
                     if not was_cached:
                         skipped += 1  # Processed but not cached (low confidence)
-                        print(
+                        logger.info(
                             f"[WARM] Query {line_number} SKIPPED (low confidence) "
-                            f"in {duration:.2f}s",
-                            flush=True,
+                            f"in {duration:.2f}s"
                         )
                     else:
-                        print(
-                            f"[WARM] Query {line_number} CACHED in {duration:.2f}s",
-                            flush=True,
-                        )
+                        logger.info(f"[WARM] Query {line_number} CACHED in {duration:.2f}s")
                 else:
                     failed += 1
-                    print(f"[WARM] Query {line_number} FAILED in {duration:.2f}s", flush=True)
+                    logger.warning(f"[WARM] Query {line_number} FAILED in {duration:.2f}s")
 
                 checkpoint_count += 1
 
@@ -546,10 +544,9 @@ class WarmingWorker:
             f"[WARM] Job {job.id} completed: {processed} processed "
             f"({skipped} skipped due to low confidence), {failed} failed"
         )
-        print(
+        logger.info(
             f"[WARM] Job {job.id} COMPLETED: {processed} processed "
-            f"({skipped} skipped due to low confidence), {failed} failed",
-            flush=True,
+            f"({skipped} skipped due to low confidence), {failed} failed"
         )
 
     def _should_stop(self, db, job_id: str) -> tuple[bool, str | None]:
@@ -701,10 +698,7 @@ class WarmingWorker:
                                 f"[WARM] Query {line_number} abandoned after cancel timeout "
                                 f"({cancel_timeout}s, latency {cancel_latency:.2f}s)"
                             )
-                            print(
-                                f"[WARM] Query {line_number} CANCELLED (timeout)",
-                                flush=True,
-                            )
+                            logger.warning(f"[WARM] Query {line_number} CANCELLED (timeout)")
                             self._record_failed_query(
                                 job_id,
                                 query,
@@ -766,7 +760,8 @@ class WarmingWorker:
 
         for attempt in range(max_retries + 1):
             try:
-                was_cached = await self.rag_service.warm_cache(query)
+                async with self._query_semaphore:
+                    was_cached = await self.rag_service.warm_cache(query)
                 return (True, was_cached)
             except RETRYABLE_EXCEPTIONS as e:
                 if attempt < max_retries:
@@ -783,10 +778,9 @@ class WarmingWorker:
                         f"[WARM] Query {line_number} failed after {max_retries} retries: "
                         f"{type(e).__name__}: {e}"
                     )
-                    print(
+                    logger.error(
                         f"[WARM] Query {line_number} EXHAUSTED retries: {type(e).__name__}: "
-                        f"{str(e)[:200]}",
-                        flush=True,
+                        f"{str(e)[:200]}"
                     )
                     self._record_failed_query(
                         job_id, query, line_number, str(e), type(e).__name__, attempt + 1
@@ -795,9 +789,8 @@ class WarmingWorker:
             except Exception as e:
                 # Non-retryable error - fail immediately
                 logger.error(f"[WARM] Query {line_number} failed with {type(e).__name__}: {e}")
-                print(
-                    f"[WARM] Query {line_number} ERROR: {type(e).__name__}: {str(e)[:200]}",
-                    flush=True,
+                logger.error(
+                    f"[WARM] Query {line_number} ERROR: {type(e).__name__}: {str(e)[:200]}"
                 )
                 self._record_failed_query(
                     job_id, query, line_number, str(e), type(e).__name__, attempt + 1
@@ -865,10 +858,7 @@ class WarmingWorker:
                 f"  Original error: {error_type}: {error_message[:200]}\n"
                 f"  Retry count: {retry_count}"
             )
-            print(
-                f"[WARM] WARNING: Could not record failed query (line {line_number}): {e}",
-                flush=True,
-            )
+            logger.warning(f"[WARM] Could not record failed query (line {line_number}): {e}")
             return False
         finally:
             db.close()

@@ -92,7 +92,7 @@ FastAPI (:8502)                    React (:5173 dev / :8502 prod)
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Backend | FastAPI + Gradio | Enterprise auth, REST API, middleware for access control |
+| Backend | FastAPI + React | Enterprise auth, REST API, middleware for access control |
 | Vector DB | Qdrant (replacing ChromaDB) | Superior tag filtering, GPU acceleration |
 | App DB | SQLite | Zero infrastructure, air-gap friendly |
 | Access Control | Pre-retrieval filtering | User tags filter vectors BEFORE search; LLM never sees inaccessible docs |
@@ -102,25 +102,39 @@ FastAPI (:8502)                    React (:5173 dev / :8502 prod)
 
 - **Python 3.12+**
 - **Document Processing:** Docling 2.68.0, Tesseract/EasyOCR
-- **Vector:** ChromaDB 0.5.0 (current), Qdrant 1.13.x (planned)
+- **Vector:** Qdrant 1.13.x
 - **LLM:** LangChain 0.3.0+, LangChain-Ollama
-- **UI:** Gradio 5.0+
-- **Backend:** FastAPI 0.115.x (planned)
+- **Frontend:** React (Vite + TypeScript)
+- **Backend:** FastAPI 0.115.x
 - **Infrastructure:** Docker, NVIDIA Container Toolkit
 
-## Planned Project Structure (for refactoring)
+## Project Structure
 
 ```
 ai_ready_rag/
-├── main.py              # FastAPI entry point
+├── main.py              # FastAPI entry point (lifespan pattern)
 ├── config.py            # Configuration management
 ├── api/                 # Route handlers
-├── core/                # Security, dependencies, exceptions
-├── middleware/          # Auth, audit, access control
-├── db/                  # SQLite, models, migrations
-├── services/            # Business logic (auth, chat, document, vector, rag, audit)
-├── ui/                  # Gradio app and components
+├── core/                # Security, dependencies, exceptions, error handlers
+├── db/                  # SQLite models, repositories (BaseRepository pattern)
+│   ├── models/          # SQLAlchemy models
+│   └── repositories/    # BaseRepository[T] + concrete repos
+├── services/            # Business logic (BaseService pattern)
+│   ├── base.py          # BaseService[T, R] generic
+│   ├── rag_service.py   # RAG orchestration
+│   └── ...              # Domain services
+├── workers/             # Background workers
+│   ├── warming_worker.py    # Cache warming (semaphore-limited)
+│   └── warming_cleanup.py   # Expired job cleanup
+├── schemas/             # Pydantic request/response models
 └── utils/
+
+frontend/                # React SPA (Vite + TypeScript)
+├── src/
+│   ├── components/      # Reusable UI components
+│   ├── pages/           # Route pages (Chat, Admin, Login)
+│   └── api/             # API client
+└── dist/                # Production build (served by FastAPI)
 ```
 
 ## Important Documentation

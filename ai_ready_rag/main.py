@@ -35,9 +35,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Chat model: {settings.chat_model}")
     logger.info(f"  Embedding model: {settings.embedding_model}")
     logger.info("=" * 60)
-    print(f"Starting {settings.app_name} v{settings.app_version}", flush=True)
-    print(f"Debug mode: {settings.debug}", flush=True)
-    print(f"RAG enabled: {settings.enable_rag}", flush=True)
+    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+    logger.info(f"Debug mode: {settings.debug}")
+    logger.info(f"RAG enabled: {settings.enable_rag}")
 
     # Track server start time for uptime calculation
     app.state.start_time = time.time()
@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
         db.commit()
         if stuck_count:
             logger.warning(f"Reset {stuck_count} stuck documents to pending status")
-            print(f"Recovered {stuck_count} stuck documents", flush=True)
+            logger.info(f"Recovered {stuck_count} stuck documents")
     finally:
         db.close()
 
@@ -80,13 +80,11 @@ async def lifespan(app: FastAPI):
     if recovered_count:
         logger.info(f"Recovered {recovered_count} warming jobs with expired leases")
 
-    print("WarmingWorker started", flush=True)
     logger.info("WarmingWorker started")
 
     # Initialize and start WarmingCleanupService
     warming_cleanup = WarmingCleanupService(settings)
     await warming_cleanup.start()
-    print("WarmingCleanupService started", flush=True)
     logger.info("WarmingCleanupService started")
 
     yield
@@ -98,7 +96,7 @@ async def lifespan(app: FastAPI):
     await warming_worker.stop()
     logger.info("WarmingWorker stopped")
 
-    print("Shutting down...", flush=True)
+    logger.info("Shutting down...")
 
 
 app = FastAPI(
@@ -138,7 +136,7 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 if FRONTEND_DIR.exists():
     # Mount static assets (js, css, etc.)
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="static")
-    print(f"React frontend mounted from {FRONTEND_DIR}")
+    logger.info(f"React frontend mounted from {FRONTEND_DIR}")
 
     @app.get("/")
     async def serve_frontend():

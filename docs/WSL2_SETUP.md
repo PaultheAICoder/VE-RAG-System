@@ -226,7 +226,6 @@ cat > .env << 'EOF'
 # Application
 DEBUG=true
 ENABLE_RAG=true
-ENABLE_GRADIO=true
 
 # JWT (generate a real secret for production)
 JWT_SECRET_KEY=dev-secret-change-in-production-use-openssl-rand-hex-32
@@ -369,9 +368,6 @@ python-docx>=1.0.0
 openpyxl>=3.1.0
 markdown>=3.5.0
 
-# ============== UI ==============
-gradio>=5.0.0
-
 # ============== Testing ==============
 pytest>=8.0.0
 pytest-cov>=4.0.0
@@ -449,8 +445,8 @@ curl -X POST http://localhost:8000/api/auth/login \
 
 WSL2 localhost is accessible from Windows:
 
-- API Docs: http://localhost:8000/api/docs
-- Gradio UI: http://localhost:8000/app (when enabled)
+- API Docs: http://localhost:8502/api/docs
+- Frontend: http://localhost:5173 (dev) or http://localhost:8502 (production)
 
 ---
 

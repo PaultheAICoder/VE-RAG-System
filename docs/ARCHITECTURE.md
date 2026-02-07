@@ -1,7 +1,7 @@
 # AI Ready RAG - Architecture Decision Record
 
-**Version:** 0.4.1
-**Date:** January 27, 2026
+**Version:** 0.5.0-rc
+**Date:** February 6, 2026
 **Status:** Approved
 
 ---
@@ -12,66 +12,70 @@ This document captures the key architectural decisions for AI Ready RAG and the 
 
 ---
 
-## ADR-001: FastAPI + Gradio Backend Architecture
+## ADR-001: FastAPI + React Frontend Architecture
 
 ### Decision
-Use **FastAPI as the primary backend framework** with **Gradio embedded as a sub-application** for the chat UI.
+Use **FastAPI as the backend** with **React as the frontend**. Gradio was used for the initial prototype but has been fully replaced.
 
 ### Context
-The initial prototype used Gradio standalone (port 8501) for rapid development. As we move to production with enterprise authentication, RBAC, REST APIs, and audit logging, we need a more robust backend architecture.
+The initial prototype used Gradio standalone for rapid development. As the system evolved with enterprise authentication, RBAC, REST APIs, and audit logging, we migrated to FastAPI backend with a React SPA frontend.
 
-### Options Considered
+### Architecture Evolution
 
-| Option | Pros | Cons |
-|--------|------|------|
-| **Gradio Standalone** | Simple, fast to build | No real session management, limited auth, no REST API support, hard to add middleware |
-| **FastAPI + Gradio** | Full REST API, proper middleware, session/JWT support, Gradio for ML UI | More complex setup, two frameworks to maintain |
-| **FastAPI + React/Next.js** | Maximum flexibility, modern frontend | Complete rewrite, longer timeline, more frontend expertise needed |
+| Phase | Stack | Status |
+|-------|-------|--------|
+| Prototype | Gradio standalone (:8501) | Deprecated |
+| v0.3 | FastAPI + embedded Gradio | Deprecated |
+| **v0.4+** | **FastAPI + React SPA** | **Current** |
 
 ### Decision Rationale
 
-1. **Authentication Requirements**: We need JWT-based sessions, secure cookies, RBAC middleware, and admin password reset flows. Gradio's built-in auth is insufficient for enterprise use.
+1. **Authentication**: JWT-based sessions, secure cookies, RBAC middleware, admin password reset. React provides full control over auth UX.
 
-2. **REST API Surface**: The PRD specifies REST endpoints for chat, documents, tags, users, and system health. FastAPI provides automatic OpenAPI docs and type safety.
+2. **REST API Surface**: REST endpoints for chat, documents, tags, users, health. FastAPI provides OpenAPI docs and type safety.
 
-3. **Middleware Needs**: Access control checks must run BEFORE retrieval/citation to prevent data leakage. FastAPI's dependency injection and middleware system handles this cleanly.
+3. **Middleware**: Access control checks run BEFORE retrieval/citation. FastAPI dependency injection handles this cleanly.
 
-4. **Audit Trail**: Every action needs logging with configurable verbosity. FastAPI middleware can intercept all requests consistently.
-
-5. **Timeline Preservation**: Embedding Gradio in FastAPI preserves our existing UI work while adding backend capabilities. A full React rewrite would miss our deadline.
+4. **Frontend Flexibility**: React provides full control over UI/UX, state management, and real-time features (SSE for streaming responses).
 
 ### Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        NGINX (optional)                          │
-│                    (HTTPS termination, :443)                     │
+│                      React SPA (:5173 dev)                       │
+│               (built to frontend/dist for production)            │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ /chat        - Chat interface with streaming             │   │
+│  │ /admin       - Admin dashboard (settings, docs, users)   │   │
+│  │ /login       - Authentication                            │   │
+│  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      FastAPI Application                         │
-│                         (Port 8000)                              │
+│                         (Port 8502)                              │
 ├─────────────────────────────────────────────────────────────────┤
-│  Middleware Stack:                                               │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
-│  │   CORS      │ │   Auth      │ │   Audit     │               │
-│  │  Middleware │ │  Middleware │ │   Logger    │               │
-│  └─────────────┘ └─────────────┘ └─────────────┘               │
+│  Middleware: CORS → Auth → Access Control → Audit               │
 ├─────────────────────────────────────────────────────────────────┤
 │  Routes:                                                         │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │ /api/auth/*     - Login, logout, password reset          │   │
-│  │ /api/chat/*     - Chat sessions and messages             │   │
-│  │ /api/documents/*- Upload, list, delete, tag              │   │
+│  │ /api/chat/*     - Chat sessions and messages (SSE)       │   │
+│  │ /api/documents/*- Upload, process, tag, search           │   │
 │  │ /api/tags/*     - Tag CRUD                               │   │
 │  │ /api/users/*    - User management (admin)                │   │
-│  │ /api/admin/*    - System settings, audit logs            │   │
+│  │ /api/admin/*    - Settings, cache, warming, reindex      │   │
 │  │ /api/health     - Health check endpoint                  │   │
+│  │ /api/setup      - First-time setup wizard                │   │
 │  └──────────────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────────────┤
+│  Service Layer (Layered Architecture):                           │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │ /app/*          - Gradio UI (mounted sub-app)            │   │
-│  │ /setup          - First-time setup wizard                │   │
+│  │ BaseRepository[T] → Concrete Repos (User, Document, ...) │   │
+│  │ BaseService[T, R]  → Domain services                      │   │
+│  │ Depends() chain    → Service factories in dependencies.py │   │
+│  │ Domain exceptions  → AppError hierarchy                   │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
                 │               │               │
@@ -81,50 +85,26 @@ The initial prototype used Gradio standalone (port 8501) for rapid development. 
 │   SQLite     │ │   Qdrant     │ │   Ollama     │ │   Docling    │
 │  (Users,     │ │  (Vectors)   │ │   (LLM)      │ │  (Parsing)   │
 │  Sessions,   │ │   :6333      │ │  :11434      │ │              │
+│  Cache,      │ │              │ │              │ │              │
 │  Audit)      │ │              │ │              │ │              │
 └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
-```
-
-### Implementation Notes
-
-```python
-# main.py structure
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import gradio as gr
-
-app = FastAPI(title="AI Ready RAG", version="0.4.1")
-
-# Middleware
-app.add_middleware(CORSMiddleware, ...)
-app.add_middleware(AuditLogMiddleware, ...)
-
-# API routes
-app.include_router(auth_router, prefix="/api/auth")
-app.include_router(chat_router, prefix="/api/chat")
-app.include_router(documents_router, prefix="/api/documents")
-# ... etc
-
-# Mount Gradio
-gradio_app = gr.Blocks(...)
-app = gr.mount_gradio_app(app, gradio_app, path="/app")
 ```
 
 ### Consequences
 
 **Positive:**
-- Proper enterprise auth with JWT sessions
+- Full enterprise auth with JWT sessions
 - Clean REST API with OpenAPI documentation
 - Consistent middleware for access control and audit
-- Gradio UI preserved, minimal rework
+- React SPA provides rich, responsive UI
+- Layered architecture (repos, services, routes)
 
 **Negative:**
-- Slightly more complex deployment
-- Two frameworks to understand
-- Gradio state management needs care when embedded
+- Two technology stacks (Python + TypeScript)
+- Frontend build step required for production
 
 ### Status
-**Accepted** - January 27, 2026
+**Accepted** - Updated February 6, 2026
 
 ---
 
@@ -324,7 +304,7 @@ CREATE INDEX idx_audit_action ON audit_logs(action);
 
 | Area | Decision | Rationale |
 |------|----------|-----------|
-| Backend | FastAPI + Gradio | Enterprise auth, REST API, middleware support |
+| Backend | FastAPI + React | Enterprise auth, REST API, rich SPA frontend |
 | Vector DB | Qdrant | Tag filtering, scale, performance |
 | App DB | SQLite | Zero infrastructure, air-gap friendly |
 | Access Control | Pre-retrieval filtering | Prevent data leakage |

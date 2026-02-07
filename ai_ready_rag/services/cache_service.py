@@ -304,20 +304,20 @@ class CacheService:
         Returns None if cache miss or access denied.
         """
         if not self.enabled:
-            print("[CACHE] get() - cache disabled", flush=True)
+            logger.debug("[CACHE] get() - cache disabled")
             return None
 
         query_hash = self._hash_query(query)
-        print(f"[CACHE] get() query='{query[:50]}' hash={query_hash[:16]}...", flush=True)
-        print(f"[CACHE] get() user_tags={user_tags}", flush=True)
-        print(f"[CACHE] get() memory_size={len(self.memory)}", flush=True)
+        logger.debug(f"[CACHE] get() query='{query[:50]}' hash={query_hash[:16]}...")
+        logger.debug(f"[CACHE] get() user_tags={user_tags}")
+        logger.debug(f"[CACHE] get() memory_size={len(self.memory)}")
 
         # Layer 1: Try memory cache (exact hash match)
         entry = self.memory.get(query_hash)
         if entry:
-            print("[CACHE] Layer 1 HIT (memory exact)", flush=True)
+            logger.debug("[CACHE] Layer 1 HIT (memory exact)")
             access_ok = await self.verify_access(entry, user_tags)
-            print(f"[CACHE] verify_access={access_ok}", flush=True)
+            logger.debug(f"[CACHE] verify_access={access_ok}")
             if access_ok:
                 self._log_access(query_hash, query, was_hit=True)
                 self._hit_count += 1
@@ -329,30 +329,27 @@ class CacheService:
 
         # Layer 2: Semantic similarity lookup (if embedding provided)
         if query_embedding is not None:
-            print(
-                f"[CACHE] Trying Layer 2 (semantic), threshold={self.semantic_threshold}",
-                flush=True,
-            )
+            logger.debug(f"[CACHE] Trying Layer 2 (semantic), threshold={self.semantic_threshold}")
             entry = self.memory.get_semantic(query_embedding, self.semantic_threshold)
             if entry:
-                print("[CACHE] Layer 2 HIT (semantic)", flush=True)
+                logger.debug("[CACHE] Layer 2 HIT (semantic)")
                 access_ok = await self.verify_access(entry, user_tags)
-                print(f"[CACHE] verify_access={access_ok}", flush=True)
+                logger.debug(f"[CACHE] verify_access={access_ok}")
                 if access_ok:
                     self._log_access(query_hash, query, was_hit=True)
                     self._hit_count += 1
                     return entry
             else:
-                print("[CACHE] Layer 2 MISS (no semantic match)", flush=True)
+                logger.debug("[CACHE] Layer 2 MISS (no semantic match)")
             # Access denied or no match - continue to SQLite fallback
 
         # Try SQLite fallback (Layer 1 only - no semantic in SQLite for perf)
-        print("[CACHE] Trying Layer 3 (SQLite exact)", flush=True)
+        logger.debug("[CACHE] Trying Layer 3 (SQLite exact)")
         entry = self._get_from_sqlite(query_hash)
         if entry:
-            print("[CACHE] Layer 3 HIT (SQLite exact)", flush=True)
+            logger.debug("[CACHE] Layer 3 HIT (SQLite exact)")
             access_ok = await self.verify_access(entry, user_tags)
-            print(f"[CACHE] verify_access={access_ok}", flush=True)
+            logger.debug(f"[CACHE] verify_access={access_ok}")
             if access_ok:
                 self.memory.put(entry)  # Warm memory
                 self._log_access(query_hash, query, was_hit=True)
@@ -362,7 +359,7 @@ class CacheService:
             self._miss_count += 1
             return None
 
-        print("[CACHE] Layer 3 MISS (not in SQLite)", flush=True)
+        logger.debug("[CACHE] Layer 3 MISS (not in SQLite)")
         self._log_access(query_hash, query, was_hit=False)
         self._miss_count += 1
         return None
@@ -374,21 +371,19 @@ class CacheService:
         db = self._get_session()
         try:
             row = db.query(ResponseCache).filter(ResponseCache.query_hash == query_hash).first()
-            print(
-                f"[CACHE] _get_from_sqlite hash={query_hash[:16]}... row={'found' if row else 'None'}",
-                flush=True,
+            logger.debug(
+                f"[CACHE] _get_from_sqlite hash={query_hash[:16]}... row={'found' if row else 'None'}"
             )
             if row:
                 # Check TTL using last_accessed_at (sliding expiration)
                 # Fall back to created_at if never accessed
                 check_time = row.last_accessed_at or row.created_at
                 age_hours = (datetime.utcnow() - check_time).total_seconds() / 3600
-                print(
-                    f"[CACHE] Entry age={age_hours:.1f}h since last access, TTL={self.ttl_hours}h",
-                    flush=True,
+                logger.debug(
+                    f"[CACHE] Entry age={age_hours:.1f}h since last access, TTL={self.ttl_hours}h"
                 )
                 if datetime.utcnow() - check_time > timedelta(hours=self.ttl_hours):
-                    print("[CACHE] Entry EXPIRED", flush=True)
+                    logger.debug("[CACHE] Entry EXPIRED")
                     return None  # Expired
                 # Update last_accessed_at on hit
                 row.last_accessed_at = datetime.utcnow()
@@ -460,19 +455,18 @@ class CacheService:
     ) -> None:
         """Store response in cache (memory + SQLite)."""
         if not self.enabled:
-            print("[CACHE] put() skipped - cache disabled", flush=True)
+            logger.debug("[CACHE] put() skipped - cache disabled")
             return
 
         # Skip low-confidence responses
         if response.confidence.overall < self.min_confidence:
-            print(
+            logger.debug(
                 f"[CACHE] put() skipped - confidence {response.confidence.overall} "
-                f"< min {self.min_confidence}",
-                flush=True,
+                f"< min {self.min_confidence}"
             )
             return
 
-        print(f"[CACHE] put() storing response for: {query[:50]}...", flush=True)
+        logger.debug(f"[CACHE] put() storing response for: {query[:50]}...")
 
         from ai_ready_rag.db.models import ResponseCache
 
@@ -532,7 +526,7 @@ class CacheService:
                 existing.document_ids = json.dumps(doc_ids)
                 existing.last_accessed_at = datetime.utcnow()
                 existing.access_count += 1
-                print(f"[CACHE] Updated existing entry (hash={query_hash[:12]}...)", flush=True)
+                logger.debug(f"[CACHE] Updated existing entry (hash={query_hash[:12]}...)")
             else:
                 row = ResponseCache(
                     query_hash=query_hash,
@@ -549,11 +543,10 @@ class CacheService:
                     document_ids=json.dumps(doc_ids),
                 )
                 db.add(row)
-                print(f"[CACHE] Created new entry (hash={query_hash[:12]}...)", flush=True)
+                logger.debug(f"[CACHE] Created new entry (hash={query_hash[:12]}...)")
 
             db.commit()
-            print("[CACHE] Committed to SQLite", flush=True)
-            logger.debug(f"Cached response for query: {query[:50]}...")
+            logger.debug(f"[CACHE] Committed to SQLite for query: {query[:50]}...")
         finally:
             self._close_session(db)
 

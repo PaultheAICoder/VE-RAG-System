@@ -26,6 +26,7 @@ class TestWarmingWorkerInit:
         """Each worker gets unique ID."""
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
         mock_settings.warming_lease_renewal_seconds = 60
 
@@ -40,6 +41,7 @@ class TestWarmingWorkerInit:
         """Initial state has no job."""
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
 
         worker = WarmingWorker(mock_rag, mock_settings)
@@ -52,6 +54,7 @@ class TestWarmingWorkerInit:
         """Retry delays parsed from settings."""
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
 
         worker = WarmingWorker(mock_rag, mock_settings)
@@ -67,6 +70,7 @@ class TestWarmingWorkerLifecycle:
         """Start creates run and lease tasks."""
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
         mock_settings.warming_lease_renewal_seconds = 60
         mock_settings.warming_scan_interval_seconds = 5
@@ -90,6 +94,7 @@ class TestWarmingWorkerLifecycle:
         """Stop cancels and awaits tasks."""
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
         mock_settings.warming_lease_renewal_seconds = 60
         mock_settings.warming_scan_interval_seconds = 5
@@ -145,6 +150,7 @@ class TestProgressEstimation:
         """EMA weights recent queries more."""
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
         mock_settings.warming_delay_seconds = 2.0
 
@@ -169,6 +175,7 @@ class TestProgressEstimation:
         """Queries per second from durations."""
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
 
         worker = WarmingWorker(mock_rag, mock_settings)
@@ -186,6 +193,7 @@ class TestProgressEstimation:
         """Estimate returns -1 with no duration data."""
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
 
         worker = WarmingWorker(mock_rag, mock_settings)
@@ -243,6 +251,7 @@ class TestJobLeaseAcquisition:
 
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
         mock_settings.warming_lease_duration_minutes = 10
 
@@ -273,6 +282,7 @@ class TestJobLeaseAcquisition:
 
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
         mock_settings.warming_lease_duration_minutes = 10
 
@@ -301,6 +311,7 @@ class TestJobLeaseAcquisition:
 
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
         mock_settings.warming_lease_duration_minutes = 10
 
@@ -337,6 +348,7 @@ class TestPauseCancel:
 
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
 
         worker = WarmingWorker(mock_rag, mock_settings)
@@ -364,6 +376,7 @@ class TestPauseCancel:
 
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
 
         worker = WarmingWorker(mock_rag, mock_settings)
@@ -391,6 +404,7 @@ class TestPauseCancel:
 
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
 
         worker = WarmingWorker(mock_rag, mock_settings)
@@ -419,6 +433,7 @@ class TestPauseCancel:
 
         mock_rag = MagicMock()
         mock_settings = MagicMock()
+        mock_settings.warming_max_concurrent_queries = 2
         mock_settings.warming_retry_delays = "5,30,120"
 
         worker = WarmingWorker(mock_rag, mock_settings)
