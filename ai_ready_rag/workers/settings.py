@@ -36,12 +36,12 @@ async def on_shutdown(ctx: dict) -> None:
 
 def get_worker_settings() -> dict:
     """Build WorkerSettings configuration dict."""
-    from ai_ready_rag.workers.tasks import process_document
+    from ai_ready_rag.workers.tasks import process_document, reindex_knowledge_base, warm_cache
 
     settings = get_settings()
 
     return {
-        "functions": [process_document],
+        "functions": [process_document, reindex_knowledge_base, warm_cache],
         "redis_settings": RedisSettings.from_dsn(settings.redis_url),
         "max_jobs": settings.arq_max_jobs,
         "job_timeout": settings.arq_job_timeout,
@@ -54,11 +54,11 @@ def get_worker_settings() -> dict:
 class WorkerSettings:
     """ARQ WorkerSettings for `arq ai_ready_rag.workers.settings.WorkerSettings`."""
 
-    from ai_ready_rag.workers.tasks import process_document
+    from ai_ready_rag.workers.tasks import process_document, reindex_knowledge_base, warm_cache
 
     settings = get_settings()
 
-    functions = [process_document]
+    functions = [process_document, reindex_knowledge_base, warm_cache]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     max_jobs = settings.arq_max_jobs
     job_timeout = settings.arq_job_timeout
