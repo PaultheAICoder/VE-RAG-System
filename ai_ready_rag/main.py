@@ -24,15 +24,18 @@ from ai_ready_rag.api import (
 )
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.error_handlers import register_error_handlers
+from ai_ready_rag.core.logging import configure_logging
 from ai_ready_rag.core.redis import close_redis_pool, get_redis_pool
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import Document
+from ai_ready_rag.middleware.request_logging import RequestLoggingMiddleware
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.workers.warming_cleanup import WarmingCleanupService
 from ai_ready_rag.workers.warming_worker import WarmingWorker, recover_stale_jobs
 
-logger = logging.getLogger(__name__)
 settings = get_settings()
+configure_logging(settings.log_level, settings.log_format)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -140,6 +143,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Request logging middleware (adds X-Request-ID, logs method/path/latency)
+app.add_middleware(RequestLoggingMiddleware)
 
 # API Routes
 app.include_router(health.router, prefix="/api", tags=["Health"])
