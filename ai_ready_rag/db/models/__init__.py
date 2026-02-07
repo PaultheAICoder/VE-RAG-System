@@ -24,6 +24,7 @@ from ai_ready_rag.db.models.chat import ChatMessage, ChatSession
 from ai_ready_rag.db.models.document import Document
 from ai_ready_rag.db.models.rag import CuratedQA, CuratedQAKeyword, QuerySynonym
 from ai_ready_rag.db.models.user import Tag, User
+from ai_ready_rag.db.models.warming import WarmingBatch, WarmingQuery
 
 __all__ = [
     "TimestampMixin",
@@ -49,4 +50,6 @@ __all__ = [
     "QuerySynonym",
     "CuratedQA",
     "CuratedQAKeyword",
+    "WarmingBatch",
+    "WarmingQuery",
 ]

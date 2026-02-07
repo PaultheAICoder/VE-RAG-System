@@ -106,10 +106,12 @@ class WarmingSSEEvent(TimestampMixin, Base):
     __table_args__ = (
         Index("idx_sse_events_job", "job_id"),
         Index("idx_sse_events_created", "created_at"),
+        Index("idx_sse_events_batch_seq", "job_id", "batch_seq"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     event_id = Column(String, unique=True, nullable=False)  # UUID for client tracking
     event_type = Column(String, nullable=False)  # 'progress', 'job_started', etc.
     job_id = Column(String, nullable=True)  # Nullable for heartbeats
+    batch_seq = Column(Integer, nullable=True)  # Per-batch monotonic sequence for replay
     payload = Column(Text, nullable=False)  # JSON event data
