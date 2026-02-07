@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     # API
     api_base_url: str = "http://localhost:8000"
 
+    # Redis / ARQ Task Queue
+    redis_url: str = "redis://localhost:6379"
+    arq_job_timeout: int = 600  # 10 min max for document processing
+    arq_max_jobs: int = 10  # Max concurrent ARQ jobs
+    arq_health_check_interval: int = 60  # Seconds between worker health checks
+
     # Vector Service
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "documents"

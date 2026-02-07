@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from ai_ready_rag.config import get_settings
+from ai_ready_rag.core.redis import is_redis_available
 
 router = APIRouter()
 settings = get_settings()
@@ -11,10 +12,12 @@ settings = get_settings()
 @router.get("/health")
 async def health_check():
     """Health check endpoint."""
+    redis_ok = await is_redis_available()
     return {
         "status": "healthy",
         "version": settings.app_version,
         "database": "sqlite",
+        "redis": "connected" if redis_ok else "unavailable",
         "rag_enabled": settings.enable_rag,
         "profile": settings.env_profile,
         "backends": {

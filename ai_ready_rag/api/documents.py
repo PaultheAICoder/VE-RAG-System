@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.dependencies import get_current_user, require_admin
+from ai_ready_rag.core.redis import get_redis_pool
 from ai_ready_rag.db.database import SessionLocal, get_db
 from ai_ready_rag.db.models import Document, User
 from ai_ready_rag.schemas.document import (
@@ -54,6 +55,38 @@ def get_processing_semaphore() -> asyncio.Semaphore:
             f"Processing semaphore initialized with limit: {settings.max_concurrent_processing}"
         )
     return _processing_semaphore
+
+
+async def enqueue_document_processing(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    processing_options_dict: dict | None = None,
+    delete_existing: bool = False,
+) -> str | None:
+    """Enqueue document processing via ARQ if available, else BackgroundTasks.
+
+    Returns the ARQ job_id if enqueued via ARQ, None if using BackgroundTasks fallback.
+    """
+    redis = await get_redis_pool()
+    if redis:
+        try:
+            job = await redis.enqueue_job(
+                "process_document",
+                document_id,
+                processing_options_dict,
+                delete_existing,
+            )
+            logger.info(f"Enqueued document {document_id} via ARQ (job: {job.job_id})")
+            return job.job_id
+        except Exception as e:
+            logger.warning(f"ARQ enqueue failed, falling back to BackgroundTasks: {e}")
+
+    # Degraded mode: fall back to in-process BackgroundTasks
+    background_tasks.add_task(
+        process_document_task, document_id, processing_options_dict, delete_existing
+    )
+    logger.info(f"Queued document {document_id} via BackgroundTasks (degraded mode)")
+    return None
 
 
 async def process_document_task(
@@ -259,9 +292,8 @@ async def upload_document(
 
     options_dict = asdict(processing_options) if processing_options else None
 
-    # Queue background processing
-    background_tasks.add_task(process_document_task, document.id, options_dict)
-    logger.info(f"Queued document {document.id} for background processing")
+    # Queue background processing (ARQ if available, else BackgroundTasks)
+    await enqueue_document_processing(document.id, background_tasks, options_dict)
 
     return document
 
@@ -552,7 +584,7 @@ async def reprocess_document(
     db.refresh(document)
 
     # Queue for background processing (vector deletion + reprocessing)
-    background_tasks.add_task(process_document_task, document.id, None, delete_existing)
+    await enqueue_document_processing(document.id, background_tasks, None, delete_existing)
     logger.info(
         f"Queued document {document_id} for reprocessing (delete_existing={delete_existing})"
     )
@@ -626,7 +658,7 @@ async def bulk_reprocess_documents(
         document.processing_time_ms = None
 
         # Queue for background processing
-        background_tasks.add_task(process_document_task, document.id, None, delete_existing)
+        await enqueue_document_processing(document.id, background_tasks, None, delete_existing)
         queued += 1
 
     db.commit()

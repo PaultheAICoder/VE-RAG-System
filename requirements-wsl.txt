@@ -28,6 +28,10 @@ python-docx>=1.0.0
 openpyxl>=3.1.0
 markdown>=3.5.0
 
+# ============== Task Queue ==============
+arq>=0.26.0
+redis>=5.0.0
+
 # ============== HTML Sanitization ==============
 bleach>=6.0.0
 
