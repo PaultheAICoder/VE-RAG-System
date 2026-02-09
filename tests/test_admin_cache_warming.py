@@ -91,54 +91,49 @@ class TestGetTopQueries:
 
 
 class TestWarmCache:
-    """Tests for POST /api/admin/cache/warm endpoint."""
+    """Tests for POST /api/admin/cache/warm endpoint (now returns 410 Gone)."""
 
     def test_success_returns_202(self, client, admin_headers):
-        """Test that valid request returns 202 Accepted."""
+        """Legacy endpoint now returns 410 Gone."""
         response = client.post(
             "/api/admin/cache/warm",
             json={"queries": ["What is the vacation policy?", "How do I request PTO?"]},
             headers=admin_headers,
         )
 
-        assert response.status_code == status.HTTP_202_ACCEPTED
-        data = response.json()
-        assert data["queued"] == 2
-        assert "message" in data
-        assert "background" in data["message"].lower()
+        assert response.status_code == status.HTTP_410_GONE
 
     def test_empty_queries_returns_400(self, client, admin_headers):
-        """Test that empty queries list returns 400."""
+        """Legacy endpoint now returns 410 Gone."""
         response = client.post(
             "/api/admin/cache/warm",
             json={"queries": []},
             headers=admin_headers,
         )
 
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
-        assert "at least one query" in response.json()["detail"].lower()
+        assert response.status_code == status.HTTP_410_GONE
 
     def test_unauthorized(self, client):
-        """Test that unauthenticated request returns 401."""
+        """Legacy endpoint returns 410 even without auth (no auth dependency)."""
         response = client.post(
             "/api/admin/cache/warm",
             json={"queries": ["test query"]},
         )
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert response.status_code == status.HTTP_410_GONE
 
     def test_forbidden_for_regular_user(self, client, user_headers):
-        """Test that non-admin user returns 403."""
+        """Legacy endpoint returns 410 for any user."""
         response = client.post(
             "/api/admin/cache/warm",
             json={"queries": ["test query"]},
             headers=user_headers,
         )
 
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_410_GONE
 
     def test_large_query_list(self, client, admin_headers):
-        """Test warming with large query list."""
+        """Legacy endpoint returns 410 for any request."""
         queries = [f"Query number {i}" for i in range(50)]
 
         response = client.post(
@@ -147,6 +142,4 @@ class TestWarmCache:
             headers=admin_headers,
         )
 
-        assert response.status_code == status.HTTP_202_ACCEPTED
-        data = response.json()
-        assert data["queued"] == 50
+        assert response.status_code == status.HTTP_410_GONE

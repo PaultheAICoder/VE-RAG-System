@@ -372,82 +372,31 @@ class TestCacheAccessControl:
 
 
 class TestCacheWarming:
-    """Cache warming functionality tests."""
+    """Cache warming functionality tests.
 
-    @pytest.mark.asyncio
-    async def test_warm_cache_task_calls_generate(self):
-        """warm_cache_task calls RAGService.generate for each query."""
-        from ai_ready_rag.api.admin import warm_cache_task
+    Note: warm_cache_task was removed in Issue #189 (DB-first warming redesign).
+    The POST /cache/warm endpoint now returns 410 Gone.
+    Cache warming is now handled via POST /warming/queue/manual and the
+    process_warming_batch ARQ task.
+    """
 
-        # Mock dependencies - these are imported inside the function so patch the source modules
-        with (
-            patch("ai_ready_rag.config.get_settings") as mock_get_settings,
-            patch("ai_ready_rag.db.database.SessionLocal") as mock_session,
-            patch("ai_ready_rag.services.factory.get_vector_service") as mock_get_vs,
-            patch("ai_ready_rag.services.rag_service.RAGService") as mock_rag_class,
-        ):
-            mock_settings = MagicMock()
-            mock_settings.warming_delay_seconds = 0  # Disable delay in tests
-            mock_get_settings.return_value = mock_settings
+    def test_legacy_warm_endpoint_returns_410(self, client, admin_headers):
+        """Legacy POST /cache/warm returns 410 Gone."""
+        response = client.post(
+            "/api/admin/cache/warm",
+            json={"queries": ["Query 1"]},
+            headers=admin_headers,
+        )
+        assert response.status_code == 410
 
-            mock_db = MagicMock()
-            mock_session.return_value = mock_db
-
-            mock_vector_service = MagicMock()
-            mock_vector_service.initialize = AsyncMock()
-            mock_get_vs.return_value = mock_vector_service
-
-            mock_rag_service = MagicMock()
-            mock_rag_service.generate = AsyncMock()
-            mock_rag_class.return_value = mock_rag_service
-
-            queries = ["Query 1", "Query 2", "Query 3"]
-
-            # Act
-            await warm_cache_task(queries, triggered_by="test-user")
-
-            # Assert - generate called for each query
-            assert mock_rag_service.generate.call_count == 3
-            mock_db.close.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_warm_cache_handles_query_failure(self, caplog):
-        """Failed query doesn't stop warming process."""
-        import logging
-
-        from ai_ready_rag.api.admin import warm_cache_task
-
-        with (
-            patch("ai_ready_rag.config.get_settings") as mock_get_settings,
-            patch("ai_ready_rag.db.database.SessionLocal") as mock_session,
-            patch("ai_ready_rag.services.factory.get_vector_service") as mock_get_vs,
-            patch("ai_ready_rag.services.rag_service.RAGService") as mock_rag_class,
-        ):
-            mock_settings = MagicMock()
-            mock_settings.warming_delay_seconds = 0  # Disable delay in tests
-            mock_get_settings.return_value = mock_settings
-
-            mock_db = MagicMock()
-            mock_session.return_value = mock_db
-
-            mock_vector_service = MagicMock()
-            mock_vector_service.initialize = AsyncMock()
-            mock_get_vs.return_value = mock_vector_service
-
-            mock_rag_service = MagicMock()
-            # First query fails, second succeeds
-            mock_rag_service.generate = AsyncMock(side_effect=[Exception("Query 1 failed"), None])
-            mock_rag_class.return_value = mock_rag_service
-
-            queries = ["Bad query", "Good query"]
-
-            # Act
-            with caplog.at_level(logging.WARNING):
-                await warm_cache_task(queries, triggered_by="test-user")
-
-            # Assert - both queries attempted
-            assert mock_rag_service.generate.call_count == 2
-            assert "Failed to warm cache" in caplog.text
+    def test_legacy_warm_retry_returns_410(self, client, admin_headers):
+        """Legacy POST /cache/warm-retry returns 410 Gone."""
+        response = client.post(
+            "/api/admin/cache/warm-retry",
+            json={"queries": ["Query 1"]},
+            headers=admin_headers,
+        )
+        assert response.status_code == 410
 
 
 class TestCacheEntryToResponse:

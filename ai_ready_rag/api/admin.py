@@ -1,7 +1,6 @@
 """Admin endpoints for system management."""
 
 import asyncio
-import hashlib
 import json
 import logging
 import re
@@ -10,7 +9,6 @@ import subprocess
 import time
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 
 import bleach
 import httpx
@@ -25,13 +23,12 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.dependencies import (
-    ROLE_SYSTEM_ADMIN,
     get_optional_current_user,
-    normalize_role,
     require_admin,
     require_system_admin,
 )
@@ -43,12 +40,14 @@ from ai_ready_rag.db.models import (
     Document,
     QuerySynonym,
     User,
-    WarmingQueue,
+    WarmingBatch,
+    WarmingQuery,
 )
 from ai_ready_rag.schemas.admin import (
     AdvancedSettingsRequest,
     AdvancedSettingsResponse,
     ArchitectureInfoResponse,
+    BatchQueriesResponse,
     BulkDeleteRequest,
     CacheClearResponse,
     CacheSeedRequest,
@@ -56,8 +55,6 @@ from ai_ready_rag.schemas.admin import (
     CacheSettingsRequest,
     CacheSettingsResponse,
     CacheStatsResponse,
-    CacheWarmRequest,
-    CacheWarmResponse,
     ChangeEmbeddingRequest,
     ChangeEmbeddingResponse,
     ChangeModelRequest,
@@ -91,6 +88,7 @@ from ai_ready_rag.schemas.admin import (
     ProcessingOptionsRequest,
     ProcessingOptionsResponse,
     ProcessingQueueStatus,
+    QueryRetryResponse,
     RAGPipelineStatus,
     RecoverResponse,
     ReindexEstimate,
@@ -112,16 +110,14 @@ from ai_ready_rag.schemas.admin import (
     TesseractStatus,
     TopQueryItem,
     TopQueryResponse,
-    WarmFileResponse,
+    WarmingQueryResponse,
     WarmingQueueJobResponse,
     WarmingQueueListResponse,
-    WarmRetryRequest,
 )
 from ai_ready_rag.services.document_service import DocumentService
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.services.model_service import ModelService, OllamaUnavailableError
 from ai_ready_rag.services.settings_service import SettingsService, get_model_setting
-from ai_ready_rag.services.warming_queue import WarmingQueueService
 
 logger = logging.getLogger(__name__)
 
@@ -179,25 +175,6 @@ def delete_qa_keywords(db: Session, qa_id: str) -> None:
         qa_id: ID of the CuratedQA record
     """
     db.query(CuratedQAKeyword).filter(CuratedQAKeyword.qa_id == qa_id).delete()
-
-
-# Module-level warming queue service (initialized lazily)
-_warming_queue: WarmingQueueService | None = None
-
-
-def get_warming_queue() -> WarmingQueueService:
-    """Get or create the warming queue service."""
-    global _warming_queue
-    if _warming_queue is None:
-        settings = get_settings()
-        queue_dir = settings.warming_queue_dir
-        _warming_queue = WarmingQueueService(
-            queue_dir=queue_dir,
-            lock_timeout_minutes=settings.warming_lock_timeout_minutes,
-            checkpoint_interval=settings.warming_checkpoint_interval,
-            archive_completed=settings.warming_archive_completed,
-        )
-    return _warming_queue
 
 
 router = APIRouter()
@@ -2102,24 +2079,34 @@ async def retry_reindex_document(
 # =============================================================================
 
 
-def _db_job_to_response(job: WarmingQueue) -> WarmingQueueJobResponse:
-    """Convert WarmingQueue DB model to response."""
+def _batch_to_response(batch: WarmingBatch, db: Session) -> WarmingQueueJobResponse:
+    """Convert WarmingBatch + aggregated query counts to response."""
+    counts = (
+        db.query(
+            func.count(case((WarmingQuery.status == "completed", 1))).label("completed"),
+            func.count(case((WarmingQuery.status == "failed", 1))).label("failed"),
+            func.count(case((WarmingQuery.status == "pending", 1))).label("pending"),
+        )
+        .filter(WarmingQuery.batch_id == batch.id)
+        .first()
+    )
     return WarmingQueueJobResponse(
-        id=job.id,
-        file_path=job.file_path,
-        source_type=job.source_type,
-        original_filename=job.original_filename,
-        total_queries=job.total_queries,
-        processed_queries=job.processed_queries,
-        failed_queries=job.failed_queries,
-        status=job.status,
-        is_paused=job.is_paused,
-        is_cancel_requested=job.is_cancel_requested,
-        created_at=job.created_at,
-        started_at=job.started_at,
-        completed_at=job.completed_at,
-        created_by=job.created_by,
-        error_message=job.error_message,
+        id=batch.id,
+        source_type=batch.source_type,
+        original_filename=batch.original_filename,
+        total_queries=batch.total_queries,
+        completed_queries=counts.completed if counts else 0,
+        failed_queries=counts.failed if counts else 0,
+        pending_queries=counts.pending if counts else 0,
+        status=batch.status,
+        is_paused=batch.is_paused,
+        is_cancel_requested=batch.is_cancel_requested,
+        created_at=batch.created_at,
+        started_at=batch.started_at,
+        completed_at=batch.completed_at,
+        submitted_by=batch.submitted_by,
+        error_message=batch.error_message,
+        worker_id=batch.worker_id,
     )
 
 
@@ -2158,116 +2145,13 @@ async def get_top_queries(
     )
 
 
-@router.post("/cache/warm", response_model=CacheWarmResponse, status_code=status.HTTP_202_ACCEPTED)
-async def warm_cache(
-    request: CacheWarmRequest,
-    background_tasks: BackgroundTasks,
-    current_user: User = Depends(require_system_admin),
-    db: Session = Depends(get_db),
-):
-    """Warm cache with specified queries.
-
-    Runs each query through the RAG pipeline and caches the response.
-    Executes in background, returns immediately with 202 Accepted.
-
-    Admin only.
-    """
-    if not request.queries:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one query is required.",
-        )
-
-    # Enqueue via ARQ if Redis available, otherwise fall back to BackgroundTasks
-    redis = await get_redis_pool()
-    if redis:
-        try:
-            await redis.enqueue_job("warm_cache", request.queries, current_user.id)
-            logger.info(
-                f"Admin {current_user.email} started cache warming with "
-                f"{len(request.queries)} queries (ARQ)"
-            )
-        except Exception as e:
-            logger.warning(f"ARQ enqueue failed for warming, falling back: {e}")
-            background_tasks.add_task(
-                warm_cache_task,
-                queries=request.queries,
-                triggered_by=current_user.id,
-            )
-            logger.info(
-                f"Admin {current_user.email} started cache warming with "
-                f"{len(request.queries)} queries (BackgroundTasks)"
-            )
-    else:
-        background_tasks.add_task(
-            warm_cache_task,
-            queries=request.queries,
-            triggered_by=current_user.id,
-        )
-        logger.info(
-            f"Admin {current_user.email} started cache warming with "
-            f"{len(request.queries)} queries (BackgroundTasks)"
-        )
-
-    return CacheWarmResponse(
-        queued=len(request.queries),
-        message="Cache warming started in background",
+@router.post("/cache/warm", status_code=status.HTTP_410_GONE)
+async def warm_cache_legacy():
+    """Deprecated. Use POST /warming/queue/manual instead."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This endpoint has been removed. Use POST /api/admin/warming/queue/manual instead.",
     )
-
-
-async def warm_cache_task(queries: list[str], triggered_by: str) -> None:
-    """Background task to warm cache with queries.
-
-    Runs each query through RAG pipeline and caches response.
-    Uses empty user_tags (admin context) for warming - this allows
-    the cache to be populated with responses that can then be filtered
-    by access control on retrieval.
-
-    Args:
-        queries: List of query strings to warm
-        triggered_by: User ID who triggered the warming
-    """
-    from ai_ready_rag.config import get_settings
-    from ai_ready_rag.db.database import SessionLocal
-    from ai_ready_rag.services.factory import get_vector_service
-    from ai_ready_rag.services.rag_service import RAGRequest, RAGService
-
-    settings = get_settings()
-    db = SessionLocal()
-
-    try:
-        vector_service = get_vector_service(settings)
-        await vector_service.initialize()
-        rag_service = RAGService(settings, vector_service=vector_service)
-        warmed = 0
-
-        for i, query in enumerate(queries):
-            try:
-                request = RAGRequest(
-                    query=query,
-                    user_tags=[],  # Admin context - responses cached without tag restriction
-                    tenant_id="default",
-                )
-                # Run query through RAG pipeline (will cache result)
-                await rag_service.generate(request, db)
-                warmed += 1
-                logger.debug(f"Warmed cache for query: {query[:50]}...")
-            except Exception as e:
-                logger.warning(f"Failed to warm cache for query '{query[:50]}...': {e}")
-
-            # Throttle to reduce Ollama contention with live user requests
-            if i < len(queries) - 1 and settings.warming_delay_seconds > 0:
-                await asyncio.sleep(settings.warming_delay_seconds)
-
-        logger.info(
-            f"Cache warming complete: {warmed}/{len(queries)} queries processed "
-            f"(triggered by: {triggered_by})"
-        )
-
-    except Exception as e:
-        logger.error(f"Cache warming task failed: {e}")
-    finally:
-        db.close()
 
 
 # =============================================================================
@@ -2542,41 +2426,32 @@ async def seed_cache(
 # =============================================================================
 
 
-def _ensure_warming_dir() -> Path:
-    """Ensure warming directory exists and return path."""
-    settings = get_settings()
-    warming_dir = Path(settings.warming_queue_dir)
-    warming_dir.mkdir(parents=True, exist_ok=True)
-    return warming_dir
-
-
 @router.get("/warming/queue", response_model=WarmingQueueListResponse)
 async def list_warming_queue(
-    status_filter: str | None = Query(None, alias="status", description="Filter by job status"),
-    limit: int = Query(50, ge=1, le=200, description="Maximum number of jobs to return"),
-    offset: int = Query(0, ge=0, description="Number of jobs to skip"),
+    status_filter: str | None = Query(None, alias="status", description="Filter by batch status"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of batches to return"),
+    offset: int = Query(0, ge=0, description="Number of batches to skip"),
     current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
-    """List all warming queue jobs from database.
+    """List all warming batches from database.
 
     Supports filtering by status and pagination.
 
     Admin only.
     """
-    query = db.query(WarmingQueue)
+    query = db.query(WarmingBatch)
 
     if status_filter:
-        query = query.filter(WarmingQueue.status == status_filter)
+        query = query.filter(WarmingBatch.status == status_filter)
 
-    # Order by created_at descending (newest first)
-    query = query.order_by(WarmingQueue.created_at.desc())
+    query = query.order_by(WarmingBatch.created_at.desc())
 
     total_count = query.count()
-    jobs = query.offset(offset).limit(limit).all()
+    batches = query.offset(offset).limit(limit).all()
 
     return WarmingQueueListResponse(
-        jobs=[_db_job_to_response(j) for j in jobs],
+        jobs=[_batch_to_response(b, db) for b in batches],
         total_count=total_count,
     )
 
@@ -2586,22 +2461,24 @@ async def list_completed_warming_jobs(
     date_filter: str | None = Query(
         None, description="Filter by date (YYYY-MM-DD), defaults to today"
     ),
-    limit: int = Query(50, ge=1, le=200, description="Maximum number of jobs to return"),
-    offset: int = Query(0, ge=0, description="Number of jobs to skip"),
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of batches to return"),
+    offset: int = Query(0, ge=0, description="Number of batches to skip"),
     current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
-    """List completed warming jobs from database.
+    """List completed warming batches from database.
 
-    Defaults to showing jobs completed today.
+    Includes both 'completed' and 'completed_with_errors' statuses.
+    Defaults to showing batches completed today.
 
     Admin only.
     """
     from datetime import date
 
-    query = db.query(WarmingQueue).filter(WarmingQueue.status == "completed")
+    query = db.query(WarmingBatch).filter(
+        WarmingBatch.status.in_(["completed", "completed_with_errors"])
+    )
 
-    # Apply date filter
     if date_filter:
         try:
             filter_date = datetime.strptime(date_filter, "%Y-%m-%d").date()
@@ -2613,20 +2490,18 @@ async def list_completed_warming_jobs(
     else:
         filter_date = date.today()
 
-    # Filter by completed_at date
     query = query.filter(
-        WarmingQueue.completed_at >= datetime.combine(filter_date, datetime.min.time()),
-        WarmingQueue.completed_at < datetime.combine(filter_date, datetime.max.time()),
+        WarmingBatch.completed_at >= datetime.combine(filter_date, datetime.min.time()),
+        WarmingBatch.completed_at < datetime.combine(filter_date, datetime.max.time()),
     )
 
-    # Order by completed_at descending (newest first)
-    query = query.order_by(WarmingQueue.completed_at.desc())
+    query = query.order_by(WarmingBatch.completed_at.desc())
 
     total_count = query.count()
-    jobs = query.offset(offset).limit(limit).all()
+    batches = query.offset(offset).limit(limit).all()
 
     return WarmingQueueListResponse(
-        jobs=[_db_job_to_response(j) for j in jobs],
+        jobs=[_batch_to_response(b, db) for b in batches],
         total_count=total_count,
     )
 
@@ -2643,14 +2518,15 @@ async def upload_warming_file(
 ):
     """Upload a file containing queries to the warming queue.
 
-    Saves the file to disk and creates a DB record. WarmingWorker will
-    automatically pick up the job.
+    Parses queries in-memory and stores them as WarmingBatch + WarmingQuery rows.
+    No file is saved to disk.
 
     Supports .txt and .csv files with one query per line.
 
     Admin only.
     """
-    # Validate file type
+    settings = get_settings()
+
     if not file.filename:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -2664,7 +2540,6 @@ async def upload_warming_file(
             detail=f"Invalid file type: .{ext}. Only .txt and .csv files are supported.",
         )
 
-    # Read and parse file
     try:
         content = await file.read()
         text = content.decode("utf-8")
@@ -2674,11 +2549,18 @@ async def upload_warming_file(
             detail="File must be UTF-8 encoded text.",
         ) from None
 
-    # Parse questions (one per line, strip numbering)
+    # Check file size
+    if len(content) > settings.warming_max_file_size_mb * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File exceeds maximum size of {settings.warming_max_file_size_mb} MB.",
+        )
+
+    # Parse queries (one per line, strip numbering, skip blanks/comments)
     queries = []
     for line in text.split("\n"):
         line = line.strip()
-        if line and not line.startswith("#"):  # Skip empty lines and comments
+        if line and not line.startswith("#") and not line.startswith("//"):
             cleaned = _strip_numbering(line)
             if cleaned:
                 queries.append(cleaned)
@@ -2689,42 +2571,57 @@ async def upload_warming_file(
             detail="No valid questions found in file.",
         )
 
-    # Calculate checksum
-    file_content = "\n".join(queries)
-    checksum = hashlib.sha256(file_content.encode()).hexdigest()
+    if len(queries) > settings.warming_max_queries_per_batch:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Too many queries ({len(queries)}). Maximum is {settings.warming_max_queries_per_batch}.",
+        )
 
-    # Save to disk
-    warming_dir = _ensure_warming_dir()
-    job_id = str(uuid.uuid4())
-    file_path = warming_dir / f"upload_{job_id}.txt"
-    file_path.write_text(file_content, encoding="utf-8")
-
-    # Create DB record
-    job = WarmingQueue(
-        id=job_id,
-        file_path=str(file_path),
-        file_checksum=checksum,
+    # Create batch
+    batch = WarmingBatch(
         source_type="upload",
         original_filename=file.filename,
         total_queries=len(queries),
-        processed_queries=0,
-        failed_queries=0,
-        byte_offset=0,
         status="pending",
-        is_paused=False,
-        is_cancel_requested=False,
+        submitted_by=current_user.id,
         created_at=datetime.now(UTC),
-        created_by=current_user.id,
     )
-    db.add(job)
+    db.add(batch)
+    db.flush()
+
+    # Bulk create query rows
+    query_rows = [
+        WarmingQuery(
+            batch_id=batch.id,
+            query_text=q,
+            status="pending",
+            sort_order=i,
+            submitted_by=current_user.id,
+            created_at=datetime.now(UTC),
+        )
+        for i, q in enumerate(queries)
+    ]
+    db.add_all(query_rows)
     db.commit()
-    db.refresh(job)
+    db.refresh(batch)
+
+    # Best-effort ARQ enqueue
+    try:
+        redis = await get_redis_pool()
+        if redis:
+            await redis.enqueue_job("process_warming_batch", batch.id)
+        else:
+            logger.warning(
+                f"Redis unavailable, batch {batch.id} saved but no worker will auto-pick up."
+            )
+    except Exception as e:
+        logger.warning(f"ARQ enqueue failed for batch {batch.id}: {e}")
 
     logger.info(
-        f"Admin {current_user.email} uploaded warming file: {len(queries)} queries, job_id={job_id}"
+        f"Admin {current_user.email} uploaded warming file: {len(queries)} queries, batch_id={batch.id}"
     )
 
-    return _db_job_to_response(job)
+    return _batch_to_response(batch, db)
 
 
 @router.post(
@@ -2739,22 +2636,23 @@ async def add_manual_warming_queries(
 ):
     """Add manual queries to the warming queue.
 
-    Saves queries to a file and creates a DB record. WarmingWorker will
-    automatically pick up the job.
+    Creates WarmingBatch + WarmingQuery rows in DB. No file is saved to disk.
 
     Admin only.
     """
+    settings = get_settings()
+
     if not request.queries:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="At least one query is required.",
         )
 
-    # Clean and validate queries
+    # Clean and validate queries (skip blanks and comments)
     queries = []
     for q in request.queries:
         cleaned = q.strip()
-        if cleaned and not cleaned.startswith("#"):
+        if cleaned and not cleaned.startswith("#") and not cleaned.startswith("//"):
             queries.append(cleaned)
 
     if not queries:
@@ -2763,105 +2661,57 @@ async def add_manual_warming_queries(
             detail="No valid queries provided.",
         )
 
-    # Calculate checksum
-    file_content = "\n".join(queries)
-    checksum = hashlib.sha256(file_content.encode()).hexdigest()
+    if len(queries) > settings.warming_max_queries_per_batch:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Too many queries ({len(queries)}). Maximum is {settings.warming_max_queries_per_batch}.",
+        )
 
-    # Save to disk
-    warming_dir = _ensure_warming_dir()
-    job_id = str(uuid.uuid4())
-    file_path = warming_dir / f"manual_{job_id}.txt"
-    file_path.write_text(file_content, encoding="utf-8")
-
-    # Create DB record
-    job = WarmingQueue(
-        id=job_id,
-        file_path=str(file_path),
-        file_checksum=checksum,
+    # Create batch
+    batch = WarmingBatch(
         source_type="manual",
-        original_filename=None,
         total_queries=len(queries),
-        processed_queries=0,
-        failed_queries=0,
-        byte_offset=0,
         status="pending",
-        is_paused=False,
-        is_cancel_requested=False,
+        submitted_by=current_user.id,
         created_at=datetime.now(UTC),
-        created_by=current_user.id,
     )
-    db.add(job)
+    db.add(batch)
+    db.flush()
+
+    # Bulk create query rows
+    query_rows = [
+        WarmingQuery(
+            batch_id=batch.id,
+            query_text=q,
+            status="pending",
+            sort_order=i,
+            submitted_by=current_user.id,
+            created_at=datetime.now(UTC),
+        )
+        for i, q in enumerate(queries)
+    ]
+    db.add_all(query_rows)
     db.commit()
-    db.refresh(job)
+    db.refresh(batch)
+
+    # Best-effort ARQ enqueue
+    try:
+        redis = await get_redis_pool()
+        if redis:
+            await redis.enqueue_job("process_warming_batch", batch.id)
+        else:
+            logger.warning(
+                f"Redis unavailable, batch {batch.id} saved but no worker will auto-pick up."
+            )
+    except Exception as e:
+        logger.warning(f"ARQ enqueue failed for batch {batch.id}: {e}")
 
     logger.info(
         f"Admin {current_user.email} added manual warming queries: "
-        f"{len(queries)} queries, job_id={job_id}"
+        f"{len(queries)} queries, batch_id={batch.id}"
     )
 
-    return _db_job_to_response(job)
-
-
-@router.get("/warming/queue/{job_id}", response_model=WarmingQueueJobResponse)
-async def get_warming_queue_job(
-    job_id: str,
-    current_user: User = Depends(require_system_admin),
-    db: Session = Depends(get_db),
-):
-    """Get details of a specific warming queue job from database.
-
-    Admin only.
-    """
-    job = db.query(WarmingQueue).filter(WarmingQueue.id == job_id).first()
-    if not job:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job {job_id} not found.",
-        )
-
-    return _db_job_to_response(job)
-
-
-@router.delete("/warming/queue/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_warming_queue_job(
-    job_id: str,
-    current_user: User = Depends(require_system_admin),
-    db: Session = Depends(get_db),
-):
-    """Delete a warming queue job from database.
-
-    Also deletes the associated query file if it exists.
-    Cannot delete running jobs - cancel them first.
-
-    Admin only.
-    """
-    job = db.query(WarmingQueue).filter(WarmingQueue.id == job_id).first()
-    if not job:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job {job_id} not found.",
-        )
-
-    if job.status == "running":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete running job. Cancel it first.",
-        )
-
-    # Delete associated file if exists
-    if job.file_path:
-        file_path = Path(job.file_path)
-        if file_path.exists():
-            try:
-                file_path.unlink()
-            except OSError as e:
-                logger.warning(f"Could not delete warming file {file_path}: {e}")
-
-    db.delete(job)
-    db.commit()
-
-    logger.info(f"Admin {current_user.email} deleted warming job {job_id}")
-    return {"success": True, "job_id": job_id}
+    return _batch_to_response(batch, db)
 
 
 @router.delete("/warming/queue/bulk", status_code=status.HTTP_200_OK)
@@ -2870,10 +2720,9 @@ async def bulk_delete_warming_jobs(
     current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
-    """Bulk delete warming queue jobs from database.
+    """Bulk delete warming batches and their queries (CASCADE).
 
-    Also deletes the associated query files if they exist.
-    Skips running jobs - cancel them first.
+    Skips running batches - cancel them first.
 
     Admin only.
     """
@@ -2888,31 +2737,22 @@ async def bulk_delete_warming_jobs(
     not_found_count = 0
 
     for job_id in request.job_ids:
-        job = db.query(WarmingQueue).filter(WarmingQueue.id == job_id).first()
-        if not job:
+        batch = db.query(WarmingBatch).filter(WarmingBatch.id == job_id).first()
+        if not batch:
             not_found_count += 1
             continue
 
-        if job.status == "running":
+        if batch.status == "running":
             skipped_count += 1
             continue
 
-        # Delete associated file if exists
-        if job.file_path:
-            file_path = Path(job.file_path)
-            if file_path.exists():
-                try:
-                    file_path.unlink()
-                except OSError as e:
-                    logger.warning(f"Could not delete warming file {file_path}: {e}")
-
-        db.delete(job)
+        db.delete(batch)
         deleted_count += 1
 
     db.commit()
 
     logger.info(
-        f"Admin {current_user.email} bulk deleted warming jobs: "
+        f"Admin {current_user.email} bulk deleted warming batches: "
         f"deleted={deleted_count}, skipped={skipped_count}, not_found={not_found_count}"
     )
 
@@ -2923,22 +2763,78 @@ async def bulk_delete_warming_jobs(
     }
 
 
+@router.get("/warming/queue/{job_id}", response_model=WarmingQueueJobResponse)
+async def get_warming_queue_job(
+    job_id: str,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Get details of a specific warming batch.
+
+    Admin only.
+    """
+    batch = db.query(WarmingBatch).filter(WarmingBatch.id == job_id).first()
+    if not batch:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Batch {job_id} not found.",
+        )
+
+    return _batch_to_response(batch, db)
+
+
+@router.delete("/warming/queue/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_warming_queue_job(
+    job_id: str,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete a warming batch and its queries (CASCADE).
+
+    Cannot delete running batches - cancel them first.
+
+    Admin only.
+    """
+    batch = db.query(WarmingBatch).filter(WarmingBatch.id == job_id).first()
+    if not batch:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Batch {job_id} not found.",
+        )
+
+    if batch.status == "running":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete running batch. Cancel it first.",
+        )
+
+    db.delete(batch)
+    db.commit()
+
+    logger.info(f"Admin {current_user.email} deleted warming batch {job_id}")
+
+
 @router.get("/warming/current", response_model=WarmingQueueJobResponse | None)
 async def get_current_warming_job(
     current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
-    """Get the currently running warming job from database.
+    """Get the currently running or paused warming batch.
 
-    Returns null if no job is currently running.
+    Returns null if no batch is currently running or paused.
 
     Admin only.
     """
-    job = db.query(WarmingQueue).filter(WarmingQueue.status == "running").first()
-    if not job:
+    batch = (
+        db.query(WarmingBatch)
+        .filter(WarmingBatch.status.in_(["running", "paused"]))
+        .order_by(WarmingBatch.started_at.desc())
+        .first()
+    )
+    if not batch:
         return None
 
-    return _db_job_to_response(job)
+    return _batch_to_response(batch, db)
 
 
 @router.post("/warming/current/pause", response_model=WarmingQueueJobResponse)
@@ -2946,7 +2842,7 @@ async def pause_current_warming_job(
     current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
-    """Pause the currently running warming job.
+    """Pause the currently running warming batch.
 
     Sets is_paused=True. Worker will detect this flag and pause gracefully
     after the current query completes.
@@ -2955,27 +2851,26 @@ async def pause_current_warming_job(
     """
     from ai_ready_rag.services.sse_buffer_service import store_sse_event
 
-    job = db.query(WarmingQueue).filter(WarmingQueue.status == "running").first()
-    if not job:
+    batch = db.query(WarmingBatch).filter(WarmingBatch.status == "running").first()
+    if not batch:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No running job to pause.",
+            detail="No running batch to pause.",
         )
 
-    job.is_paused = True
+    batch.is_paused = True
     db.commit()
-    db.refresh(job)
+    db.refresh(batch)
 
-    # Emit SSE event for immediate UI update
     store_sse_event(
         db,
         "pause_requested",
-        job.id,
-        {"job_id": job.id, "status": "pausing"},
+        batch.id,
+        {"batch_id": batch.id, "status": "pausing"},
     )
 
-    logger.info(f"Admin {current_user.email} paused warming job {job.id}")
-    return _db_job_to_response(job)
+    logger.info(f"Admin {current_user.email} paused warming batch {batch.id}")
+    return _batch_to_response(batch, db)
 
 
 @router.post("/warming/current/resume", response_model=WarmingQueueJobResponse)
@@ -2983,34 +2878,30 @@ async def resume_current_warming_job(
     current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
-    """Resume a paused warming job.
+    """Resume a paused warming batch.
 
     Sets is_paused=False. Worker will detect this and continue processing.
 
     Admin only.
     """
-    # Find paused job (prioritize running+paused, then paused status)
-    job = (
-        db.query(WarmingQueue)
-        .filter(WarmingQueue.is_paused == True)  # noqa: E712
-        .filter(WarmingQueue.status.in_(["running", "paused"]))
+    batch = (
+        db.query(WarmingBatch)
+        .filter(WarmingBatch.is_paused == True)  # noqa: E712
+        .filter(WarmingBatch.status.in_(["running", "paused"]))
         .first()
     )
-    if not job:
+    if not batch:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No paused job to resume.",
+            detail="No paused batch to resume.",
         )
 
-    job.is_paused = False
-    # If status was explicitly paused, reset to pending for worker pickup
-    if job.status == "paused":
-        job.status = "pending"
+    batch.is_paused = False
     db.commit()
-    db.refresh(job)
+    db.refresh(batch)
 
-    logger.info(f"Admin {current_user.email} resumed warming job {job.id}")
-    return _db_job_to_response(job)
+    logger.info(f"Admin {current_user.email} resumed warming batch {batch.id}")
+    return _batch_to_response(batch, db)
 
 
 @router.post("/warming/current/cancel", status_code=status.HTTP_202_ACCEPTED)
@@ -3018,42 +2909,39 @@ async def cancel_current_warming_job(
     current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
-    """Request graceful cancellation of the currently running warming job.
+    """Request graceful cancellation of the currently running warming batch.
 
-    Sets is_cancel_requested=True. Worker will detect this flag,
-    close the file handle gracefully, and update status to 'cancelled'.
-
-    Returns status "cancelling" to indicate transitional state.
+    Sets is_cancel_requested=True. Worker will detect this flag and
+    update status to 'cancelled'.
 
     Admin only.
     """
     from ai_ready_rag.services.sse_buffer_service import store_sse_event
 
-    job = db.query(WarmingQueue).filter(WarmingQueue.status.in_(["running", "paused"])).first()
-    if not job:
+    batch = db.query(WarmingBatch).filter(WarmingBatch.status.in_(["running", "paused"])).first()
+    if not batch:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No running or paused job to cancel.",
+            detail="No running or paused batch to cancel.",
         )
 
-    job.is_cancel_requested = True
+    batch.is_cancel_requested = True
     db.commit()
 
-    # Emit SSE event for immediate UI update
     store_sse_event(
         db,
         "cancel_requested",
-        job.id,
-        {"job_id": job.id, "status": "cancelling"},
+        batch.id,
+        {"batch_id": batch.id, "status": "cancelling"},
     )
 
-    logger.info(f"Admin {current_user.email} requested cancel for warming job {job.id}")
-    return {"job_id": job.id, "is_cancel_requested": True, "status": "cancelling"}
+    logger.info(f"Admin {current_user.email} requested cancel for warming batch {batch.id}")
+    return {"batch_id": batch.id, "is_cancel_requested": True, "status": "cancelling"}
 
 
 @router.get("/warming/progress")
 async def stream_warming_progress_db(
-    job_id: str | None = Query(None, description="Job ID (defaults to current running job)"),
+    job_id: str | None = Query(None, description="Batch ID (defaults to current running batch)"),
     token: str | None = None,
     last_event_id: str | None = Query(None, description="Resume from event ID for replay"),
     current_user: User | None = Depends(get_optional_current_user),
@@ -3061,7 +2949,7 @@ async def stream_warming_progress_db(
 ):
     """Stream warming progress via Server-Sent Events (SSE).
 
-    If job_id is not provided, streams progress for the currently running job.
+    If job_id is not provided, streams progress for the currently running batch.
 
     Supports reconnection and replay via last_event_id parameter.
 
@@ -3086,29 +2974,24 @@ async def stream_warming_progress_db(
     if normalize_role(user.role) != ROLE_SYSTEM_ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="System admin required")
 
-    # Get job_id from query or find current running job
     target_job_id = job_id
     if not target_job_id:
-        running_job = db.query(WarmingQueue).filter(WarmingQueue.status == "running").first()
-        if running_job:
-            target_job_id = running_job.id
+        running_batch = db.query(WarmingBatch).filter(WarmingBatch.status == "running").first()
+        if running_batch:
+            target_job_id = running_batch.id
         else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No running job found. Provide job_id parameter.",
+                detail="No running batch found. Provide job_id parameter.",
             )
 
-    # Verify job exists
-    job = db.query(WarmingQueue).filter(WarmingQueue.id == target_job_id).first()
-    if not job:
+    batch = db.query(WarmingBatch).filter(WarmingBatch.id == target_job_id).first()
+    if not batch:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job {target_job_id} not found.",
+            detail=f"Batch {target_job_id} not found.",
         )
 
-    # Reuse existing SSE generator (it reads from file-based queue service
-    # but we can still use it for progress - alternatively, we'd create
-    # a DB-based generator)
     return StreamingResponse(
         _sse_event_generator(target_job_id, last_event_id),
         media_type="text/event-stream",
@@ -3120,164 +3003,277 @@ async def stream_warming_progress_db(
     )
 
 
-@router.get("/cache/warm-progress/{job_id}")
-async def stream_warming_progress(
-    job_id: str,
-    token: str | None = None,
-    last_event_id: str | None = Query(None, description="Resume from event ID for replay"),
-    resume_job: str | None = Query(None, description="Get status of specific job"),
-    current_user: User | None = Depends(get_optional_current_user),
+# ---- New Batch Query Endpoints ----
+
+
+@router.get("/warming/batch/{batch_id}/queries", response_model=BatchQueriesResponse)
+async def list_batch_queries(
+    batch_id: str,
+    status_filter: str | None = Query(None, alias="status", description="Filter by query status"),
+    limit: int = Query(50, ge=1, le=500, description="Maximum number of queries to return"),
+    offset: int = Query(0, ge=0, description="Number of queries to skip"),
+    current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
-    """Stream cache warming progress via Server-Sent Events (SSE).
+    """List queries within a warming batch.
 
-    Supports reconnection and replay via last_event_id parameter.
+    Supports filtering by query status and pagination.
 
-    Event types (all include event_id):
-    - connected: {"worker_id": "...", "timestamp": "..."}
-    - job_started: {"job_id": "...", "file_path": "...", "total_queries": N}
-    - progress: {"processed": N, "failed": F, "total": M, "percent": P, "estimated_remaining_seconds": S, "queries_per_second": Q}
-    - query_failed: {"query": "...", "line_number": N, "error": "...", "error_type": "..."}
-    - job_completed: {"processed": N, "failed": F, "total": M, "duration_seconds": D, "queries_per_second": Q}
-    - job_paused: {"processed": N, "total": M}
-    - job_cancelled: {"processed": N, "total": M, "file_deleted": bool}
-    - job_failed: {"error": "..."}
-    - heartbeat: {"timestamp": "..."}
-
-    Admin only. Accepts token via query param for EventSource compatibility.
+    Admin only.
     """
-    # SSE/EventSource can't send headers, so accept token from query param
-    from ai_ready_rag.core.dependencies import ROLE_SYSTEM_ADMIN, normalize_role
-    from ai_ready_rag.core.security import decode_token
-
-    user = current_user
-    if not user and token:
-        try:
-            payload = decode_token(token)
-            user_id = payload.get("sub")
-            if user_id:
-                user = db.query(User).filter(User.id == user_id).first()
-        except Exception:
-            pass
-
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-
-    if normalize_role(user.role) != ROLE_SYSTEM_ADMIN:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="System admin required")
-
-    # Use resume_job if provided, otherwise use job_id from path
-    target_job_id = resume_job or job_id
-
-    queue_service = get_warming_queue()
-    job = queue_service.get_job(target_job_id)
-    if job is None:
+    batch = db.query(WarmingBatch).filter(WarmingBatch.id == batch_id).first()
+    if not batch:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job {target_job_id} not found.",
+            detail=f"Batch {batch_id} not found.",
         )
 
-    return StreamingResponse(
-        _sse_event_generator(target_job_id, last_event_id),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
-        },
+    query = db.query(WarmingQuery).filter(WarmingQuery.batch_id == batch_id)
+
+    if status_filter:
+        query = query.filter(WarmingQuery.status == status_filter)
+
+    total_count = query.count()
+    queries = query.order_by(WarmingQuery.sort_order.asc()).offset(offset).limit(limit).all()
+
+    return BatchQueriesResponse(
+        queries=[
+            WarmingQueryResponse(
+                id=q.id,
+                query_text=q.query_text,
+                status=q.status,
+                error_message=q.error_message,
+                error_type=q.error_type,
+                retry_count=q.retry_count,
+                sort_order=q.sort_order,
+                processed_at=q.processed_at,
+                created_at=q.created_at,
+            )
+            for q in queries
+        ],
+        total_count=total_count,
+        batch_id=batch_id,
+    )
+
+
+@router.delete(
+    "/warming/batch/{batch_id}/queries/{query_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_batch_query(
+    batch_id: str,
+    query_id: str,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete a single pending query from a warming batch.
+
+    Only pending queries can be deleted. Decrements batch total_queries.
+
+    Admin only.
+    """
+    batch = db.query(WarmingBatch).filter(WarmingBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Batch {batch_id} not found.",
+        )
+
+    query_row = (
+        db.query(WarmingQuery)
+        .filter(WarmingQuery.id == query_id, WarmingQuery.batch_id == batch_id)
+        .first()
+    )
+    if not query_row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query {query_id} not found in batch {batch_id}.",
+        )
+
+    if query_row.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot delete query with status '{query_row.status}'. Only pending queries can be deleted.",
+        )
+
+    db.delete(query_row)
+    batch.total_queries = max(0, batch.total_queries - 1)
+    db.commit()
+
+    logger.info(f"Admin {current_user.email} deleted query {query_id} from batch {batch_id}")
+
+
+@router.post("/warming/batch/{batch_id}/retry", response_model=QueryRetryResponse)
+async def retry_batch_failed_queries(
+    batch_id: str,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Retry all failed/skipped queries in a batch.
+
+    Resets failed and skipped queries to pending, clears error fields,
+    resets batch to pending, and enqueues for processing.
+
+    Admin only.
+    """
+    batch = db.query(WarmingBatch).filter(WarmingBatch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Batch {batch_id} not found.",
+        )
+
+    terminal_statuses = {"completed", "completed_with_errors", "cancelled"}
+    if batch.status not in terminal_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot retry batch with status '{batch.status}'. Batch must be in a terminal state.",
+        )
+
+    retried_count = (
+        db.query(WarmingQuery)
+        .filter(
+            WarmingQuery.batch_id == batch_id,
+            WarmingQuery.status.in_(["failed", "skipped"]),
+        )
+        .update(
+            {
+                "status": "pending",
+                "error_message": None,
+                "error_type": None,
+                "retry_count": 0,
+                "processed_at": None,
+            },
+            synchronize_session="fetch",
+        )
+    )
+
+    batch.status = "pending"
+    batch.completed_at = None
+    batch.is_cancel_requested = False
+    db.commit()
+
+    # Best-effort ARQ enqueue
+    try:
+        redis = await get_redis_pool()
+        if redis:
+            await redis.enqueue_job("process_warming_batch", batch.id)
+    except Exception as e:
+        logger.warning(f"ARQ enqueue failed for batch retry {batch.id}: {e}")
+
+    logger.info(f"Admin {current_user.email} retried {retried_count} queries in batch {batch_id}")
+
+    return QueryRetryResponse(
+        batch_id=batch_id,
+        retried_count=retried_count,
+        message=f"Reset {retried_count} failed/skipped queries to pending.",
     )
 
 
 @router.post(
-    "/cache/warm-retry", response_model=WarmFileResponse, status_code=status.HTTP_202_ACCEPTED
+    "/warming/batch/{batch_id}/queries/{query_id}/retry",
+    response_model=QueryRetryResponse,
 )
-async def retry_warming_queries(
-    request: WarmRetryRequest,
-    background_tasks: BackgroundTasks,
+async def retry_single_query(
+    batch_id: str,
+    query_id: str,
     current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
 ):
-    """Retry specific failed queries from a previous warming job.
+    """Retry a single failed/skipped query.
 
-    Accepts a list of queries to retry and starts a new warming job.
+    Resets the query to pending and re-enqueues the batch if it was terminal.
 
     Admin only.
     """
-    if not request.queries:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one query is required.",
-        )
-
-    # Create new job for retry via queue service
-    queue_service = get_warming_queue()
-    job = queue_service.create_job(request.queries, triggered_by=current_user.id)
-
-    # Start background warming
-    def run_warming():
-        import asyncio
-
-        try:
-            asyncio.run(_warm_file_task(job.id, current_user.id))
-        except Exception as e:
-            logger.error(f"Cache warming retry job {job.id} failed: {e}")
-
-    background_tasks.add_task(run_warming)
-
-    logger.info(
-        f"Admin {current_user.email} started retry warming: "
-        f"{len(request.queries)} queries, job_id={job.id}"
-    )
-
-    return WarmFileResponse(
-        job_id=job.id,
-        queued=len(request.queries),
-        message="Retry warming started. Connect to SSE for progress.",
-        sse_url=f"/api/admin/cache/warm-progress/{job.id}",
-    )
-
-
-@router.get("/cache/warm-status/{job_id}")
-async def get_warming_status(
-    job_id: str,
-    current_user: User = Depends(require_system_admin),
-):
-    """Get current status of a warming job.
-
-    Used to recover state after navigation or page refresh.
-
-    Admin only.
-    """
-    queue_service = get_warming_queue()
-    job = queue_service.get_job(job_id)
-    if not job:
+    batch = db.query(WarmingBatch).filter(WarmingBatch.id == batch_id).first()
+    if not batch:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job {job_id} not found.",
+            detail=f"Batch {batch_id} not found.",
         )
 
-    return {
-        "job_id": job.id,
-        "status": job.status,
-        "total": job.total,
-        "processed": job.processed,
-        "success_count": job.success_count,
-        "failed_queries": job.failed_queries,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-    }
+    query_row = (
+        db.query(WarmingQuery)
+        .filter(WarmingQuery.id == query_id, WarmingQuery.batch_id == batch_id)
+        .first()
+    )
+    if not query_row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query {query_id} not found in batch {batch_id}.",
+        )
+
+    if query_row.status not in ("failed", "skipped"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot retry query with status '{query_row.status}'. Only failed/skipped queries can be retried.",
+        )
+
+    query_row.status = "pending"
+    query_row.error_message = None
+    query_row.error_type = None
+    query_row.retry_count = 0
+    query_row.processed_at = None
+
+    # If batch is terminal, reset to pending
+    terminal_statuses = {"completed", "completed_with_errors", "cancelled"}
+    if batch.status in terminal_statuses:
+        batch.status = "pending"
+        batch.completed_at = None
+        batch.is_cancel_requested = False
+
+    db.commit()
+
+    # Best-effort ARQ enqueue
+    try:
+        redis = await get_redis_pool()
+        if redis:
+            await redis.enqueue_job("process_warming_batch", batch.id)
+    except Exception as e:
+        logger.warning(f"ARQ enqueue failed for single query retry {batch.id}: {e}")
+
+    logger.info(f"Admin {current_user.email} retried query {query_id} in batch {batch_id}")
+
+    return QueryRetryResponse(
+        batch_id=batch_id,
+        retried_count=1,
+        message=f"Reset query {query_id} to pending.",
+    )
+
+
+# ---- Legacy 410 Gone Endpoints ----
+
+
+@router.get("/cache/warm-progress/{job_id}", status_code=status.HTTP_410_GONE)
+async def stream_warming_progress_legacy(job_id: str):
+    """Deprecated. Use GET /warming/progress instead."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This endpoint has been removed. Use GET /api/admin/warming/progress instead.",
+    )
+
+
+@router.post("/cache/warm-retry", status_code=status.HTTP_410_GONE)
+async def retry_warming_queries_legacy():
+    """Deprecated. Use POST /warming/batch/{batch_id}/retry instead."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This endpoint has been removed. Use POST /api/admin/warming/batch/{batch_id}/retry instead.",
+    )
+
+
+@router.get("/cache/warm-status/{job_id}", status_code=status.HTTP_410_GONE)
+async def get_warming_status_legacy(job_id: str):
+    """Deprecated. Use GET /warming/queue/{job_id} instead."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This endpoint has been removed. Use GET /api/admin/warming/queue/{job_id} instead.",
+    )
 
 
 def _format_sse_event(event_type: str, data: dict, event_id: str | None = None) -> str:
-    """Format SSE event with event_id for client tracking.
-
-    Args:
-        event_type: Event type name
-        data: Event payload data
-        event_id: Optional event ID (generates UUID if None)
-
-    Returns:
-        Formatted SSE event string
-    """
+    """Format SSE event with event_id for client tracking."""
     if event_id is None:
         event_id = str(uuid.uuid4())
     data["event_id"] = event_id
@@ -3285,13 +3281,9 @@ def _format_sse_event(event_type: str, data: dict, event_id: str | None = None) 
 
 
 async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
-    """Generate SSE events for warming job progress.
+    """Generate SSE events for warming batch progress using DB polling.
 
     Supports replay via last_event_id and emits heartbeats every 30 seconds.
-
-    Args:
-        job_id: Job ID to stream events for
-        last_event_id: Optional event ID to resume from (for replay)
     """
     from ai_ready_rag.db.database import SessionLocal
     from ai_ready_rag.services.sse_buffer_service import (
@@ -3301,16 +3293,20 @@ async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
     )
 
     settings = get_settings()
-    queue_service = get_warming_queue()
-    job = queue_service.get_job(job_id)
-    if not job:
+
+    db = SessionLocal()
+    try:
+        batch = db.query(WarmingBatch).filter(WarmingBatch.id == job_id).first()
+    finally:
+        db.close()
+
+    if not batch:
         event_id = str(uuid.uuid4())
-        yield _format_sse_event("error", {"error": "Job not found"}, event_id)
+        yield _format_sse_event("error", {"error": "Batch not found"}, event_id)
         return
 
-    logger.info(f"[SSE] Started streaming for job {job_id}, status={job.status}")
+    logger.info(f"[SSE] Started streaming for batch {job_id}, status={batch.status}")
 
-    # Send connected event
     connected_event_id = str(uuid.uuid4())
     connected_data = {
         "worker_id": f"sse-{uuid.uuid4().hex[:8]}",
@@ -3323,7 +3319,6 @@ async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
         db.close()
     yield _format_sse_event("connected", connected_data, connected_event_id)
 
-    # Replay missed events if last_event_id provided
     if last_event_id:
         db = SessionLocal()
         try:
@@ -3334,261 +3329,105 @@ async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
                     event["payload"],
                     event["event_id"],
                 )
-            logger.info(f"[SSE] Replayed {len(missed_events)} events for job {job_id}")
+            logger.info(f"[SSE] Replayed {len(missed_events)} events for batch {job_id}")
         finally:
             db.close()
 
-    last_processed = -1
-    last_results_count = 0
+    last_completed = -1
     last_heartbeat_time = asyncio.get_event_loop().time()
     heartbeat_interval = settings.sse_heartbeat_seconds
 
     while True:
-        job = queue_service.get_job(job_id)
-        if not job:
-            logger.warning(f"[SSE] Job {job_id} disappeared unexpectedly")
-            error_event_id = str(uuid.uuid4())
-            yield _format_sse_event("error", {"error": "Job disappeared"}, error_event_id)
-            break
+        db = SessionLocal()
+        try:
+            batch = db.query(WarmingBatch).filter(WarmingBatch.id == job_id).first()
+            if not batch:
+                logger.warning(f"[SSE] Batch {job_id} disappeared unexpectedly")
+                yield _format_sse_event("error", {"error": "Batch disappeared"}, str(uuid.uuid4()))
+                break
 
-        # Send heartbeat if interval elapsed
+            # Aggregate counts from warming_queries
+            counts = (
+                db.query(
+                    func.count(case((WarmingQuery.status == "completed", 1))).label("completed"),
+                    func.count(case((WarmingQuery.status == "failed", 1))).label("failed"),
+                )
+                .filter(WarmingQuery.batch_id == job_id)
+                .first()
+            )
+            completed_count = counts.completed if counts else 0
+            failed_count = counts.failed if counts else 0
+            processed = completed_count + failed_count
+            batch_status = batch.status
+        finally:
+            db.close()
+
         current_time = asyncio.get_event_loop().time()
         if current_time - last_heartbeat_time >= heartbeat_interval:
-            heartbeat_event_id = str(uuid.uuid4())
             heartbeat_data = {"timestamp": datetime.now(UTC).isoformat()}
             db = SessionLocal()
             try:
                 store_sse_event(db, "heartbeat", job_id, heartbeat_data)
             finally:
                 db.close()
-            yield _format_sse_event("heartbeat", heartbeat_data, heartbeat_event_id)
+            yield _format_sse_event("heartbeat", heartbeat_data, str(uuid.uuid4()))
             last_heartbeat_time = current_time
 
-        # Send progress update if changed
-        if job.processed != last_processed:
-            last_processed = job.processed
-            elapsed = 0
-            remaining = None
-            qps = 0.0
-
-            if job.started_at and job.processed > 0:
-                elapsed = (datetime.now(UTC) - job.started_at).total_seconds()
-                avg_per_query = elapsed / job.processed
-                remaining_queries = job.total - job.processed
-                remaining = int(avg_per_query * remaining_queries)
-                qps = job.processed / elapsed if elapsed > 0 else 0.0
-
-            percent = int(job.processed / job.total * 100) if job.total > 0 else 0
-            progress_event_id = str(uuid.uuid4())
+        if processed != last_completed:
+            last_completed = processed
+            percent = int(processed / batch.total_queries * 100) if batch.total_queries > 0 else 0
             progress_data = {
-                "job_id": job_id,
-                "processed": job.processed,
-                "failed": len(job.failed_queries) if hasattr(job, "failed_queries") else 0,
-                "total": job.total,
+                "batch_id": job_id,
+                "processed": processed,
+                "failed": failed_count,
+                "total": batch.total_queries,
                 "percent": percent,
-                "estimated_remaining_seconds": remaining,
-                "queries_per_second": round(qps, 2),
             }
             db = SessionLocal()
             try:
                 store_sse_event(db, "progress", job_id, progress_data)
             finally:
                 db.close()
-            yield _format_sse_event("progress", progress_data, progress_event_id)
+            yield _format_sse_event("progress", progress_data, str(uuid.uuid4()))
 
-        # Send new results (query_failed events)
-        if len(job.results) > last_results_count:
-            for result in job.results[last_results_count:]:
-                result_event_id = str(uuid.uuid4())
-                db = SessionLocal()
-                try:
-                    # Store as query_failed if it's a failed result
-                    if result.get("status") == "failed":
-                        store_sse_event(db, "query_failed", job_id, result)
-                        yield _format_sse_event("query_failed", result, result_event_id)
-                    else:
-                        store_sse_event(db, "result", job_id, result)
-                        yield _format_sse_event("result", result, result_event_id)
-                finally:
-                    db.close()
-            last_results_count = len(job.results)
-
-        # Check for completion, pause, or cancellation
-        if job.status in ("completed", "failed", "paused", "cancelled"):
-            duration = 0
-            qps = 0.0
-            if job.started_at and job.completed_at:
-                duration = (job.completed_at - job.started_at).total_seconds()
-                qps = job.processed / duration if duration > 0 else 0.0
-
-            final_event_id = str(uuid.uuid4())
+        terminal = {"completed", "completed_with_errors", "cancelled"}
+        if batch_status in terminal:
+            final_data = {
+                "batch_id": job_id,
+                "processed": processed,
+                "failed": failed_count,
+                "total": batch.total_queries,
+                "status": batch_status,
+            }
+            event_name = (
+                f"job_{batch_status}"
+                if batch_status != "completed_with_errors"
+                else "job_completed"
+            )
             db = SessionLocal()
             try:
-                if job.status == "completed":
-                    complete_data = {
-                        "job_id": job_id,
-                        "processed": job.processed,
-                        "failed": len(job.failed_queries) if hasattr(job, "failed_queries") else 0,
-                        "total": job.total,
-                        "duration_seconds": int(duration),
-                        "queries_per_second": round(qps, 2),
-                    }
-                    store_sse_event(db, "job_completed", job_id, complete_data)
-                    yield _format_sse_event("job_completed", complete_data, final_event_id)
-                elif job.status == "failed":
-                    failed_data = {
-                        "job_id": job_id,
-                        "error": getattr(job, "error_message", "Unknown error"),
-                    }
-                    store_sse_event(db, "job_failed", job_id, failed_data)
-                    yield _format_sse_event("job_failed", failed_data, final_event_id)
-                elif job.status == "paused":
-                    paused_data = {
-                        "job_id": job_id,
-                        "processed": job.processed,
-                        "total": job.total,
-                    }
-                    store_sse_event(db, "job_paused", job_id, paused_data)
-                    yield _format_sse_event("job_paused", paused_data, final_event_id)
-                elif job.status == "cancelled":
-                    cancelled_data = {
-                        "job_id": job_id,
-                        "processed": job.processed,
-                        "total": job.total,
-                        "file_deleted": False,  # File cleanup handled separately
-                    }
-                    store_sse_event(db, "job_cancelled", job_id, cancelled_data)
-                    yield _format_sse_event("job_cancelled", cancelled_data, final_event_id)
-
-                # Periodic pruning of old events
+                store_sse_event(db, event_name, job_id, final_data)
                 prune_old_events(db)
             finally:
                 db.close()
+            yield _format_sse_event(event_name, final_data, str(uuid.uuid4()))
+            break
+
+        if batch_status == "paused":
+            paused_data = {
+                "batch_id": job_id,
+                "processed": processed,
+                "total": batch.total_queries,
+            }
+            db = SessionLocal()
+            try:
+                store_sse_event(db, "job_paused", job_id, paused_data)
+            finally:
+                db.close()
+            yield _format_sse_event("job_paused", paused_data, str(uuid.uuid4()))
             break
 
         await asyncio.sleep(0.5)
-
-
-async def _warm_file_task(job_id: str, triggered_by: str) -> None:
-    """Background task to warm cache with queries from file.
-
-    Updates job state as queries are processed for SSE streaming.
-    Persists progress to disk for crash recovery.
-    """
-    from ai_ready_rag.config import get_settings
-    from ai_ready_rag.db.database import SessionLocal
-    from ai_ready_rag.services.rag_service import RAGRequest, RAGService
-
-    logger.info(f"[WARM] Starting warming task for job {job_id}")
-    queue_service = get_warming_queue()
-    worker_id = f"worker-{uuid.uuid4().hex[:8]}"
-
-    # Acquire job with lock
-    job = queue_service.acquire_job(job_id, worker_id)
-    if not job:
-        logger.warning(f"[WARM] Could not acquire warming job {job_id}")
-        return
-
-    logger.info(f"[WARM] Acquired job {job_id} with {job.total} queries")
-    settings = get_settings()
-    db = SessionLocal()
-
-    try:
-        # Initialize vector service via factory
-        from ai_ready_rag.services.factory import get_vector_service as create_vector_service
-
-        vector_service = create_vector_service(settings)
-        await vector_service.initialize()
-
-        rag_service = RAGService(settings, vector_service=vector_service)
-
-        # Get admin user's tags for proper access control
-        # System admins bypass tag filtering during cache warming
-        admin_user = db.query(User).filter(User.id == triggered_by).first()
-        admin_role = normalize_role(admin_user.role) if admin_user else None
-        if admin_role == ROLE_SYSTEM_ADMIN:
-            # System admin bypasses tag filtering (None = no filtering)
-            admin_tags = None
-        else:
-            admin_tags = [t.name for t in admin_user.tags] if admin_user and admin_user.tags else []
-
-        # Resume from processed_index (supports crash recovery)
-        for i in range(job.processed_index, job.total):
-            # Check for paused status before processing each query
-            current_job = queue_service.get_job(job_id)
-            if current_job and current_job.status == "paused":
-                logger.info(f"[WARM] Job {job_id} was paused, stopping processing")
-                return
-
-            query = job.queries[i]
-            try:
-                rag_request = RAGRequest(
-                    query=query,
-                    user_tags=admin_tags,
-                    tenant_id="default",
-                )
-                await rag_service.generate(rag_request, db)  # Triggers caching
-
-                # Record success
-                job.results.append(
-                    {
-                        "query": query,
-                        "status": "success",
-                        "cached": True,
-                        "error": None,
-                    }
-                )
-                job.success_count += 1
-                logger.info(f"[WARM] Completed query {i + 1}: {query[:50]}...")
-
-            except Exception as e:
-                # Record failure by index
-                error_msg = str(e)[:200]
-                job.results.append(
-                    {
-                        "query": query,
-                        "status": "failed",
-                        "cached": False,
-                        "error": error_msg,
-                    }
-                )
-                job.failed_indices.append(i)
-                logger.warning(f"Failed to warm cache for query '{query[:50]}...': {e}")
-
-            # Update processed index and persist to disk
-            job.processed_index = i + 1
-
-            # Checkpoint progress to disk (crash recovery)
-            if (i + 1) % queue_service.checkpoint_interval == 0 or i == job.total - 1:
-                queue_service.update_job(job)
-
-            # Throttle to reduce Ollama contention
-            if i < job.total - 1 and settings.warming_delay_seconds > 0:
-                await asyncio.sleep(settings.warming_delay_seconds)
-
-        # Complete the job
-        queue_service.complete_job(job)
-
-        logger.info(
-            f"File cache warming complete: {job.success_count}/{job.total} queries "
-            f"(job_id={job_id}, triggered_by={triggered_by})"
-        )
-
-        # Wait for SSE to pick up completion before deleting
-        # SSE polls every 0.5s, so 2s should be plenty
-        await asyncio.sleep(2.0)
-
-        # Delete job file on success (or archive if configured)
-        queue_service.delete_job(job_id)
-
-    except Exception as e:
-        import traceback
-
-        traceback.print_exc()
-        queue_service.fail_job(job, str(e))
-        logger.error(f"Cache warming job {job_id} failed: {e}")
-    finally:
-        db.close()
 
 
 # =============================================================================

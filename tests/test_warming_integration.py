@@ -270,9 +270,9 @@ class TestWarmingJobLifecycle:
 
         assert data["status"] == "pending"
 
-    def test_job_file_is_created(self, client, admin_headers, db):
-        """Job should create a query file on disk."""
-        import os
+    def test_job_stores_queries_in_db(self, client, admin_headers, db):
+        """Job should store queries in DB (no file on disk)."""
+        from ai_ready_rag.db.models import WarmingQuery as WQ
 
         response = client.post(
             "/api/admin/warming/queue/manual",
@@ -281,14 +281,14 @@ class TestWarmingJobLifecycle:
         )
         data = response.json()
 
-        # Check file path in response
-        assert "file_path" in data
-        assert os.path.exists(data["file_path"]), "Query file should exist"
+        # file_path should NOT be in response (DB-first architecture)
+        assert "file_path" not in data
+        assert data["total_queries"] == 1
 
-        # Verify content
-        with open(data["file_path"]) as f:
-            content = f.read()
-        assert "test query" in content
+        # Verify query stored in DB
+        query_row = db.query(WQ).filter(WQ.batch_id == data["id"]).first()
+        assert query_row is not None
+        assert query_row.query_text == "test query"
 
     def test_job_appears_in_queue_list(self, client, admin_headers):
         """Created job should appear in queue list."""

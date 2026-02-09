@@ -186,42 +186,33 @@ class TestAdminReindexARQEnqueue:
 
 
 class TestAdminWarmCacheARQEnqueue:
-    """Test cache warm endpoint uses ARQ with fallback."""
+    """Test cache warm endpoint (now returns 410 Gone - legacy endpoint removed)."""
 
     def test_warm_cache_with_arq(self, client, admin_headers, db):
-        """Cache warm uses ARQ when Redis available."""
-        mock_redis = AsyncMock()
-        mock_redis.enqueue_job = AsyncMock(return_value=AsyncMock(job_id="arq-warm-1"))
+        """Legacy cache warm endpoint returns 410 Gone."""
+        response = client.post(
+            "/api/admin/cache/warm",
+            json={"queries": ["What is RAG?", "How to use vectors?"]},
+            headers=admin_headers,
+        )
 
-        with patch("ai_ready_rag.api.admin.get_redis_pool", return_value=mock_redis):
-            response = client.post(
-                "/api/admin/cache/warm",
-                json={"queries": ["What is RAG?", "How to use vectors?"]},
-                headers=admin_headers,
-            )
-
-        assert response.status_code == 202
-        mock_redis.enqueue_job.assert_called_once()
-        call_args = mock_redis.enqueue_job.call_args
-        assert call_args[0][0] == "warm_cache"
-        assert call_args[0][1] == ["What is RAG?", "How to use vectors?"]
+        assert response.status_code == 410
 
     def test_warm_cache_fallback_no_redis(self, client, admin_headers, db):
-        """Cache warm falls back to BackgroundTasks when no Redis."""
-        with patch("ai_ready_rag.api.admin.get_redis_pool", return_value=None):
-            response = client.post(
-                "/api/admin/cache/warm",
-                json={"queries": ["test query"]},
-                headers=admin_headers,
-            )
+        """Legacy cache warm endpoint returns 410 Gone."""
+        response = client.post(
+            "/api/admin/cache/warm",
+            json={"queries": ["test query"]},
+            headers=admin_headers,
+        )
 
-        assert response.status_code == 202
+        assert response.status_code == 410
 
     def test_warm_cache_empty_queries_rejected(self, client, admin_headers, db):
-        """Empty queries list returns 400."""
+        """Legacy cache warm endpoint returns 410 Gone."""
         response = client.post(
             "/api/admin/cache/warm",
             json={"queries": []},
             headers=admin_headers,
         )
-        assert response.status_code == 400
+        assert response.status_code == 410
