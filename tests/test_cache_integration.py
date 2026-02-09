@@ -374,29 +374,28 @@ class TestCacheAccessControl:
 class TestCacheWarming:
     """Cache warming functionality tests.
 
-    Note: warm_cache_task was removed in Issue #189 (DB-first warming redesign).
-    The POST /cache/warm endpoint now returns 410 Gone.
-    Cache warming is now handled via POST /warming/queue/manual and the
+    Note: Legacy warming code fully removed in Issue #193 (Phase 6 cleanup).
+    Cache warming is handled via POST /warming/queue/manual and the
     process_warming_batch ARQ task.
     """
 
-    def test_legacy_warm_endpoint_returns_410(self, client, admin_headers):
-        """Legacy POST /cache/warm returns 410 Gone."""
+    def test_legacy_warm_endpoint_removed(self, client, admin_headers):
+        """Legacy POST /cache/warm endpoint fully removed (#193)."""
         response = client.post(
             "/api/admin/cache/warm",
             json={"queries": ["Query 1"]},
             headers=admin_headers,
         )
-        assert response.status_code == 410
+        assert response.status_code in [404, 405]
 
-    def test_legacy_warm_retry_returns_410(self, client, admin_headers):
-        """Legacy POST /cache/warm-retry returns 410 Gone."""
+    def test_legacy_warm_retry_removed(self, client, admin_headers):
+        """Legacy POST /cache/warm-retry endpoint fully removed (#193)."""
         response = client.post(
             "/api/admin/cache/warm-retry",
             json={"queries": ["Query 1"]},
             headers=admin_headers,
         )
-        assert response.status_code == 410
+        assert response.status_code in [404, 405]
 
 
 class TestCacheEntryToResponse:

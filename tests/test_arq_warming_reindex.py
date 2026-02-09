@@ -1,77 +1,8 @@
-"""Tests for ARQ cache warming and reindex task migration."""
+"""Tests for ARQ reindex task and worker settings registration."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-
-
-class TestWarmCacheTask:
-    """Tests for the warm_cache ARQ task."""
-
-    def test_warm_cache_is_callable(self):
-        """warm_cache task function exists and is callable."""
-        from ai_ready_rag.workers.tasks.warming import warm_cache
-
-        assert callable(warm_cache)
-
-    def test_warm_cache_registered_in_tasks_package(self):
-        """warm_cache is exported from workers.tasks."""
-        from ai_ready_rag.workers.tasks import warm_cache
-
-        assert callable(warm_cache)
-
-    @pytest.mark.asyncio
-    async def test_warm_cache_returns_success_dict(self):
-        """warm_cache returns dict with success, warmed, total keys."""
-        from ai_ready_rag.workers.tasks.warming import warm_cache
-
-        mock_db = MagicMock()
-        mock_vector_service = AsyncMock()
-        mock_rag_service = AsyncMock()
-
-        with (
-            patch("ai_ready_rag.db.database.SessionLocal", return_value=mock_db),
-            patch(
-                "ai_ready_rag.services.factory.get_vector_service", return_value=mock_vector_service
-            ),
-            patch("ai_ready_rag.services.rag_service.RAGService", return_value=mock_rag_service),
-        ):
-            ctx = {
-                "settings": MagicMock(warming_delay_seconds=0),
-                "vector_service": mock_vector_service,
-            }
-            result = await warm_cache(ctx, queries=["test query"], triggered_by="user-123")
-
-            assert result["success"] is True
-            assert result["warmed"] == 1
-            assert result["total"] == 1
-
-    @pytest.mark.asyncio
-    async def test_warm_cache_handles_query_failure(self):
-        """warm_cache handles individual query failures gracefully."""
-        from ai_ready_rag.workers.tasks.warming import warm_cache
-
-        mock_db = MagicMock()
-        mock_vector_service = AsyncMock()
-        mock_rag_service = AsyncMock()
-        mock_rag_service.generate = AsyncMock(side_effect=Exception("Ollama timeout"))
-
-        with (
-            patch("ai_ready_rag.db.database.SessionLocal", return_value=mock_db),
-            patch(
-                "ai_ready_rag.services.factory.get_vector_service", return_value=mock_vector_service
-            ),
-            patch("ai_ready_rag.services.rag_service.RAGService", return_value=mock_rag_service),
-        ):
-            ctx = {
-                "settings": MagicMock(warming_delay_seconds=0),
-                "vector_service": mock_vector_service,
-            }
-            result = await warm_cache(ctx, queries=["fail query"], triggered_by="user-123")
-
-            assert result["success"] is True
-            assert result["warmed"] == 0
-            assert result["total"] == 1
 
 
 class TestReindexKnowledgeBaseTask:
@@ -123,14 +54,7 @@ class TestReindexKnowledgeBaseTask:
 
 
 class TestWorkerSettingsRegistration:
-    """Test new tasks are registered in WorkerSettings."""
-
-    def test_worker_settings_includes_warm_cache(self):
-        """WorkerSettings.functions includes warm_cache."""
-        from ai_ready_rag.workers.settings import WorkerSettings
-        from ai_ready_rag.workers.tasks.warming import warm_cache
-
-        assert warm_cache in WorkerSettings.functions
+    """Test tasks are registered in WorkerSettings."""
 
     def test_worker_settings_includes_reindex(self):
         """WorkerSettings.functions includes reindex_knowledge_base."""
@@ -140,17 +64,17 @@ class TestWorkerSettingsRegistration:
         assert reindex_knowledge_base in WorkerSettings.functions
 
     def test_worker_settings_has_all_tasks(self):
-        """WorkerSettings.functions has all 4 registered tasks."""
+        """WorkerSettings.functions has all 3 registered tasks."""
         from ai_ready_rag.workers.settings import WorkerSettings
 
-        assert len(WorkerSettings.functions) == 4
+        assert len(WorkerSettings.functions) == 3
 
     def test_get_worker_settings_includes_new_tasks(self):
-        """get_worker_settings() returns all 4 tasks."""
+        """get_worker_settings() returns all 3 tasks."""
         from ai_ready_rag.workers.settings import get_worker_settings
 
         config = get_worker_settings()
-        assert len(config["functions"]) == 4
+        assert len(config["functions"]) == 3
 
 
 class TestAdminReindexARQEnqueue:
@@ -183,36 +107,3 @@ class TestAdminReindexARQEnqueue:
             )
 
         assert response.status_code == 202
-
-
-class TestAdminWarmCacheARQEnqueue:
-    """Test cache warm endpoint (now returns 410 Gone - legacy endpoint removed)."""
-
-    def test_warm_cache_with_arq(self, client, admin_headers, db):
-        """Legacy cache warm endpoint returns 410 Gone."""
-        response = client.post(
-            "/api/admin/cache/warm",
-            json={"queries": ["What is RAG?", "How to use vectors?"]},
-            headers=admin_headers,
-        )
-
-        assert response.status_code == 410
-
-    def test_warm_cache_fallback_no_redis(self, client, admin_headers, db):
-        """Legacy cache warm endpoint returns 410 Gone."""
-        response = client.post(
-            "/api/admin/cache/warm",
-            json={"queries": ["test query"]},
-            headers=admin_headers,
-        )
-
-        assert response.status_code == 410
-
-    def test_warm_cache_empty_queries_rejected(self, client, admin_headers, db):
-        """Legacy cache warm endpoint returns 410 Gone."""
-        response = client.post(
-            "/api/admin/cache/warm",
-            json={"queries": []},
-            headers=admin_headers,
-        )
-        assert response.status_code == 410

@@ -4,7 +4,7 @@ import logging
 import os
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 from sqlalchemy.pool import QueuePool
 
@@ -48,6 +48,16 @@ Base = declarative_base()
 def init_db():
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
+
+    # One-time migration: drop orphan tables from old warming queue design (#193)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS warming_failed_queries"))
+            conn.execute(text("DROP TABLE IF EXISTS warming_queue"))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Migration cleanup skipped: {e}")
+
     logger.info("database_initialized", extra={"database_url": settings.database_url})
 
 

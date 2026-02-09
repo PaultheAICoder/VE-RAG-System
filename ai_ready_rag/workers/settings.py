@@ -40,13 +40,12 @@ def get_worker_settings() -> dict:
         process_document,
         process_warming_batch,
         reindex_knowledge_base,
-        warm_cache,
     )
 
     settings = get_settings()
 
     return {
-        "functions": [process_document, reindex_knowledge_base, warm_cache, process_warming_batch],
+        "functions": [process_document, reindex_knowledge_base, process_warming_batch],
         "redis_settings": RedisSettings.from_dsn(settings.redis_url),
         "max_jobs": settings.arq_max_jobs,
         "job_timeout": settings.arq_job_timeout,
@@ -63,12 +62,11 @@ class WorkerSettings:
         process_document,
         process_warming_batch,
         reindex_knowledge_base,
-        warm_cache,
     )
 
     settings = get_settings()
 
-    functions = [process_document, reindex_knowledge_base, warm_cache, process_warming_batch]
+    functions = [process_document, reindex_knowledge_base, process_warming_batch]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     max_jobs = settings.arq_max_jobs
     job_timeout = settings.arq_job_timeout

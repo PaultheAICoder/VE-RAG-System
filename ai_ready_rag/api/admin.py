@@ -2145,15 +2145,6 @@ async def get_top_queries(
     )
 
 
-@router.post("/cache/warm", status_code=status.HTTP_410_GONE)
-async def warm_cache_legacy():
-    """Deprecated. Use POST /warming/queue/manual instead."""
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail="This endpoint has been removed. Use POST /api/admin/warming/queue/manual instead.",
-    )
-
-
 # =============================================================================
 # Cache Admin Endpoints (Phase 4)
 # =============================================================================
@@ -3239,36 +3230,6 @@ async def retry_single_query(
         batch_id=batch_id,
         retried_count=1,
         message=f"Reset query {query_id} to pending.",
-    )
-
-
-# ---- Legacy 410 Gone Endpoints ----
-
-
-@router.get("/cache/warm-progress/{job_id}", status_code=status.HTTP_410_GONE)
-async def stream_warming_progress_legacy(job_id: str):
-    """Deprecated. Use GET /warming/progress instead."""
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail="This endpoint has been removed. Use GET /api/admin/warming/progress instead.",
-    )
-
-
-@router.post("/cache/warm-retry", status_code=status.HTTP_410_GONE)
-async def retry_warming_queries_legacy():
-    """Deprecated. Use POST /warming/batch/{batch_id}/retry instead."""
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail="This endpoint has been removed. Use POST /api/admin/warming/batch/{batch_id}/retry instead.",
-    )
-
-
-@router.get("/cache/warm-status/{job_id}", status_code=status.HTTP_410_GONE)
-async def get_warming_status_legacy(job_id: str):
-    """Deprecated. Use GET /warming/queue/{job_id} instead."""
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail="This endpoint has been removed. Use GET /api/admin/warming/queue/{job_id} instead.",
     )
 
 

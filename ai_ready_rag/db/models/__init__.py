@@ -16,8 +16,6 @@ from ai_ready_rag.db.models.cache import (
     CacheAccessLog,
     EmbeddingCache,
     ResponseCache,
-    WarmingFailedQuery,
-    WarmingQueue,
     WarmingSSEEvent,
 )
 from ai_ready_rag.db.models.chat import ChatMessage, ChatSession
@@ -44,8 +42,6 @@ __all__ = [
     "ResponseCache",
     "EmbeddingCache",
     "CacheAccessLog",
-    "WarmingQueue",
-    "WarmingFailedQuery",
     "WarmingSSEEvent",
     "QuerySynonym",
     "CuratedQA",
