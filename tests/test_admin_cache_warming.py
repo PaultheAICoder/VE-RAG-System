@@ -91,55 +91,14 @@ class TestGetTopQueries:
 
 
 class TestWarmCache:
-    """Tests for POST /api/admin/cache/warm endpoint (now returns 410 Gone)."""
+    """Tests for POST /api/admin/cache/warm endpoint (fully removed in #193)."""
 
-    def test_success_returns_202(self, client, admin_headers):
-        """Legacy endpoint now returns 410 Gone."""
+    def test_endpoint_removed(self, client, admin_headers):
+        """Legacy endpoint fully removed -- no longer returns 410, returns 404/405."""
         response = client.post(
             "/api/admin/cache/warm",
-            json={"queries": ["What is the vacation policy?", "How do I request PTO?"]},
+            json={"queries": ["What is the vacation policy?"]},
             headers=admin_headers,
         )
 
-        assert response.status_code == status.HTTP_410_GONE
-
-    def test_empty_queries_returns_400(self, client, admin_headers):
-        """Legacy endpoint now returns 410 Gone."""
-        response = client.post(
-            "/api/admin/cache/warm",
-            json={"queries": []},
-            headers=admin_headers,
-        )
-
-        assert response.status_code == status.HTTP_410_GONE
-
-    def test_unauthorized(self, client):
-        """Legacy endpoint returns 410 even without auth (no auth dependency)."""
-        response = client.post(
-            "/api/admin/cache/warm",
-            json={"queries": ["test query"]},
-        )
-
-        assert response.status_code == status.HTTP_410_GONE
-
-    def test_forbidden_for_regular_user(self, client, user_headers):
-        """Legacy endpoint returns 410 for any user."""
-        response = client.post(
-            "/api/admin/cache/warm",
-            json={"queries": ["test query"]},
-            headers=user_headers,
-        )
-
-        assert response.status_code == status.HTTP_410_GONE
-
-    def test_large_query_list(self, client, admin_headers):
-        """Legacy endpoint returns 410 for any request."""
-        queries = [f"Query number {i}" for i in range(50)]
-
-        response = client.post(
-            "/api/admin/cache/warm",
-            json={"queries": queries},
-            headers=admin_headers,
-        )
-
-        assert response.status_code == status.HTTP_410_GONE
+        assert response.status_code in [404, 405]

@@ -40,7 +40,6 @@ class TestWarmingWorkerStartup:
 
         # Mock RAG service
         mock_rag = AsyncMock()
-        mock_rag.warm_cache = AsyncMock(return_value=True)
 
         worker = WarmingWorker(mock_rag, settings)
         assert worker.worker_id.startswith("worker-")
@@ -55,7 +54,6 @@ class TestWarmingWorkerStartup:
         settings = get_settings()
 
         mock_rag = AsyncMock()
-        mock_rag.warm_cache = AsyncMock(return_value=True)
 
         worker = WarmingWorker(mock_rag, settings)
 
@@ -336,17 +334,16 @@ class TestWarmingJobLifecycle:
 
 
 class TestDeprecatedEndpoints:
-    """Verify deprecated endpoints still work or return proper errors."""
+    """Verify legacy warming endpoints have been fully removed (#193)."""
 
-    def test_old_warm_endpoint_still_exists(self, client, admin_headers):
-        """Old /api/admin/cache/warm should still work for backwards compat."""
+    def test_old_warm_endpoint_removed(self, client, admin_headers):
+        """Old /api/admin/cache/warm fully removed in Phase 6 cleanup."""
         response = client.post(
             "/api/admin/cache/warm",
             headers=admin_headers,
             json={"queries": ["test"]},
         )
-        # Should work (202) or be explicitly deprecated (410 Gone)
-        # Should NOT be 404 Not Found without warning
-        assert response.status_code in [200, 202, 410], (
-            f"Old endpoint should work or return 410 Gone, not {response.status_code}"
+        # Endpoint fully removed -- should be 404 or 405 (no route matches)
+        assert response.status_code in [404, 405], (
+            f"Old endpoint should be removed, not {response.status_code}"
         )

@@ -533,35 +533,6 @@ class WarmFileResponse(BaseModel):
     sse_url: str
 
 
-class WarmRetryRequest(BaseModel):
-    """Request to retry failed warming queries."""
-
-    queries: list[str]
-
-
-class WarmingJobResponse(BaseModel):
-    """Response model for a warming job."""
-
-    id: str
-    source_file: str | None = None  # Not tracked in current implementation
-    status: str
-    total: int
-    processed: int
-    success_count: int
-    failed_count: int
-    created_at: datetime | None = None
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    triggered_by: str
-
-
-class WarmingJobListResponse(BaseModel):
-    """Response model for list of warming jobs."""
-
-    jobs: list[WarmingJobResponse]
-    total_count: int
-
-
 # =============================================================================
 # DB-based Warming Queue (Issue #121)
 # =============================================================================

@@ -686,33 +686,35 @@ class TestRetryEndpoints:
 # =============================================================================
 
 
-class TestLegacy410Endpoints:
-    def test_cache_warm_410(self, client, system_admin_headers):
+class TestLegacyEndpointsRemoved:
+    """Verify legacy 410 stubs fully removed in #193."""
+
+    def test_cache_warm_removed(self, client, system_admin_headers):
         response = client.post(
             "/api/admin/cache/warm",
             json={"queries": ["test"]},
             headers=system_admin_headers,
         )
-        assert response.status_code == 410
+        assert response.status_code in [404, 405]
 
-    def test_warm_progress_410(self, client, system_admin_headers):
+    def test_warm_progress_removed(self, client, system_admin_headers):
         response = client.get(
             "/api/admin/cache/warm-progress/some-id",
             headers=system_admin_headers,
         )
-        assert response.status_code == 410
+        assert response.status_code in [404, 405]
 
-    def test_warm_retry_410(self, client, system_admin_headers):
+    def test_warm_retry_removed(self, client, system_admin_headers):
         response = client.post(
             "/api/admin/cache/warm-retry",
             json={"queries": ["test"]},
             headers=system_admin_headers,
         )
-        assert response.status_code == 410
+        assert response.status_code in [404, 405]
 
-    def test_warm_status_410(self, client, system_admin_headers):
+    def test_warm_status_removed(self, client, system_admin_headers):
         response = client.get(
             "/api/admin/cache/warm-status/some-id",
             headers=system_admin_headers,
         )
-        assert response.status_code == 410
+        assert response.status_code in [404, 405]

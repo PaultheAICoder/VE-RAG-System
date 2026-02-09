@@ -69,11 +69,8 @@ from ai_ready_rag.schemas.admin import (
     TopQueryItem,
     TopQueryResponse,
     WarmFileResponse,
-    WarmingJobListResponse,
-    WarmingJobResponse,
     WarmingQueueJobResponse,
     WarmingQueueListResponse,
-    WarmRetryRequest,
 )
 from ai_ready_rag.schemas.auth import (
     LoginRequest,
@@ -243,11 +240,8 @@ __all__ = [
     "TopQueryItem",
     "TopQueryResponse",
     "WarmFileResponse",
-    "WarmingJobListResponse",
-    "WarmingJobResponse",
     "WarmingQueueJobResponse",
     "WarmingQueueListResponse",
-    "WarmRetryRequest",
     # experimental
     "GeneratePresentationRequest",
     "PresentationResponse",

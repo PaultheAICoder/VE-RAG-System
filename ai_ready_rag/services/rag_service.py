@@ -19,13 +19,11 @@ from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import Settings
 from ai_ready_rag.core.exceptions import (
-    ConnectionTimeoutError,
     LLMConnectionError,
     LLMTimeoutError,
     ModelNotAllowedError,
     ModelUnavailableError,
     RAGServiceError,
-    ServiceUnavailableError,
     TokenBudgetExceededError,
 )
 from ai_ready_rag.services.cache_service import CacheEntry, CacheService
@@ -762,97 +760,6 @@ class RAGService:
             # CacheService will create fresh sessions for each operation
             self._cache_service = CacheService(db_factory=SessionLocal)
         return self._cache_service
-
-    async def warm_cache(self, query: str, user_tags: list[str] | None = None) -> bool:
-        """Execute RAG query to populate cache without user response.
-
-        This method is used by the WarmingWorker to pre-populate the cache
-        with responses for common queries.
-
-        Args:
-            query: The query to warm.
-            user_tags: Optional tags for access control (uses ["public"] if None).
-
-        Returns:
-            True if cache was populated (or already cached).
-
-        Raises:
-            ConnectionTimeoutError: Ollama/Qdrant timeout.
-            ServiceUnavailableError: Service unavailable.
-        """
-        from ai_ready_rag.db.database import SessionLocal
-
-        logger.debug(f"[WARM] warm_cache() called for: {query[:50]}...")
-
-        # Use hr tags if not specified (warming populates cache for common queries)
-        # TODO: Make this configurable - currently hardcoded to "hr" for testing
-        effective_tags = user_tags if user_tags is not None else ["hr"]
-
-        # Check if already cached
-        logger.debug(f"[WARM] Checking cache service... cache={self.cache is not None}")
-        if self.cache and self.cache.enabled:
-            try:
-                logger.debug(f"[WARM] Checking cache for: {query[:50]}...")
-                query_embedding = await self.cache.get_embedding(query)
-                cached = await self.cache.get(
-                    query=query,
-                    user_tags=effective_tags,
-                    query_embedding=query_embedding,
-                )
-                if cached:
-                    logger.debug(f"[WARM] Cache hit for query: {query[:50]}...")
-                    return True
-                logger.debug("[WARM] Cache MISS - will generate")
-            except Exception as e:
-                logger.warning(f"[WARM] Cache check failed: {e}")
-
-        # Generate response to populate cache
-        db = SessionLocal()
-        try:
-            request = RAGRequest(
-                query=query,
-                user_tags=effective_tags,
-                tenant_id="default",
-                is_warming=True,  # Skip access tracking during warming
-            )
-            logger.debug("[WARM] Calling RAG generate()...")
-            response = await self.generate(request, db)
-            logger.debug(
-                f"[WARM] RAG response: confidence={response.confidence.overall}, "
-                f"citations={len(response.citations)}, grounded={response.grounded}"
-            )
-
-            # Check if response was actually cached (confidence >= min_confidence)
-            if self.cache and self.cache.enabled:
-                min_conf = self.cache.min_confidence
-                if response.confidence.overall < min_conf:
-                    logger.info(
-                        f"[WARM] Query skipped (confidence {response.confidence.overall} "
-                        f"< {min_conf}): {query[:50]}..."
-                    )
-                    logger.debug(
-                        f"[WARM] NOT CACHED: confidence {response.confidence.overall} "
-                        f"< min_confidence {min_conf}"
-                    )
-                    return False  # Query processed but not cached
-
-            logger.debug("[WARM] Response will be cached")
-            return True
-        except httpx.TimeoutException as e:
-            raise ConnectionTimeoutError(f"Timeout warming query: {e}") from e
-        except httpx.ConnectError as e:
-            raise ServiceUnavailableError(f"Service unavailable: {e}") from e
-        except Exception as e:
-            # Wrap connection-related errors
-            error_str = str(e).lower()
-            if "timeout" in error_str:
-                raise ConnectionTimeoutError(f"Timeout warming query: {e}") from e
-            if "connection" in error_str or "connect" in error_str:
-                raise ServiceUnavailableError(f"Service unavailable: {e}") from e
-            # Re-raise other errors
-            raise
-        finally:
-            db.close()
 
     def _cache_entry_to_response(self, entry: CacheEntry, elapsed_ms: float) -> RAGResponse:
         """Convert CacheEntry to RAGResponse.
