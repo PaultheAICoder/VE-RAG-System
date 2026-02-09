@@ -9,6 +9,9 @@ import type {
   WarmFileResponse,
   WarmingJob,
   WarmingJobListResponse,
+  BatchQueriesResponse,
+  QueryRetryResponse,
+  WarmingQueryStatus,
 } from '../types';
 
 /**
@@ -98,25 +101,50 @@ export async function warmCacheFromFile(file: File): Promise<WarmFileResponse> {
 }
 
 /**
- * Retry specific failed queries from a previous warming job.
- * @param queries - Array of failed queries to retry
+ * Get queries for a specific warming batch.
+ * @param batchId - The batch ID
+ * @param statusFilter - Optional status filter
+ * @param limit - Optional limit
+ * @param offset - Optional offset
  */
-export async function retryWarmCache(queries: string[]): Promise<WarmFileResponse> {
-  const token = useAuthStore.getState().token;
-  const response = await fetch('/api/admin/warming/queue/manual', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ queries }),
-  });
+export async function getBatchQueries(
+  batchId: string,
+  statusFilter?: WarmingQueryStatus,
+  limit?: number,
+  offset?: number,
+): Promise<BatchQueriesResponse> {
+  let url = `/api/admin/warming/batch/${batchId}/queries`;
+  const params = new URLSearchParams();
+  if (statusFilter) params.set('status', statusFilter);
+  if (limit) params.set('limit', String(limit));
+  if (offset) params.set('offset', String(offset));
+  const qs = params.toString();
+  if (qs) url += `?${qs}`;
+  return apiClient.get<BatchQueriesResponse>(url);
+}
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Retry failed' }));
-    throw new Error(error.detail || `HTTP ${response.status}`);
-  }
-  return response.json();
+/**
+ * Retry all failed queries in a batch.
+ * @param batchId - The batch ID to retry
+ */
+export async function retryBatch(batchId: string): Promise<QueryRetryResponse> {
+  return apiClient.post<QueryRetryResponse>(
+    `/api/admin/warming/batch/${batchId}/retry`
+  );
+}
+
+/**
+ * Retry a single failed query.
+ * @param batchId - The batch ID
+ * @param queryId - The query ID to retry
+ */
+export async function retryQuery(
+  batchId: string,
+  queryId: string,
+): Promise<QueryRetryResponse> {
+  return apiClient.post<QueryRetryResponse>(
+    `/api/admin/warming/batch/${batchId}/queries/${queryId}/retry`
+  );
 }
 
 /**
@@ -138,17 +166,8 @@ export function getWarmProgressUrl(jobId: string, lastEventId?: string | null): 
  * Get current status of a warming job.
  * @param jobId - The warming job ID
  */
-export async function getWarmStatus(jobId: string): Promise<{
-  job_id: string;
-  status: string;
-  total: number;
-  processed: number;
-  success_count: number;
-  failed_queries: string[];
-  started_at: string | null;
-  completed_at: string | null;
-}> {
-  return apiClient.get(`/api/admin/warming/queue/${jobId}`);
+export async function getWarmStatus(jobId: string): Promise<WarmingJob> {
+  return apiClient.get<WarmingJob>(`/api/admin/warming/queue/${jobId}`);
 }
 
 // =============================================================================
