@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { WarmingJob } from '../types';
+import type { WarmingJob, WarmingQuery } from '../types';
 
 type WarmingStatus = 'idle' | 'warming' | 'completed' | 'error';
 
@@ -34,7 +34,14 @@ interface CacheWarmingState {
 
   // Actions - File upload
   startFileJob: (jobId: string, total: number) => void;
-  updateProgress: (processed: number, estimatedRemaining?: number) => void;
+  updateProgress: (data: {
+    processed: number;
+    failed: number;
+    skipped: number;
+    total: number;
+    percent: number;
+    batch_status: string;
+  }) => void;
   addResult: (result: QueryResult) => void;
   completeFileJob: () => void;
   resetFileJob: () => void;
@@ -49,6 +56,10 @@ interface CacheWarmingState {
 
   // SSE reconnection
   lastEventId: string | null;
+
+  // Query expansion state
+  expandedBatchQueries: Record<string, WarmingQuery[]>;
+  expandedBatchLoading: Record<string, boolean>;
 
   // Queue management actions
   setQueueJobs: (jobs: WarmingJob[]) => void;
@@ -65,11 +76,16 @@ interface CacheWarmingState {
 
   // SSE reconnection actions
   setLastEventId: (id: string | null) => void;
+
+  // Query expansion actions
+  setExpandedBatchQueries: (batchId: string, queries: WarmingQuery[]) => void;
+  setExpandedBatchLoading: (batchId: string, loading: boolean) => void;
+  clearExpandedBatch: (batchId: string) => void;
 }
 
 export const useCacheWarmingStore = create<CacheWarmingState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       // Initial state - Manual
       status: 'idle',
       queriesCount: 0,
@@ -94,6 +110,10 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
 
       // Initial state - SSE reconnection
       lastEventId: null,
+
+      // Initial state - Query expansion
+      expandedBatchQueries: {},
+      expandedBatchLoading: {},
 
       // Manual warming actions
       startWarming: (queriesCount) =>
@@ -135,10 +155,11 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
           error: null,
         }),
 
-      updateProgress: (processed, estimatedRemaining) =>
+      updateProgress: (data) =>
         set({
-          processed,
-          estimatedTimeRemaining: estimatedRemaining ?? get().estimatedTimeRemaining,
+          processed: data.processed + data.failed + data.skipped,
+          total: data.total,
+          estimatedTimeRemaining: null,
         }),
 
       addResult: (result) =>
@@ -201,6 +222,24 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
           selectedJobIds: new Set(state.queueJobs.map((j) => j.id)),
         })),
       clearSelection: () => set({ selectedJobIds: new Set<string>() }),
+
+      // Query expansion actions
+      setExpandedBatchQueries: (batchId, queries) =>
+        set((state) => ({
+          expandedBatchQueries: { ...state.expandedBatchQueries, [batchId]: queries },
+        })),
+      setExpandedBatchLoading: (batchId, loading) =>
+        set((state) => ({
+          expandedBatchLoading: { ...state.expandedBatchLoading, [batchId]: loading },
+        })),
+      clearExpandedBatch: (batchId) =>
+        set((state) => {
+          const nextQueries = { ...state.expandedBatchQueries };
+          delete nextQueries[batchId];
+          const nextLoading = { ...state.expandedBatchLoading };
+          delete nextLoading[batchId];
+          return { expandedBatchQueries: nextQueries, expandedBatchLoading: nextLoading };
+        }),
 
       // SSE reconnection actions
       setLastEventId: (id) => set({ lastEventId: id }),

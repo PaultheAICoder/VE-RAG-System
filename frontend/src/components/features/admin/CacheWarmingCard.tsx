@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { Fragment, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Flame,
   CheckCircle,
@@ -16,13 +16,14 @@ import {
   XCircle,
   AlertTriangle,
   StopCircle,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { Card, Button, Badge, Alert } from '../../ui';
 import { ConfirmModal } from './ConfirmModal';
 import { useCacheWarmingStore } from '../../../stores/cacheWarmingStore';
 import {
   warmCacheFromFile,
-  retryWarmCache,
   getWarmProgressUrl,
   getWarmStatus,
   getWarmingJobs,
@@ -31,8 +32,11 @@ import {
   deleteWarmingJob,
   cancelWarmingJob,
   bulkDeleteWarmingJobs,
+  getBatchQueries,
+  retryBatch,
+  retryQuery,
 } from '../../../api/cache';
-import type { WarmingJobStatus } from '../../../types';
+import type { WarmingJobStatus, WarmingQueryStatus } from '../../../types';
 
 interface CacheWarmingCardProps {
   onWarm: (queries: string[]) => Promise<void>;
@@ -48,8 +52,20 @@ const STATUS_CONFIG: Record<
   running: { label: 'Running', variant: 'primary', icon: <Loader2 size={14} className="animate-spin" /> },
   paused: { label: 'Paused', variant: 'warning', icon: <Pause size={14} /> },
   completed: { label: 'Completed', variant: 'success', icon: <CheckCircle size={14} /> },
+  completed_with_errors: { label: 'Completed with Errors', variant: 'warning', icon: <AlertTriangle size={14} /> },
   failed: { label: 'Failed', variant: 'danger', icon: <XCircle size={14} /> },
   cancelled: { label: 'Cancelled', variant: 'danger', icon: <StopCircle size={14} /> },
+};
+
+const QUERY_STATUS_CONFIG: Record<
+  WarmingQueryStatus,
+  { label: string; variant: 'default' | 'primary' | 'success' | 'warning' | 'danger'; icon: React.ReactNode }
+> = {
+  pending: { label: 'Pending', variant: 'default', icon: <Clock size={14} /> },
+  processing: { label: 'Processing', variant: 'primary', icon: <Loader2 size={14} className="animate-spin" /> },
+  completed: { label: 'Completed', variant: 'success', icon: <CheckCircle size={14} /> },
+  failed: { label: 'Failed', variant: 'danger', icon: <XCircle size={14} /> },
+  skipped: { label: 'Skipped', variant: 'default', icon: <StopCircle size={14} /> },
 };
 
 // Transitional states for jobs that are in process of cancelling/pausing
@@ -112,6 +128,7 @@ export function CacheWarmingCard({
   const [jobToDelete, setJobToDelete] = useState<string | null>(null);
   const [isBulkDelete, setIsBulkDelete] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(new Set());
 
   const {
     status,
@@ -129,7 +146,6 @@ export function CacheWarmingCard({
     reset,
     startFileJob,
     updateProgress,
-    addResult,
     completeFileJob,
     resetFileJob,
     // Queue state
@@ -147,6 +163,12 @@ export function CacheWarmingCard({
     selectAllJobs,
     clearSelection,
     setLastEventId,
+    // Query expansion state
+    expandedBatchQueries,
+    expandedBatchLoading,
+    setExpandedBatchQueries,
+    setExpandedBatchLoading,
+    clearExpandedBatch,
   } = useCacheWarmingStore();
 
   const isWarming = status === 'warming';
@@ -226,20 +248,20 @@ export function CacheWarmingCard({
 
     eventSource.addEventListener('progress', (e) => {
       const data = JSON.parse(e.data);
-      updateProgress(data.processed, data.estimated_remaining_seconds);
+      updateProgress(data);
       // Track lastEventId for reconnection
       if ((e as MessageEvent).lastEventId) {
         setLastEventId((e as MessageEvent).lastEventId);
       }
     });
 
-    eventSource.addEventListener('result', (e) => {
+    eventSource.addEventListener('paused', (e) => {
       const data = JSON.parse(e.data);
-      addResult(data);
-      // Track lastEventId for reconnection
+      updateProgress({ ...data, percent: 0, batch_status: 'paused' });
       if ((e as MessageEvent).lastEventId) {
         setLastEventId((e as MessageEvent).lastEventId);
       }
+      fetchQueue(); // Refresh queue to show paused state
     });
 
     eventSource.addEventListener('complete', (e) => {
@@ -272,7 +294,7 @@ export function CacheWarmingCard({
       eventSource.close();
       eventSourceRef.current = null;
     };
-  }, [updateProgress, addResult, completeFileJob, setError, lastEventId, setLastEventId, fetchQueue]);
+  }, [updateProgress, completeFileJob, setError, lastEventId, setLastEventId, fetchQueue]);
 
   // Calculate queries per second
   const queriesPerSecond = useMemo(() => {
@@ -401,7 +423,8 @@ export function CacheWarmingCard({
       completeWarming();
       setQueryText('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Warming failed');
+      const message = err instanceof Error ? err.message : 'Warming failed';
+      setError(message.includes('503') ? 'Redis unavailable -- please retry' : message);
     }
   };
 
@@ -436,25 +459,76 @@ export function CacheWarmingCard({
       startFileJob(response.id, response.total_queries);
       connectToSSE(response.id);
     } catch (err) {
-      setFileError(err instanceof Error ? err.message : 'Failed to start warming');
+      const message = err instanceof Error ? err.message : 'Failed to start warming';
+      setFileError(message.includes('503') ? 'Redis unavailable -- please retry' : message);
     }
   };
 
-  // Handle retry failed
-  const handleRetryFailed = async () => {
-    if (failedQueries.length === 0) return;
+  // Handle retry all failed queries in a batch
+  const handleRetryBatch = async (batchId: string) => {
+    setActionLoading(`retry-${batchId}`);
+    try {
+      await retryBatch(batchId);
+      await fetchQueue();
+      // Refresh expanded queries if this batch is expanded
+      if (expandedBatchIds.has(batchId)) {
+        const response = await getBatchQueries(batchId);
+        setExpandedBatchQueries(batchId, response.queries);
+      }
+    } catch (err) {
+      setQueueError(err instanceof Error ? err.message : 'Retry failed');
+    } finally {
+      setActionLoading(null);
+    }
+  };
 
-    const queriesToRetry = [...failedQueries];
+  // Handle retry a single query
+  const handleRetryQuery = async (batchId: string, queryId: string) => {
+    setActionLoading(`retry-query-${queryId}`);
+    try {
+      await retryQuery(batchId, queryId);
+      // Refresh the expanded query list
+      const response = await getBatchQueries(batchId);
+      setExpandedBatchQueries(batchId, response.queries);
+      await fetchQueue(); // Also refresh batch-level counts
+    } catch (err) {
+      setQueueError(err instanceof Error ? err.message : 'Query retry failed');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Toggle batch row expansion to show individual queries
+  const toggleBatchExpand = async (batchId: string) => {
+    const newSet = new Set(expandedBatchIds);
+    if (newSet.has(batchId)) {
+      newSet.delete(batchId);
+      clearExpandedBatch(batchId);
+    } else {
+      newSet.add(batchId);
+      // Lazy-load queries
+      setExpandedBatchLoading(batchId, true);
+      try {
+        const response = await getBatchQueries(batchId);
+        setExpandedBatchQueries(batchId, response.queries);
+      } catch (err) {
+        setQueueError(err instanceof Error ? err.message : 'Failed to load queries');
+      } finally {
+        setExpandedBatchLoading(batchId, false);
+      }
+    }
+    setExpandedBatchIds(newSet);
+  };
+
+  // Handle retry failed (legacy flow -- now delegates to batch retry)
+  const handleRetryFailed = async () => {
+    if (!activeJobId && failedQueries.length === 0) return;
+
+    if (activeJobId) {
+      await handleRetryBatch(activeJobId);
+    }
     resetFileJob();
     setFileError(null);
-
-    try {
-      const response = await retryWarmCache(queriesToRetry);
-      startFileJob(response.id, response.total_queries);
-      connectToSSE(response.id);
-    } catch (err) {
-      setFileError(err instanceof Error ? err.message : 'Retry failed');
-    }
   };
 
   // Handle reset
@@ -531,7 +605,7 @@ export function CacheWarmingCard({
         <div className="flex items-center gap-2 p-3 mb-4 rounded-lg bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400">
           <CheckCircle size={18} />
           <span className="text-sm flex-1">
-            Successfully warmed {total > 0 ? `${total - failedQueries.length}/${total}` : queriesCount} queries
+            Warming complete: {total > 0 ? `${total - failedQueries.length}/${total}` : `${queriesCount}/${queriesCount}`} queries succeeded
             {lastWarmingTime && ` at ${formatLastWarmingTime(lastWarmingTime)}`}
             {failedQueries.length > 0 && ` (${failedQueries.length} failed)`}
           </span>
@@ -654,7 +728,7 @@ export function CacheWarmingCard({
       {activeTab === 'file' && (
         <div className="space-y-4">
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Upload a .txt or .csv file with one query per line. Numbered queries (e.g., "1. Question") are automatically cleaned.
+            Upload a file with one query per line. Numbered queries (e.g., &quot;1. Question&quot;) are automatically cleaned.
           </p>
 
           <div className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-6 text-center">
@@ -786,18 +860,20 @@ export function CacheWarmingCard({
                 {queueJobs.map((job) => {
                   // Use transitional state-aware status config
                   const statusConfig = getJobStatusConfig(job);
-                  const progressPercent = job.total > 0
-                    ? Math.round((job.processed / job.total) * 100)
+                  const jobProcessed = job.total_queries - job.pending_queries;
+                  const progressPercent = job.total_queries > 0
+                    ? Math.round((jobProcessed / job.total_queries) * 100)
                     : 0;
                   const isJobLoading = actionLoading === job.id;
                   // Check if job is in transitional state
                   const isCancelling = job.status === 'running' && job.is_cancel_requested;
                   const isPausing = job.status === 'running' && job.is_paused;
                   const isInTransition = isCancelling || isPausing;
+                  const isExpanded = expandedBatchIds.has(job.id);
 
                   return (
+                    <Fragment key={job.id}>
                     <tr
-                      key={job.id}
                       className="border-b border-gray-100 dark:border-gray-800 last:border-0"
                     >
                       {/* Checkbox */}
@@ -810,10 +886,13 @@ export function CacheWarmingCard({
                         />
                       </td>
 
-                      {/* Source File */}
-                      <td className="py-3 px-3">
-                        <span className="text-gray-900 dark:text-white">
-                          {job.source_file || 'Manual Entry'}
+                      {/* Source - clickable to expand */}
+                      <td className="py-3 px-3 cursor-pointer" onClick={() => toggleBatchExpand(job.id)}>
+                        <span className="flex items-center gap-1">
+                          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          <span className="text-gray-900 dark:text-white">
+                            {job.original_filename ?? (job.source_type === 'manual' ? 'Manual Entry' : job.source_type)}
+                          </span>
                         </span>
                       </td>
 
@@ -843,7 +922,7 @@ export function CacheWarmingCard({
                         <div className="min-w-[120px]">
                           <div className="flex justify-between text-xs mb-1">
                             <span className="text-gray-600 dark:text-gray-400">
-                              {job.processed}/{job.total}
+                              {jobProcessed}/{job.total_queries}
                             </span>
                             <span className="font-medium text-gray-900 dark:text-white">
                               {progressPercent}%
@@ -856,6 +935,8 @@ export function CacheWarmingCard({
                                   ? 'bg-red-500'
                                   : job.status === 'completed'
                                   ? 'bg-green-500'
+                                  : job.status === 'completed_with_errors'
+                                  ? 'bg-amber-500'
                                   : isInTransition
                                   ? 'bg-amber-500'
                                   : 'bg-primary'
@@ -869,9 +950,19 @@ export function CacheWarmingCard({
                               {estimatedTimeRemaining && ` - ${formatTimeRemaining(estimatedTimeRemaining)}`}
                             </span>
                           )}
-                          {job.failed_count > 0 && (
+                          {job.status === 'completed_with_errors' && (
+                            <span className="text-xs text-amber-600 mt-0.5 block">
+                              {job.failed_queries} of {job.total_queries} queries failed
+                            </span>
+                          )}
+                          {job.status === 'failed' && (
                             <span className="text-xs text-red-500 mt-0.5 block">
-                              {job.failed_count} failed
+                              All queries failed
+                            </span>
+                          )}
+                          {job.status !== 'completed_with_errors' && job.status !== 'failed' && job.failed_queries > 0 && (
+                            <span className="text-xs text-red-500 mt-0.5 block">
+                              {job.failed_queries} failed
                             </span>
                           )}
                         </div>
@@ -887,6 +978,18 @@ export function CacheWarmingCard({
                       {/* Actions */}
                       <td className="py-3 px-3 text-right">
                         <div className="flex justify-end gap-1">
+                          {/* Retry button - for completed_with_errors or failed batches */}
+                          {(job.status === 'completed_with_errors' || job.status === 'failed') && (
+                            <Button
+                              variant="warning"
+                              size="sm"
+                              icon={RotateCcw}
+                              onClick={() => handleRetryBatch(job.id)}
+                              disabled={actionLoading === `retry-${job.id}`}
+                              title="Retry Failed Queries"
+                            />
+                          )}
+
                           {/* Cancel button - only for running jobs, disabled if already cancelling */}
                           {job.status === 'running' && !isPausing && (
                             <Button
@@ -935,6 +1038,75 @@ export function CacheWarmingCard({
                         </div>
                       </td>
                     </tr>
+
+                    {/* Expanded query detail row */}
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={6} className="p-0">
+                          <div className="bg-gray-50 dark:bg-gray-800/50 px-6 py-3 border-b border-gray-200 dark:border-gray-700">
+                            {expandedBatchLoading[job.id] ? (
+                              <div className="flex items-center gap-2 py-4 justify-center">
+                                <Loader2 size={16} className="animate-spin text-gray-400" />
+                                <span className="text-sm text-gray-500">Loading queries...</span>
+                              </div>
+                            ) : expandedBatchQueries[job.id] && expandedBatchQueries[job.id].length > 0 ? (
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="border-b border-gray-200 dark:border-gray-600">
+                                    <th className="text-left py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400">Query</th>
+                                    <th className="text-left py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400 w-28">Status</th>
+                                    <th className="text-left py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400">Error</th>
+                                    <th className="text-center py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400 w-16">Retries</th>
+                                    <th className="text-right py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400 w-20">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {expandedBatchQueries[job.id].map((query) => {
+                                    const qStatus = QUERY_STATUS_CONFIG[query.status];
+                                    return (
+                                      <tr key={query.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
+                                        <td className="py-1.5 px-2 text-gray-900 dark:text-white max-w-xs truncate" title={query.query_text}>
+                                          {query.query_text}
+                                        </td>
+                                        <td className="py-1.5 px-2">
+                                          <Badge variant={qStatus.variant}>
+                                            <span className="flex items-center gap-1">
+                                              {qStatus.icon}
+                                              {qStatus.label}
+                                            </span>
+                                          </Badge>
+                                        </td>
+                                        <td className="py-1.5 px-2 text-red-500 max-w-xs truncate" title={query.error_message ?? undefined}>
+                                          {query.error_message || '-'}
+                                        </td>
+                                        <td className="py-1.5 px-2 text-center text-gray-500">
+                                          {query.retry_count}
+                                        </td>
+                                        <td className="py-1.5 px-2 text-right">
+                                          {(query.status === 'failed' || query.status === 'skipped') && (
+                                            <Button
+                                              variant="outline"
+                                              size="sm"
+                                              icon={RotateCcw}
+                                              onClick={() => handleRetryQuery(job.id, query.id)}
+                                              disabled={actionLoading === `retry-query-${query.id}`}
+                                              title="Retry Query"
+                                            />
+                                          )}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            ) : (
+                              <p className="text-sm text-gray-500 py-2 text-center">No queries found.</p>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })}
               </tbody>

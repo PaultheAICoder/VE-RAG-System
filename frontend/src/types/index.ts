@@ -535,23 +535,52 @@ export interface WarmFileResponse {
 // Cache Warming Queue Types
 // =============================================================================
 
-export type WarmingJobStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+export type WarmingJobStatus = 'pending' | 'running' | 'paused' | 'completed'
+  | 'completed_with_errors' | 'failed' | 'cancelled';
 
 export interface WarmingJob {
   id: string;
-  source_file: string | null;
+  source_type: string;
+  original_filename: string | null;
   status: WarmingJobStatus;
-  total: number;
-  processed: number;
-  success_count: number;
-  failed_count: number;
+  total_queries: number;
+  completed_queries: number;
+  failed_queries: number;
+  pending_queries: number;
+  is_paused: boolean;
+  is_cancel_requested: boolean;
   created_at: string | null;
   started_at: string | null;
   completed_at: string | null;
-  triggered_by: string;
-  // Transitional state flags
-  is_cancel_requested?: boolean;
-  is_paused?: boolean;
+  submitted_by: string | null;
+  error_message: string | null;
+  worker_id: string | null;
+}
+
+export type WarmingQueryStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'skipped';
+
+export interface WarmingQuery {
+  id: string;
+  query_text: string;
+  status: WarmingQueryStatus;
+  error_message: string | null;
+  error_type: string | null;
+  retry_count: number;
+  sort_order: number;
+  processed_at: string | null;
+  created_at: string | null;
+}
+
+export interface BatchQueriesResponse {
+  queries: WarmingQuery[];
+  total_count: number;
+  batch_id: string;
+}
+
+export interface QueryRetryResponse {
+  batch_id: string;
+  retried_count: number;
+  message: string;
 }
 
 export interface WarmingJobListResponse {
