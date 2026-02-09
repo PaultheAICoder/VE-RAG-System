@@ -3,15 +3,21 @@
 @tailwind utilities;
 
 :root {
-  --color-primary: #2A9D8F;
-  --color-primary-dark: #238578;
-  --color-primary-light: #3AB4A5;
+  --color-primary: #E8A0BF;
+  --color-primary-dark: #D4789E;
+  --color-primary-light: #F0B8D0;
+  --color-accent: #F5C6D0;
+  --color-warm-bg: #FFF5F7;
+  --color-cream: #FFFAF5;
 }
 
 .dark {
-  --color-primary: #3AB4A5;
-  --color-primary-dark: #2A9D8F;
-  --color-primary-light: #4ECDC4;
+  --color-primary: #F0B8D0;
+  --color-primary-dark: #E8A0BF;
+  --color-primary-light: #F5C6D0;
+  --color-accent: #D4789E;
+  --color-warm-bg: #2D1B2E;
+  --color-cream: #3A2235;
 }
 
 /* Smooth dark mode transition */
@@ -34,7 +40,7 @@ html.no-transitions *::after {
 }
 
 body {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Nunito', system-ui, sans-serif;
 }
 
 /* Hide scrollbars but keep scroll functionality */
@@ -48,5 +54,41 @@ body {
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-family: 'Poppins', system-ui, sans-serif;
+  font-family: 'Quicksand', system-ui, sans-serif;
+}
+
+/* Warm pink button glow effect */
+.btn-warm-glow {
+  box-shadow: 0 4px 14px 0 rgba(232, 160, 191, 0.4);
+}
+
+.btn-warm-glow:hover {
+  box-shadow: 0 6px 20px 0 rgba(232, 160, 191, 0.6);
+}
+
+/* Soft card styling */
+.card-warm {
+  box-shadow: 0 2px 12px 0 rgba(232, 160, 191, 0.12);
+}
+
+/* Gentle nav hover underline */
+.nav-link-warm {
+  position: relative;
+}
+
+.nav-link-warm::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 50%;
+  width: 0;
+  height: 2px;
+  background: var(--color-primary);
+  border-radius: 999px;
+  transition: width 0.3s ease, left 0.3s ease;
+}
+
+.nav-link-warm:hover::after {
+  width: 100%;
+  left: 0;
 }

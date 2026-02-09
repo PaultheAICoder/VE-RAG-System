@@ -31,7 +31,7 @@ export function Nav() {
   );
 
   return (
-    <nav className="sticky top-[52px] z-40 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+    <nav className="sticky top-[52px] z-40 border-b border-rose-100 dark:border-mauve-700 bg-white/80 dark:bg-plum-900/80 backdrop-blur-sm">
       <div className="max-w-7xl mx-auto px-4">
         <div className="flex gap-1 overflow-x-auto hide-scrollbar">
           {visibleItems.map((item) => {
@@ -43,11 +43,11 @@ export function Nav() {
                 key={item.href}
                 to={item.href}
                 className={`
-                  flex items-center gap-2 px-4 py-3 text-sm font-medium
-                  border-b-2 -mb-px whitespace-nowrap transition-colors
+                  nav-link-warm flex items-center gap-2 px-4 py-3 text-sm font-semibold
+                  border-b-2 -mb-px whitespace-nowrap transition-all duration-200
                   ${isActive
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-primary hover:border-gray-300'
+                    ? 'border-primary text-primary dark:text-rose-300 dark:border-rose-300'
+                    : 'border-transparent text-rose-400/70 dark:text-rose-300/40 hover:text-primary dark:hover:text-rose-200 hover:border-rose-200 dark:hover:border-mauve-700'
                   }
                 `}
               >
