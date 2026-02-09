@@ -6,22 +6,39 @@ export default {
     extend: {
       colors: {
         primary: {
-          DEFAULT: '#2A9D8F',
-          dark: '#238578',
-          light: '#3AB4A5',
+          DEFAULT: '#003399',
+          dark: '#002266',
+          light: '#0055A4',
         },
-        cream: '#FDF8F3',
+        cream: '#F5F5F0',
         hero: {
-          dark: '#1e3a3a',
-          mid: '#2d4a4a',
+          dark: '#001133',
+          mid: '#002255',
+        },
+        corp: {
+          blue: '#003399',
+          'blue-light': '#0055A4',
+          'blue-dark': '#002266',
+          silver: '#C0C0C0',
+          'silver-light': '#E8E8E8',
+          'silver-dark': '#999999',
+          navy: '#0d1b3a',
+          'navy-light': '#1a2a4a',
+          accent: '#CC6600',
         },
       },
       fontFamily: {
-        heading: ['Poppins', 'system-ui', 'sans-serif'],
-        body: ['Inter', 'system-ui', 'sans-serif'],
+        heading: ['Arial', 'Helvetica', 'sans-serif'],
+        body: ['Verdana', 'Tahoma', 'Arial', 'Helvetica', 'sans-serif'],
       },
       borderRadius: {
         '4xl': '2rem',
+      },
+      boxShadow: {
+        'bevel': 'inset 0 1px 0 rgba(255,255,255,0.4), 1px 1px 2px rgba(0,0,0,0.15)',
+        'bevel-dark': 'inset 0 1px 0 rgba(255,255,255,0.1), 1px 1px 2px rgba(0,0,0,0.3)',
+        'corp': '2px 2px 4px rgba(0,0,0,0.15)',
+        'corp-dark': '2px 2px 4px rgba(0,0,0,0.3)',
       },
     },
   },

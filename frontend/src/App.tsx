@@ -26,7 +26,7 @@ const LoginPage = () => {
     console.log('Demo login clicked');
     try {
       console.log('Calling login...');
-      await login('admin@test.com', 'npassword2002!');
+      await login('admin@test.com', 'npassword');
       console.log('Login successful');
     } catch (err) {
       console.error('Login error:', err);
@@ -34,29 +34,38 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex items-center justify-center">
-      <div className="bg-white dark:bg-gray-800 p-8 rounded-xl shadow-lg max-w-md w-full">
-        <h1 className="text-2xl font-heading font-bold text-gray-900 dark:text-white mb-6">
-          AI Ready RAG
-        </h1>
-        <p className="text-gray-600 dark:text-gray-400 mb-4">
-          Login to access the system
-        </p>
-        {error && (
-          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 p-3 rounded-lg mb-4">
-            {error}
-          </div>
-        )}
-        <button
-          onClick={handleDemoLogin}
-          disabled={isLoading}
-          className="w-full bg-primary hover:bg-primary-dark text-white font-semibold py-2.5 px-4 rounded-lg transition-colors disabled:opacity-50"
-        >
-          {isLoading ? 'Logging in...' : 'Demo Login (Admin)'}
-        </button>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-4 text-center">
-          Backend: localhost:8502
-        </p>
+    <div className="min-h-screen corp-page-bg flex items-center justify-center">
+      <div className="corp-panel max-w-md w-full">
+        {/* Classic gradient title bar */}
+        <div className="corp-panel-header">
+          <h1 className="text-lg font-bold tracking-wide font-heading">
+            AI Ready RAG - System Login
+          </h1>
+        </div>
+        <div className="p-6">
+          <p className="text-gray-700 dark:text-gray-300 mb-1 text-sm font-body">
+            Welcome to the AI Ready RAG Management Portal.
+          </p>
+          <p className="text-gray-600 dark:text-gray-400 mb-5 text-sm font-body">
+            Please authenticate to access the system.
+          </p>
+          {error && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-400 dark:border-red-800 text-red-700 dark:text-red-300 p-3 mb-4 text-sm">
+              {error}
+            </div>
+          )}
+          <button
+            onClick={handleDemoLogin}
+            disabled={isLoading}
+            className="w-full corp-primary-btn py-2.5 px-4 text-sm disabled:opacity-50 cursor-pointer"
+          >
+            {isLoading ? 'Authenticating...' : 'Demo Login (Admin)'}
+          </button>
+          <hr className="corp-hr my-4" />
+          <p className="text-xs text-gray-500 dark:text-gray-400 text-center font-body">
+            Backend Server: localhost:8505 | &copy; 2002 AI Ready RAG Corp.
+          </p>
+        </div>
       </div>
     </div>
   );

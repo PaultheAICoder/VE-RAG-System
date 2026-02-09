@@ -31,9 +31,9 @@ export function Nav() {
   );
 
   return (
-    <nav className="sticky top-[52px] z-40 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+    <nav className="sticky top-[49px] z-40 corp-nav-gradient">
       <div className="max-w-7xl mx-auto px-4">
-        <div className="flex gap-1 overflow-x-auto hide-scrollbar">
+        <div className="flex gap-1 py-1 overflow-x-auto hide-scrollbar">
           {visibleItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.href;
@@ -43,15 +43,15 @@ export function Nav() {
                 key={item.href}
                 to={item.href}
                 className={`
-                  flex items-center gap-2 px-4 py-3 text-sm font-medium
-                  border-b-2 -mb-px whitespace-nowrap transition-colors
+                  flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold font-heading
+                  whitespace-nowrap transition-colors
                   ${isActive
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-primary hover:border-gray-300'
+                    ? 'corp-button-active'
+                    : 'corp-button text-gray-700 dark:text-gray-300'
                   }
                 `}
               >
-                <Icon size={18} />
+                <Icon size={14} />
                 {item.label}
               </Link>
             );
