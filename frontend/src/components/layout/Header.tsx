@@ -10,50 +10,55 @@ export function Header() {
   const { modSymbol } = usePlatformModifier();
 
   return (
-    <header className="sticky top-0 z-50 bg-white/95 dark:bg-gray-900/95 backdrop-blur border-b border-gray-200 dark:border-gray-800">
-      <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+    <header className="sticky top-0 z-50 bg-white/95 dark:bg-warm-800/95 backdrop-blur-md border-b border-warm-200 dark:border-warm-700">
+      <div className="max-w-7xl mx-auto px-5 py-3 flex items-center justify-between">
         {/* Logo */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <span className="text-primary">
             <BridgeLogo size={48} />
           </span>
-          <span className="font-bold text-sm text-gray-900 dark:text-white tracking-wide">
+          <span className="font-heading font-semibold text-sm text-warm-900 dark:text-cream tracking-wide">
             AI READY RAG
           </span>
         </div>
 
         {/* Right side controls */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-1">
           {/* Keyboard shortcuts */}
           <button
             onClick={toggleShortcutsModal}
-            className="p-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            className="p-2 rounded-xl text-warm-500 dark:text-warm-400 hover:text-warm-700 dark:hover:text-warm-300 hover:bg-warm-100 dark:hover:bg-warm-700 transition-colors"
             title={`Keyboard shortcuts (${modSymbol}+/)`}
           >
-            <Keyboard size={20} />
+            <Keyboard size={19} />
           </button>
 
           {/* Dark mode toggle */}
           <button
             onClick={toggleDarkMode}
-            className="p-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            className="p-2 rounded-xl text-warm-500 dark:text-warm-400 hover:text-warm-700 dark:hover:text-warm-300 hover:bg-warm-100 dark:hover:bg-warm-700 transition-colors"
             title={`${darkMode ? 'Switch to light mode' : 'Switch to dark mode'} (${modSymbol}+D)`}
           >
-            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+            {darkMode ? <Sun size={19} /> : <Moon size={19} />}
           </button>
+
+          {/* Separator */}
+          <div className="w-px h-5 bg-warm-200 dark:bg-warm-700 mx-2" />
 
           {/* User menu */}
           <div className="flex items-center gap-2 text-sm">
-            <User size={18} className="text-gray-400" />
-            <span className="text-gray-700 dark:text-gray-300">
+            <div className="flex items-center justify-center w-7 h-7 rounded-full bg-primary/10 dark:bg-primary/15">
+              <User size={15} className="text-primary" />
+            </div>
+            <span className="text-warm-700 dark:text-warm-300 font-medium">
               {user?.display_name}
             </span>
             <button
               onClick={() => logout()}
-              className="p-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              className="p-2 rounded-xl text-warm-500 dark:text-warm-400 hover:text-warm-700 dark:hover:text-warm-300 hover:bg-warm-100 dark:hover:bg-warm-700 transition-colors"
               title="Logout"
             >
-              <LogOut size={18} />
+              <LogOut size={17} />
             </button>
           </div>
         </div>

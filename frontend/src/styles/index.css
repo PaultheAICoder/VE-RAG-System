@@ -3,15 +3,33 @@
 @tailwind utilities;
 
 :root {
-  --color-primary: #2A9D8F;
-  --color-primary-dark: #238578;
-  --color-primary-light: #3AB4A5;
+  --color-primary: #D97757;
+  --color-primary-dark: #C4663F;
+  --color-primary-light: #E8956E;
+  --color-accent: #C8A86E;
+  --color-accent-light: #DFC99B;
+  --color-bg: #FAF9F7;
+  --color-bg-secondary: #F5F2ED;
+  --color-surface: #FFFFFF;
+  --color-surface-hover: #F0EDE8;
+  --color-border: #E8E2DA;
+  --color-text: #2D2926;
+  --color-text-secondary: #78716C;
 }
 
 .dark {
-  --color-primary: #3AB4A5;
-  --color-primary-dark: #2A9D8F;
-  --color-primary-light: #4ECDC4;
+  --color-primary: #E8956E;
+  --color-primary-dark: #D97757;
+  --color-primary-light: #F0AD8D;
+  --color-accent: #DFC99B;
+  --color-accent-light: #C8A86E;
+  --color-bg: #1A1613;
+  --color-bg-secondary: #231F1B;
+  --color-surface: #292524;
+  --color-surface-hover: #33302C;
+  --color-border: #3D3835;
+  --color-text: #F5F2ED;
+  --color-text-secondary: #A8A29E;
 }
 
 /* Smooth dark mode transition */
@@ -34,7 +52,11 @@ html.no-transitions *::after {
 }
 
 body {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'DM Sans', 'Söhne', 'Helvetica Neue', system-ui, -apple-system, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Hide scrollbars but keep scroll functionality */
@@ -48,5 +70,12 @@ body {
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-family: 'Poppins', system-ui, sans-serif;
+  font-family: 'Source Serif 4', 'Styrene A', Georgia, serif;
+}
+
+/* Custom focus ring for Claude aesthetic */
+*:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
 }

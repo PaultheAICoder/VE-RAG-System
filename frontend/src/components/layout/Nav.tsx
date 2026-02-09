@@ -31,9 +31,9 @@ export function Nav() {
   );
 
   return (
-    <nav className="sticky top-[52px] z-40 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-      <div className="max-w-7xl mx-auto px-4">
-        <div className="flex gap-1 overflow-x-auto hide-scrollbar">
+    <nav className="sticky top-[52px] z-40 border-b border-warm-200 dark:border-warm-700 bg-white/95 dark:bg-warm-800/95 backdrop-blur-md">
+      <div className="max-w-7xl mx-auto px-5">
+        <div className="flex gap-0.5 overflow-x-auto hide-scrollbar">
           {visibleItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.href;
@@ -46,12 +46,12 @@ export function Nav() {
                   flex items-center gap-2 px-4 py-3 text-sm font-medium
                   border-b-2 -mb-px whitespace-nowrap transition-colors
                   ${isActive
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-primary hover:border-gray-300'
+                    ? 'border-primary text-primary dark:text-primary-light'
+                    : 'border-transparent text-warm-500 dark:text-warm-400 hover:text-primary hover:border-warm-300 dark:hover:border-warm-600'
                   }
                 `}
               >
-                <Icon size={18} />
+                <Icon size={17} />
                 {item.label}
               </Link>
             );
