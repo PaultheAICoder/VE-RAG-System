@@ -1,7 +1,6 @@
 import { Moon, Sun, LogOut, User, Keyboard } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
 import { useUIStore } from '../../stores/uiStore';
-import { BridgeLogo } from './BridgeLogo';
 import { usePlatformModifier } from '../../hooks';
 
 export function Header() {
@@ -10,50 +9,57 @@ export function Header() {
   const { modSymbol } = usePlatformModifier();
 
   return (
-    <header className="sticky top-0 z-50 bg-white/95 dark:bg-gray-900/95 backdrop-blur border-b border-gray-200 dark:border-gray-800">
-      <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+    <header className="sticky top-0 z-50 bg-white dark:bg-[#202123] border-b border-[#E5E5E5] dark:border-[#4E4F60]">
+      <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between">
         {/* Logo */}
-        <div className="flex items-center gap-2">
-          <span className="text-primary">
-            <BridgeLogo size={48} />
-          </span>
-          <span className="font-bold text-sm text-gray-900 dark:text-white tracking-wide">
-            AI READY RAG
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center justify-center w-8 h-8 rounded-sm bg-[#10A37F]">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2L2 7l10 5 10-5-10-5z" />
+              <path d="M2 17l10 5 10-5" />
+              <path d="M2 12l10 5 10-5" />
+            </svg>
+          </div>
+          <span className="font-semibold text-sm text-[#2D2D2D] dark:text-[#ECECF1]">
+            AI Ready RAG
           </span>
         </div>
 
         {/* Right side controls */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-1">
           {/* Keyboard shortcuts */}
           <button
             onClick={toggleShortcutsModal}
-            className="p-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            className="p-2 rounded-md text-[#6E6E80] dark:text-[#ACACBE] hover:bg-[#F7F7F8] dark:hover:bg-[#2A2B32] transition-colors"
             title={`Keyboard shortcuts (${modSymbol}+/)`}
           >
-            <Keyboard size={20} />
+            <Keyboard size={18} />
           </button>
 
           {/* Dark mode toggle */}
           <button
             onClick={toggleDarkMode}
-            className="p-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            className="p-2 rounded-md text-[#6E6E80] dark:text-[#ACACBE] hover:bg-[#F7F7F8] dark:hover:bg-[#2A2B32] transition-colors"
             title={`${darkMode ? 'Switch to light mode' : 'Switch to dark mode'} (${modSymbol}+D)`}
           >
-            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+            {darkMode ? <Sun size={18} /> : <Moon size={18} />}
           </button>
+
+          {/* Divider */}
+          <div className="w-px h-5 bg-[#E5E5E5] dark:bg-[#4E4F60] mx-2" />
 
           {/* User menu */}
           <div className="flex items-center gap-2 text-sm">
-            <User size={18} className="text-gray-400" />
-            <span className="text-gray-700 dark:text-gray-300">
+            <User size={16} className="text-[#6E6E80] dark:text-[#ACACBE]" />
+            <span className="text-[#2D2D2D] dark:text-[#ECECF1] text-sm">
               {user?.display_name}
             </span>
             <button
               onClick={() => logout()}
-              className="p-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              className="p-2 rounded-md text-[#6E6E80] dark:text-[#ACACBE] hover:bg-[#F7F7F8] dark:hover:bg-[#2A2B32] transition-colors"
               title="Logout"
             >
-              <LogOut size={18} />
+              <LogOut size={16} />
             </button>
           </div>
         </div>

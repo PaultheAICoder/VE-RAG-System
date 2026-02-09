@@ -26,7 +26,7 @@ const LoginPage = () => {
     console.log('Demo login clicked');
     try {
       console.log('Calling login...');
-      await login('admin@test.com', 'npassword2002!');
+      await login('admin@test.com', 'npassword');
       console.log('Login successful');
     } catch (err) {
       console.error('Login error:', err);
@@ -34,28 +34,43 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex items-center justify-center">
-      <div className="bg-white dark:bg-gray-800 p-8 rounded-xl shadow-lg max-w-md w-full">
-        <h1 className="text-2xl font-heading font-bold text-gray-900 dark:text-white mb-6">
-          AI Ready RAG
-        </h1>
-        <p className="text-gray-600 dark:text-gray-400 mb-4">
-          Login to access the system
-        </p>
+    <div className="min-h-screen bg-white dark:bg-[#343541] flex items-center justify-center">
+      <div className="max-w-sm w-full px-6">
+        {/* Logo / Brand */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-[#10A37F] mb-4">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2L2 7l10 5 10-5-10-5z" />
+              <path d="M2 17l10 5 10-5" />
+              <path d="M2 12l10 5 10-5" />
+            </svg>
+          </div>
+          <h1 className="text-2xl font-semibold text-[#2D2D2D] dark:text-[#ECECF1] mb-2">
+            AI Ready RAG
+          </h1>
+          <p className="text-sm text-[#6E6E80] dark:text-[#ACACBE]">
+            Login to access the system
+          </p>
+        </div>
+
+        {/* Error message */}
         {error && (
-          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 p-3 rounded-lg mb-4">
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 p-3 rounded-lg mb-4 text-sm">
             {error}
           </div>
         )}
+
+        {/* Login button */}
         <button
           onClick={handleDemoLogin}
           disabled={isLoading}
-          className="w-full bg-primary hover:bg-primary-dark text-white font-semibold py-2.5 px-4 rounded-lg transition-colors disabled:opacity-50"
+          className="w-full bg-[#10A37F] hover:bg-[#0D8A6A] text-white font-medium py-3 px-4 rounded-md transition-colors disabled:opacity-50 text-sm"
         >
           {isLoading ? 'Logging in...' : 'Demo Login (Admin)'}
         </button>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-4 text-center">
-          Backend: localhost:8502
+
+        <p className="text-xs text-[#6E6E80] dark:text-[#ACACBE] mt-6 text-center">
+          Backend: localhost:8507
         </p>
       </div>
     </div>

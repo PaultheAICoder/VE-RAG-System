@@ -3,20 +3,30 @@
 @tailwind utilities;
 
 :root {
-  --color-primary: #2A9D8F;
-  --color-primary-dark: #238578;
-  --color-primary-light: #3AB4A5;
+  --color-primary: #10A37F;
+  --color-primary-dark: #0D8A6A;
+  --color-primary-light: #19C37D;
+  --color-surface: #FFFFFF;
+  --color-surface-secondary: #F7F7F8;
+  --color-border: #E5E5E5;
+  --color-text-primary: #2D2D2D;
+  --color-text-secondary: #6E6E80;
 }
 
 .dark {
-  --color-primary: #3AB4A5;
-  --color-primary-dark: #2A9D8F;
-  --color-primary-light: #4ECDC4;
+  --color-primary: #19C37D;
+  --color-primary-dark: #10A37F;
+  --color-primary-light: #2DD695;
+  --color-surface: #343541;
+  --color-surface-secondary: #202123;
+  --color-border: #4E4F60;
+  --color-text-primary: #ECECF1;
+  --color-text-secondary: #ACACBE;
 }
 
 /* Smooth dark mode transition */
 html {
-  font-size: 18px; /* Larger base font for high-DPI screens */
+  font-size: 16px;
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 
@@ -34,7 +44,9 @@ html.no-transitions *::after {
 }
 
 body {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Söhne', 'ui-sans-serif', 'system-ui', -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Hide scrollbars but keep scroll functionality */
@@ -48,5 +60,6 @@ body {
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-family: 'Poppins', system-ui, sans-serif;
+  font-family: 'Söhne', 'ui-sans-serif', 'system-ui', -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-weight: 600;
 }

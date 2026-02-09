@@ -6,19 +6,39 @@ export default {
     extend: {
       colors: {
         primary: {
-          DEFAULT: '#2A9D8F',
-          dark: '#238578',
-          light: '#3AB4A5',
+          DEFAULT: '#10A37F',
+          dark: '#0D8A6A',
+          light: '#19C37D',
         },
-        cream: '#FDF8F3',
-        hero: {
-          dark: '#1e3a3a',
-          mid: '#2d4a4a',
+        surface: {
+          DEFAULT: '#FFFFFF',
+          secondary: '#F7F7F8',
+          dark: '#343541',
+          'dark-secondary': '#202123',
+        },
+        border: {
+          light: '#E5E5E5',
+          dark: '#4E4F60',
+        },
+        chatgpt: {
+          green: '#10A37F',
+          'green-light': '#19C37D',
+          'green-dark': '#0D8A6A',
+          'dark-bg': '#343541',
+          'dark-sidebar': '#202123',
+          'dark-hover': '#2A2B32',
+          'light-bg': '#FFFFFF',
+          'light-sidebar': '#F7F7F8',
+          'light-hover': '#ECECF1',
+          'text-primary': '#2D2D2D',
+          'text-secondary': '#6E6E80',
+          'text-dark-primary': '#ECECF1',
+          'text-dark-secondary': '#ACACBE',
         },
       },
       fontFamily: {
-        heading: ['Poppins', 'system-ui', 'sans-serif'],
-        body: ['Inter', 'system-ui', 'sans-serif'],
+        heading: ['Söhne', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+        body: ['Söhne', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
       },
       borderRadius: {
         '4xl': '2rem',

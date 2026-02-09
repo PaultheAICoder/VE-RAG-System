@@ -31,9 +31,9 @@ export function Nav() {
   );
 
   return (
-    <nav className="sticky top-[52px] z-40 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+    <nav className="sticky top-[45px] z-40 bg-[#F7F7F8] dark:bg-[#202123] border-b border-[#E5E5E5] dark:border-[#4E4F60]">
       <div className="max-w-7xl mx-auto px-4">
-        <div className="flex gap-1 overflow-x-auto hide-scrollbar">
+        <div className="flex gap-0.5 overflow-x-auto hide-scrollbar">
           {visibleItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.href;
@@ -43,15 +43,15 @@ export function Nav() {
                 key={item.href}
                 to={item.href}
                 className={`
-                  flex items-center gap-2 px-4 py-3 text-sm font-medium
-                  border-b-2 -mb-px whitespace-nowrap transition-colors
+                  flex items-center gap-2 px-4 py-2.5 text-sm font-medium
+                  border-b-2 -mb-px whitespace-nowrap transition-colors rounded-t-md
                   ${isActive
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-primary hover:border-gray-300'
+                    ? 'border-[#10A37F] text-[#10A37F] bg-white dark:bg-[#343541]'
+                    : 'border-transparent text-[#6E6E80] dark:text-[#ACACBE] hover:text-[#2D2D2D] dark:hover:text-[#ECECF1] hover:bg-[#ECECF1] dark:hover:bg-[#2A2B32]'
                   }
                 `}
               >
-                <Icon size={18} />
+                <Icon size={16} />
                 {item.label}
               </Link>
             );
