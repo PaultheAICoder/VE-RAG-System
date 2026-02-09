@@ -139,19 +139,13 @@ class Settings(BaseSettings):
 
     # Cache Warming - Core settings
     warming_delay_seconds: float = 2.0  # Delay between warming queries to reduce Ollama contention
-    warming_queue_dir: str = "data/warming_queue"  # Directory for persistent job files
-    warming_scan_interval_seconds: int = 60  # Folder watcher polling interval
-    warming_lock_timeout_minutes: int = 30  # Reclaim stale locks after N minutes
-    warming_max_file_size_mb: float = 10.0  # Max uploaded file size for CLI drops
-    warming_allowed_extensions: list[str] = [".txt", ".csv"]  # Allowed CLI file types
-    warming_archive_completed: bool = False  # Archive completed jobs for audit
-    warming_checkpoint_interval: int = 10  # Save progress every N queries
+    warming_scan_interval_seconds: int = 60  # DB polling interval for pending batches
+    warming_max_file_size_mb: float = 10.0  # Max uploaded file size for batch submissions
     warming_max_queries_per_batch: int = 10000  # Max queries per batch submission
 
     # Cache Warming - Worker settings
     warming_max_concurrent_queries: int = 2  # Max concurrent Ollama calls during warming
-    warming_checkpoint_time_seconds: int = 5  # Max seconds between checkpoints
-    warming_lease_duration_minutes: int = 10  # Job lease duration
+    warming_lease_duration_minutes: int = 10  # Batch lease duration
     warming_lease_renewal_seconds: int = 60  # Lease renewal interval
 
     # Cache Warming - Retry settings

@@ -3,6 +3,9 @@
 Processes a WarmingBatch by iterating through its WarmingQuery rows
 with idempotent claiming, lease management, retry logic, and
 pause/cancel support.
+
+Public helper functions (acquire_batch_lease, claim_next_query, etc.)
+are shared by both the ARQ task and the background WarmingWorker.
 """
 
 import asyncio
@@ -30,8 +33,19 @@ RETRYABLE_EXCEPTIONS = (
     asyncio.TimeoutError,
 )
 
+__all__ = [
+    "RETRYABLE_EXCEPTIONS",
+    "acquire_batch_lease",
+    "claim_next_query",
+    "warm_query_with_retry",
+    "cancel_batch",
+    "wait_for_resume_or_cancel",
+    "finalize_batch",
+    "process_warming_batch",
+]
 
-def _acquire_batch_lease(db: Session, batch_id: str, worker_id: str, settings: object) -> bool:
+
+def acquire_batch_lease(db: Session, batch_id: str, worker_id: str, settings: object) -> bool:
     """Attempt to acquire or re-acquire a lease on the batch.
 
     Succeeds when:
@@ -72,7 +86,7 @@ def _acquire_batch_lease(db: Session, batch_id: str, worker_id: str, settings: o
     return result.rowcount > 0
 
 
-def _claim_next_query(db: Session, batch_id: str) -> WarmingQuery | None:
+def claim_next_query(db: Session, batch_id: str) -> WarmingQuery | None:
     """Idempotently claim the next pending query in sort order.
 
     Uses SELECT then UPDATE WHERE status='pending' to handle
@@ -105,7 +119,7 @@ def _claim_next_query(db: Session, batch_id: str) -> WarmingQuery | None:
     return query_row
 
 
-async def _warm_query_with_retry(
+async def warm_query_with_retry(
     rag_service: object,
     db: Session,
     query_row: WarmingQuery,
@@ -192,7 +206,7 @@ async def _warm_query_with_retry(
     return False  # pragma: no cover
 
 
-def _cancel_batch(db: Session, batch_id: str) -> None:
+def cancel_batch(db: Session, batch_id: str) -> None:
     """Cancel a batch: skip remaining pending queries, mark batch cancelled."""
     now = datetime.utcnow()
 
@@ -209,7 +223,7 @@ def _cancel_batch(db: Session, batch_id: str) -> None:
     db.commit()
 
 
-async def _wait_for_resume_or_cancel(db: Session, batch_id: str, settings: object) -> str:
+async def wait_for_resume_or_cancel(db: Session, batch_id: str, settings: object) -> str:
     """Block while batch is paused, polling DB for state changes.
 
     Sets batch status to 'paused' on entry. Polls every 2 seconds.
@@ -247,7 +261,7 @@ async def _wait_for_resume_or_cancel(db: Session, batch_id: str, settings: objec
             return "resume"
 
 
-def _finalize_batch(db: Session, batch_id: str) -> None:
+def finalize_batch(db: Session, batch_id: str) -> None:
     """Set terminal batch status based on query outcomes.
 
     - All completed (+ skipped): "completed"
@@ -290,7 +304,7 @@ async def process_warming_batch(ctx: dict, batch_id: str) -> dict:
     logger.info(f"[ARQ] Starting batch warming for batch {batch_id} (worker {worker_id})")
 
     try:
-        if not _acquire_batch_lease(db, batch_id, worker_id, settings):
+        if not acquire_batch_lease(db, batch_id, worker_id, settings):
             logger.warning(f"[ARQ] Batch {batch_id} not available for lease acquisition")
             return {"success": False, "error": "Batch not available for processing"}
 
@@ -312,23 +326,23 @@ async def process_warming_batch(ctx: dict, batch_id: str) -> dict:
                 return {"success": False, "error": "Batch not found"}
 
             if batch.is_cancel_requested:
-                _cancel_batch(db, batch_id)
+                cancel_batch(db, batch_id)
                 cancelled = True
                 break
 
             if batch.is_paused:
-                result = await _wait_for_resume_or_cancel(db, batch_id, settings)
+                result = await wait_for_resume_or_cancel(db, batch_id, settings)
                 if result == "cancel":
-                    _cancel_batch(db, batch_id)
+                    cancel_batch(db, batch_id)
                     cancelled = True
                     break
                 continue  # Resume -- re-check state at top of loop
 
-            query_row = _claim_next_query(db, batch_id)
+            query_row = claim_next_query(db, batch_id)
             if query_row is None:
                 break  # All queries processed
 
-            success = await _warm_query_with_retry(rag_service, db, query_row, settings)
+            success = await warm_query_with_retry(rag_service, db, query_row, settings)
             if success:
                 processed += 1
             else:
@@ -339,7 +353,7 @@ async def process_warming_batch(ctx: dict, batch_id: str) -> dict:
                 await asyncio.sleep(settings.warming_delay_seconds)
 
         if not cancelled:
-            _finalize_batch(db, batch_id)
+            finalize_batch(db, batch_id)
 
         logger.info(
             f"[ARQ] Batch {batch_id} {'cancelled' if cancelled else 'completed'}: "
