@@ -17,10 +17,10 @@ export function Layout({ children }: LayoutProps) {
   useKeyboardShortcuts();
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-950">
+    <div className="min-h-screen bg-white dark:bg-[#0A0A0B]">
       <Header />
       <Nav />
-      <main className="max-w-[1600px] mx-auto px-4 py-6">
+      <main className="max-w-[1600px] mx-auto px-6 py-8">
         {children}
       </main>
 

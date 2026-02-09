@@ -31,9 +31,9 @@ export function Nav() {
   );
 
   return (
-    <nav className="sticky top-[52px] z-40 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-      <div className="max-w-7xl mx-auto px-4">
-        <div className="flex gap-1 overflow-x-auto hide-scrollbar">
+    <nav className="sticky top-14 z-40 border-b border-gray-100 dark:border-[#1E1E22] bg-white/80 dark:bg-[#0A0A0B]/80 glass">
+      <div className="max-w-7xl mx-auto px-6">
+        <div className="flex gap-0.5 overflow-x-auto hide-scrollbar">
           {visibleItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.href;
@@ -43,16 +43,19 @@ export function Nav() {
                 key={item.href}
                 to={item.href}
                 className={`
-                  flex items-center gap-2 px-4 py-3 text-sm font-medium
-                  border-b-2 -mb-px whitespace-nowrap transition-colors
+                  relative flex items-center gap-2 px-4 py-3 text-[13px] font-medium
+                  whitespace-nowrap transition-all duration-150
                   ${isActive
-                    ? 'border-primary text-primary'
-                    : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-primary hover:border-gray-300'
+                    ? 'text-primary dark:text-primary-light'
+                    : 'text-gray-500 dark:text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'
                   }
                 `}
               >
-                <Icon size={18} />
+                <Icon size={16} />
                 {item.label}
+                {isActive && (
+                  <span className="absolute bottom-0 left-4 right-4 h-[2px] bg-primary dark:bg-primary-light rounded-full" />
+                )}
               </Link>
             );
           })}
