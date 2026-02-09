@@ -31,7 +31,7 @@ from ai_ready_rag.db.models import Document
 from ai_ready_rag.middleware.request_logging import RequestLoggingMiddleware
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.workers.warming_cleanup import WarmingCleanupService
-from ai_ready_rag.workers.warming_worker import WarmingWorker, recover_stale_jobs
+from ai_ready_rag.workers.warming_worker import WarmingWorker, recover_stale_batches
 
 settings = get_settings()
 configure_logging(settings.log_level, settings.log_format)
@@ -97,10 +97,10 @@ async def lifespan(app: FastAPI):
     warming_worker = WarmingWorker(rag_service, settings)
     await warming_worker.start()
 
-    # Recover jobs with expired leases (from server crash)
-    recovered_count = await recover_stale_jobs()
+    # Recover batches with expired leases (from server crash)
+    recovered_count = await recover_stale_batches()
     if recovered_count:
-        logger.info(f"Recovered {recovered_count} warming jobs with expired leases")
+        logger.info(f"Recovered {recovered_count} warming batches with expired leases")
 
     logger.info("WarmingWorker started")
 

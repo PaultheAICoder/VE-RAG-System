@@ -1,24 +1,41 @@
 """Tests for unified Jobs API."""
 
-from ai_ready_rag.db.models import ReindexJob, WarmingQueue
+from ai_ready_rag.db.models import ReindexJob
+from ai_ready_rag.db.models.warming import WarmingBatch, WarmingQuery
 
 
 class TestJobStatusWarming:
-    """Test GET /api/jobs/{id}/status for warming jobs."""
+    """Test GET /api/jobs/{id}/status for warming batches."""
 
     def test_warming_job_status(self, client, admin_headers, db):
-        """Returns unified status for a warming queue job."""
-        job = WarmingQueue(
+        """Returns unified status for a warming batch."""
+        batch = WarmingBatch(
             id="warm-test-1",
-            file_path="/tmp/test.txt",
-            file_checksum="abc123",
             source_type="manual",
             total_queries=10,
-            processed_queries=5,
-            failed_queries=1,
             status="running",
         )
-        db.add(job)
+        db.add(batch)
+        db.flush()
+
+        # Add completed and failed queries to test count aggregation
+        for i in range(5):
+            db.add(
+                WarmingQuery(
+                    batch_id="warm-test-1",
+                    query_text=f"query {i}",
+                    sort_order=i,
+                    status="completed",
+                )
+            )
+        db.add(
+            WarmingQuery(
+                batch_id="warm-test-1",
+                query_text="failed query",
+                sort_order=5,
+                status="failed",
+            )
+        )
         db.commit()
 
         response = client.get("/api/jobs/warm-test-1/status", headers=admin_headers)
@@ -32,18 +49,34 @@ class TestJobStatusWarming:
         assert data["progress"]["failed"] == 1
 
     def test_completed_warming_has_summary(self, client, admin_headers, db):
-        """Completed warming job includes result_summary."""
-        job = WarmingQueue(
+        """Completed warming batch includes result_summary."""
+        batch = WarmingBatch(
             id="warm-done-1",
-            file_path="/tmp/done.txt",
-            file_checksum="def456",
             source_type="manual",
             total_queries=20,
-            processed_queries=18,
-            failed_queries=2,
             status="completed",
         )
-        db.add(job)
+        db.add(batch)
+        db.flush()
+
+        for i in range(18):
+            db.add(
+                WarmingQuery(
+                    batch_id="warm-done-1",
+                    query_text=f"query {i}",
+                    sort_order=i,
+                    status="completed",
+                )
+            )
+        for i in range(2):
+            db.add(
+                WarmingQuery(
+                    batch_id="warm-done-1",
+                    query_text=f"failed {i}",
+                    sort_order=18 + i,
+                    status="failed",
+                )
+            )
         db.commit()
 
         response = client.get("/api/jobs/warm-done-1/status", headers=admin_headers)
@@ -112,17 +145,15 @@ class TestJobStatusNotFound:
 class TestJobCancel:
     """Test POST /api/jobs/{id}/cancel."""
 
-    def test_cancel_warming_job(self, client, admin_headers, db):
-        """Cancel sets is_cancel_requested on warming job."""
-        job = WarmingQueue(
+    def test_cancel_warming_batch(self, client, admin_headers, db):
+        """Cancel sets is_cancel_requested on warming batch."""
+        batch = WarmingBatch(
             id="warm-cancel-1",
-            file_path="/tmp/cancel.txt",
-            file_checksum="ghi789",
             source_type="manual",
             total_queries=5,
             status="running",
         )
-        db.add(job)
+        db.add(batch)
         db.commit()
 
         response = client.post("/api/jobs/warm-cancel-1/cancel", headers=admin_headers)
@@ -132,8 +163,8 @@ class TestJobCancel:
         assert data["job_id"] == "warm-cancel-1"
 
         # Verify flag was set
-        db.refresh(job)
-        assert job.is_cancel_requested is True
+        db.refresh(batch)
+        assert batch.is_cancel_requested is True
 
     def test_cancel_reindex_job(self, client, admin_headers, db):
         """Cancel sets status to aborted on reindex job."""
@@ -154,18 +185,15 @@ class TestJobCancel:
         db.refresh(job)
         assert job.status == "aborted"
 
-    def test_cancel_completed_job_returns_false(self, client, admin_headers, db):
-        """Cannot cancel an already completed job."""
-        job = WarmingQueue(
+    def test_cancel_completed_batch_returns_false(self, client, admin_headers, db):
+        """Cannot cancel an already completed batch."""
+        batch = WarmingBatch(
             id="warm-completed-1",
-            file_path="/tmp/done.txt",
-            file_checksum="jkl012",
             source_type="manual",
             total_queries=5,
-            processed_queries=5,
             status="completed",
         )
-        db.add(job)
+        db.add(batch)
         db.commit()
 
         response = client.post("/api/jobs/warm-completed-1/cancel", headers=admin_headers)
