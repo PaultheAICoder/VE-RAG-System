@@ -110,7 +110,7 @@ class WarmingSSEEvent(TimestampMixin, Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    event_id = Column(String, unique=True, nullable=False)  # UUID for client tracking
+    event_id = Column(String, nullable=False)  # str(batch_seq) for job-scoped, UUID for global
     event_type = Column(String, nullable=False)  # 'progress', 'job_started', etc.
     job_id = Column(String, nullable=True)  # Nullable for heartbeats
     batch_seq = Column(Integer, nullable=True)  # Per-batch monotonic sequence for replay

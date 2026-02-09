@@ -3273,7 +3273,10 @@ async def get_warming_status_legacy(job_id: str):
 
 
 def _format_sse_event(event_type: str, data: dict, event_id: str | None = None) -> str:
-    """Format SSE event with event_id for client tracking."""
+    """Format SSE event with event_id for client tracking.
+
+    event_id is now str(batch_seq) for job-scoped events (monotonic integer).
+    """
     if event_id is None:
         event_id = str(uuid.uuid4())
     data["event_id"] = event_id
@@ -3283,7 +3286,11 @@ def _format_sse_event(event_type: str, data: dict, event_id: str | None = None) 
 async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
     """Generate SSE events for warming batch progress using DB polling.
 
-    Supports replay via last_event_id and emits heartbeats every 30 seconds.
+    Uses batch_seq-based event IDs for replay. Emits spec-compliant event types:
+    connected, progress, paused, complete, error, heartbeat.
+
+    Pause does NOT break the SSE connection -- emits 'paused' once and continues polling.
+    Poll interval: 1.0 seconds per spec.
     """
     from ai_ready_rag.db.database import SessionLocal
     from ai_ready_rag.services.sse_buffer_service import (
@@ -3301,24 +3308,24 @@ async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
         db.close()
 
     if not batch:
-        event_id = str(uuid.uuid4())
-        yield _format_sse_event("error", {"error": "Batch not found"}, event_id)
+        yield _format_sse_event("error", {"error": "Batch not found"}, str(uuid.uuid4()))
         return
 
     logger.info(f"[SSE] Started streaming for batch {job_id}, status={batch.status}")
 
-    connected_event_id = str(uuid.uuid4())
+    # Emit connected event with batch_seq-based event_id
     connected_data = {
         "worker_id": f"sse-{uuid.uuid4().hex[:8]}",
         "timestamp": datetime.now(UTC).isoformat(),
     }
     db = SessionLocal()
     try:
-        store_sse_event(db, "connected", job_id, connected_data)
+        connected_event_id = store_sse_event(db, "connected", job_id, connected_data)
     finally:
         db.close()
     yield _format_sse_event("connected", connected_data, connected_event_id)
 
+    # Replay missed events using batch_seq-based replay
     if last_event_id:
         db = SessionLocal()
         try:
@@ -3336,6 +3343,7 @@ async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
     last_completed = -1
     last_heartbeat_time = asyncio.get_event_loop().time()
     heartbeat_interval = settings.sse_heartbeat_seconds
+    paused_emitted = False  # Track pause transition to emit only once
 
     while True:
         db = SessionLocal()
@@ -3346,88 +3354,97 @@ async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
                 yield _format_sse_event("error", {"error": "Batch disappeared"}, str(uuid.uuid4()))
                 break
 
-            # Aggregate counts from warming_queries
+            # Aggregate counts from warming_queries including skipped
             counts = (
                 db.query(
                     func.count(case((WarmingQuery.status == "completed", 1))).label("completed"),
                     func.count(case((WarmingQuery.status == "failed", 1))).label("failed"),
+                    func.count(case((WarmingQuery.status == "skipped", 1))).label("skipped"),
                 )
                 .filter(WarmingQuery.batch_id == job_id)
                 .first()
             )
             completed_count = counts.completed if counts else 0
             failed_count = counts.failed if counts else 0
-            processed = completed_count + failed_count
+            skipped_count = counts.skipped if counts else 0
+            processed = completed_count + failed_count + skipped_count
             batch_status = batch.status
+            total_queries = batch.total_queries
         finally:
             db.close()
 
+        # Heartbeat check
         current_time = asyncio.get_event_loop().time()
         if current_time - last_heartbeat_time >= heartbeat_interval:
             heartbeat_data = {"timestamp": datetime.now(UTC).isoformat()}
             db = SessionLocal()
             try:
-                store_sse_event(db, "heartbeat", job_id, heartbeat_data)
+                hb_event_id = store_sse_event(db, "heartbeat", job_id, heartbeat_data)
             finally:
                 db.close()
-            yield _format_sse_event("heartbeat", heartbeat_data, str(uuid.uuid4()))
+            yield _format_sse_event("heartbeat", heartbeat_data, hb_event_id)
             last_heartbeat_time = current_time
 
+        # Progress event when counts change
         if processed != last_completed:
             last_completed = processed
-            percent = int(processed / batch.total_queries * 100) if batch.total_queries > 0 else 0
+            percent = int(processed / total_queries * 100) if total_queries > 0 else 0
             progress_data = {
                 "batch_id": job_id,
                 "processed": processed,
                 "failed": failed_count,
-                "total": batch.total_queries,
+                "skipped": skipped_count,
+                "total": total_queries,
                 "percent": percent,
+                "batch_status": batch_status,
             }
             db = SessionLocal()
             try:
-                store_sse_event(db, "progress", job_id, progress_data)
+                progress_event_id = store_sse_event(db, "progress", job_id, progress_data)
             finally:
                 db.close()
-            yield _format_sse_event("progress", progress_data, str(uuid.uuid4()))
+            yield _format_sse_event("progress", progress_data, progress_event_id)
 
+        # Terminal states: emit "complete" (not "job_completed"/"job_cancelled")
         terminal = {"completed", "completed_with_errors", "cancelled"}
         if batch_status in terminal:
             final_data = {
                 "batch_id": job_id,
                 "processed": processed,
                 "failed": failed_count,
-                "total": batch.total_queries,
+                "skipped": skipped_count,
+                "total": total_queries,
                 "status": batch_status,
             }
-            event_name = (
-                f"job_{batch_status}"
-                if batch_status != "completed_with_errors"
-                else "job_completed"
-            )
             db = SessionLocal()
             try:
-                store_sse_event(db, event_name, job_id, final_data)
+                complete_event_id = store_sse_event(db, "complete", job_id, final_data)
                 prune_old_events(db)
             finally:
                 db.close()
-            yield _format_sse_event(event_name, final_data, str(uuid.uuid4()))
+            yield _format_sse_event("complete", final_data, complete_event_id)
             break
 
-        if batch_status == "paused":
+        # Paused state: emit "paused" ONCE per pause transition, continue polling
+        if batch_status == "paused" and not paused_emitted:
+            paused_emitted = True
             paused_data = {
                 "batch_id": job_id,
                 "processed": processed,
-                "total": batch.total_queries,
+                "failed": failed_count,
+                "skipped": skipped_count,
+                "total": total_queries,
             }
             db = SessionLocal()
             try:
-                store_sse_event(db, "job_paused", job_id, paused_data)
+                paused_event_id = store_sse_event(db, "paused", job_id, paused_data)
             finally:
                 db.close()
-            yield _format_sse_event("job_paused", paused_data, str(uuid.uuid4()))
-            break
+            yield _format_sse_event("paused", paused_data, paused_event_id)
+        elif batch_status != "paused":
+            paused_emitted = False  # Reset when unpaused
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.0)
 
 
 # =============================================================================
