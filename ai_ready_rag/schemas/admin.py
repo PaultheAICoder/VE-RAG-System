@@ -568,23 +568,24 @@ class WarmingJobListResponse(BaseModel):
 
 
 class WarmingQueueJobResponse(BaseModel):
-    """Response model for a DB-based warming queue job."""
+    """Response model for a DB-based warming batch."""
 
     id: str
-    file_path: str
     source_type: str
     original_filename: str | None = None
     total_queries: int
-    processed_queries: int
-    failed_queries: int
+    completed_queries: int = 0
+    failed_queries: int = 0
+    pending_queries: int = 0
     status: str
     is_paused: bool
     is_cancel_requested: bool
     created_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
-    created_by: str | None = None
+    submitted_by: str | None = None
     error_message: str | None = None
+    worker_id: str | None = None
 
 
 class WarmingQueueListResponse(BaseModel):
@@ -604,6 +605,36 @@ class BulkDeleteRequest(BaseModel):
     """Request to bulk delete warming jobs."""
 
     job_ids: list[str]
+
+
+class WarmingQueryResponse(BaseModel):
+    """Response model for a single warming query within a batch."""
+
+    id: str
+    query_text: str
+    status: str
+    error_message: str | None = None
+    error_type: str | None = None
+    retry_count: int
+    sort_order: int
+    processed_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+class BatchQueriesResponse(BaseModel):
+    """Response model for listing queries within a batch."""
+
+    queries: list[WarmingQueryResponse]
+    total_count: int
+    batch_id: str
+
+
+class QueryRetryResponse(BaseModel):
+    """Response model for query retry operations."""
+
+    batch_id: str
+    retried_count: int
+    message: str
 
 
 # =============================================================================

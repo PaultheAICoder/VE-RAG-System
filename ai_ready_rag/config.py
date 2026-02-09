@@ -146,6 +146,7 @@ class Settings(BaseSettings):
     warming_allowed_extensions: list[str] = [".txt", ".csv"]  # Allowed CLI file types
     warming_archive_completed: bool = False  # Archive completed jobs for audit
     warming_checkpoint_interval: int = 10  # Save progress every N queries
+    warming_max_queries_per_batch: int = 10000  # Max queries per batch submission
 
     # Cache Warming - Worker settings
     warming_max_concurrent_queries: int = 2  # Max concurrent Ollama calls during warming
