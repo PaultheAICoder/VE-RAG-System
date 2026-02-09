@@ -139,18 +139,18 @@ class TestWorkerSettingsRegistration:
 
         assert reindex_knowledge_base in WorkerSettings.functions
 
-    def test_worker_settings_has_three_tasks(self):
-        """WorkerSettings.functions has all 3 registered tasks."""
+    def test_worker_settings_has_all_tasks(self):
+        """WorkerSettings.functions has all 4 registered tasks."""
         from ai_ready_rag.workers.settings import WorkerSettings
 
-        assert len(WorkerSettings.functions) == 3
+        assert len(WorkerSettings.functions) == 4
 
     def test_get_worker_settings_includes_new_tasks(self):
-        """get_worker_settings() returns all 3 tasks."""
+        """get_worker_settings() returns all 4 tasks."""
         from ai_ready_rag.workers.settings import get_worker_settings
 
         config = get_worker_settings()
-        assert len(config["functions"]) == 3
+        assert len(config["functions"]) == 4
 
 
 class TestAdminReindexARQEnqueue:
