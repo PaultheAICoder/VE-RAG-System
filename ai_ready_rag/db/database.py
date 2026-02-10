@@ -58,6 +58,14 @@ def init_db():
     except Exception as e:
         logger.warning(f"Migration cleanup skipped: {e}")
 
+    # Migration: add batch_seq column to warming_sse_events (#214)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE warming_sse_events ADD COLUMN batch_seq INTEGER"))
+            conn.commit()
+    except Exception:
+        pass  # Column already exists
+
     # Migration: add unique constraint on warming_sse_events(job_id, batch_seq) (#214)
     try:
         with engine.connect() as conn:
