@@ -215,14 +215,14 @@ async def warm_query_with_retry(
 
 
 def cancel_batch(db: Session, batch_id: str) -> None:
-    """Cancel a batch: skip remaining pending/processing queries, mark batch cancelled."""
+    """Cancel a batch: skip remaining non-terminal queries, mark batch cancelled."""
     now = datetime.utcnow()
 
     db.execute(
         update(WarmingQuery)
         .where(
             WarmingQuery.batch_id == batch_id,
-            WarmingQuery.status.in_(["pending", "processing"]),
+            WarmingQuery.status.in_(["pending", "processing", "cancelling"]),
         )
         .values(status="skipped", updated_at=now)
     )
@@ -372,6 +372,26 @@ async def process_warming_batch(ctx: dict, batch_id: str) -> dict:
                 break  # All queries processed
 
             success = await warm_query_with_retry(rag_service, db, query_row, settings)
+
+            # Check cancel after LLM call — discard result if cancelled
+            db.expire_all()
+            batch_check = db.query(WarmingBatch).filter(WarmingBatch.id == batch_id).first()
+            if batch_check and batch_check.is_cancel_requested:
+                # Overwrite result — mark as skipped since cancel was requested
+                now = datetime.utcnow()
+                db.execute(
+                    update(WarmingQuery)
+                    .where(
+                        WarmingQuery.id == query_row.id,
+                        WarmingQuery.status.notin_(["skipped"]),
+                    )
+                    .values(status="skipped", updated_at=now)
+                )
+                db.commit()
+                cancel_batch(db, batch_id)
+                cancelled = True
+                break
+
             if success:
                 processed += 1
             else:

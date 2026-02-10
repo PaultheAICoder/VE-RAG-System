@@ -504,6 +504,36 @@ class TestPauseCancel:
         for q in remaining:
             assert q.status == "skipped"
 
+    def test_cancel_skips_cancelling_queries(self, db, batch_with_queries):
+        """cancel_batch skips queries in 'cancelling' state (in-flight LLM call)."""
+        queries = (
+            db.query(WarmingQuery)
+            .filter(WarmingQuery.batch_id == batch_with_queries.id)
+            .order_by(WarmingQuery.sort_order)
+            .all()
+        )
+        queries[0].status = "completed"
+        queries[1].status = "cancelling"  # in-flight query marked by cancel API
+        db.flush()
+
+        cancel_batch(db, batch_with_queries.id)
+
+        db.refresh(queries[0])
+        db.refresh(queries[1])
+        assert queries[0].status == "completed"
+        assert queries[1].status == "skipped"
+
+        # Remaining pending queries also skipped
+        remaining = (
+            db.query(WarmingQuery)
+            .filter(
+                WarmingQuery.batch_id == batch_with_queries.id,
+                WarmingQuery.status == "pending",
+            )
+            .count()
+        )
+        assert remaining == 0
+
     def test_cancel_preserves_completed_queries(self, db, batch_with_queries):
         """#25: Already-completed queries keep status after cancel."""
         queries = (

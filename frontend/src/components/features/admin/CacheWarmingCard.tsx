@@ -63,6 +63,7 @@ const QUERY_STATUS_CONFIG: Record<
 > = {
   pending: { label: 'Pending', variant: 'default', icon: <Clock size={14} /> },
   processing: { label: 'Processing', variant: 'primary', icon: <Loader2 size={14} className="animate-spin" /> },
+  cancelling: { label: 'Cancelling', variant: 'warning', icon: <Loader2 size={14} className="animate-spin" /> },
   completed: { label: 'Completed', variant: 'success', icon: <CheckCircle size={14} /> },
   failed: { label: 'Failed', variant: 'danger', icon: <XCircle size={14} /> },
   skipped: { label: 'Skipped', variant: 'default', icon: <StopCircle size={14} /> },

@@ -23,7 +23,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
-from sqlalchemy import case, func
+from sqlalchemy import case, func, update
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
@@ -2944,8 +2944,22 @@ async def cancel_current_warming_job(
         logger.info(f"Admin {current_user.email} cancelled warming batch {batch.id} (immediate)")
         return {"batch_id": batch.id, "is_cancel_requested": True, "status": "cancelled"}
 
-    # Active queries remain — set flag for worker to detect
+    # Active queries remain — set flag for worker and immediately update query statuses
     batch.is_cancel_requested = True
+
+    # Immediately skip pending queries so UI reflects cancel right away
+    now = datetime.utcnow()
+    db.execute(
+        update(WarmingQuery)
+        .where(WarmingQuery.batch_id == batch.id, WarmingQuery.status == "pending")
+        .values(status="skipped", updated_at=now)
+    )
+    # Mark in-flight query as "cancelling" for accurate UI feedback
+    db.execute(
+        update(WarmingQuery)
+        .where(WarmingQuery.batch_id == batch.id, WarmingQuery.status == "processing")
+        .values(status="cancelling", updated_at=now)
+    )
     db.commit()
 
     store_sse_event(
