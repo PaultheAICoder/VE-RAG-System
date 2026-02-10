@@ -139,7 +139,7 @@ class Settings(BaseSettings):
 
     # Cache Warming - Core settings
     warming_delay_seconds: float = 2.0  # Delay between warming queries to reduce Ollama contention
-    warming_scan_interval_seconds: int = 60  # DB polling interval for pending batches
+    warming_scan_interval_seconds: int = 5  # DB polling interval for pending batches
     warming_max_file_size_mb: float = 10.0  # Max uploaded file size for batch submissions
     warming_max_queries_per_batch: int = 10000  # Max queries per batch submission
 
