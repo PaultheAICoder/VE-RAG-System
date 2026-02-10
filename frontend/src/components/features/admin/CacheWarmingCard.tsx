@@ -7,7 +7,6 @@ import {
   FileText,
   RotateCcw,
   X,
-  RefreshCw,
   Pause,
   Play,
   Trash2,
@@ -800,15 +799,6 @@ export function CacheWarmingCard({
                 Delete ({selectedJobIds.size})
               </Button>
             )}
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={RefreshCw}
-              onClick={fetchQueue}
-              disabled={queueLoading}
-            >
-              {queueLoading ? 'Refreshing...' : 'Refresh'}
-            </Button>
           </div>
         </div>
 

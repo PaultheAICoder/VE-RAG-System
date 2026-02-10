@@ -140,6 +140,12 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
           status: 'idle',
           queriesCount: 0,
           error: null,
+          activeJobId: null,
+          processed: 0,
+          total: 0,
+          results: [],
+          failedQueries: [],
+          estimatedTimeRemaining: null,
         }),
 
       // File upload actions
