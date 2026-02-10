@@ -283,12 +283,36 @@ async def recover_stale_batches() -> int:
 
     This should be called on server startup.
 
+    Batches with is_cancel_requested=True are cancelled (not re-queued).
+
     Returns:
         Number of batches recovered.
     """
     db = SessionLocal()
     try:
         now = datetime.utcnow()
+
+        # Cancel stale batches that had cancellation requested
+        cancelled_count = (
+            db.query(WarmingBatch)
+            .filter(
+                WarmingBatch.status.in_(["running", "paused"]),
+                WarmingBatch.worker_lease_expires_at < now,
+                WarmingBatch.is_cancel_requested.is_(True),
+            )
+            .update(
+                {
+                    "status": "cancelled",
+                    "completed_at": now,
+                    "worker_id": None,
+                    "worker_lease_expires_at": None,
+                }
+            )
+        )
+        if cancelled_count:
+            logger.info(f"Cancelled {cancelled_count} stale batches with pending cancel request")
+
+        # Re-queue remaining stale batches (no cancel requested)
         count = (
             db.query(WarmingBatch)
             .filter(
@@ -322,6 +346,6 @@ async def recover_stale_batches() -> int:
         db.commit()
         if count:
             logger.info(f"Recovered {count} warming batches with expired leases")
-        return count
+        return count + cancelled_count
     finally:
         db.close()

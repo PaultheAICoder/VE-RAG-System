@@ -2920,6 +2920,31 @@ async def cancel_current_warming_job(
             detail="No running or paused batch to cancel.",
         )
 
+    # Check if any queries are still actively being processed
+    active_count = (
+        db.query(WarmingQuery)
+        .filter(
+            WarmingQuery.batch_id == batch.id,
+            WarmingQuery.status.in_(["pending", "processing"]),
+        )
+        .count()
+    )
+
+    if active_count == 0:
+        # No active queries — cancel immediately (worker already exited loop)
+        from ai_ready_rag.workers.tasks.warming_batch import cancel_batch
+
+        cancel_batch(db, batch.id)
+        store_sse_event(
+            db,
+            "cancel_requested",
+            batch.id,
+            {"batch_id": batch.id, "status": "cancelled"},
+        )
+        logger.info(f"Admin {current_user.email} cancelled warming batch {batch.id} (immediate)")
+        return {"batch_id": batch.id, "is_cancel_requested": True, "status": "cancelled"}
+
+    # Active queries remain — set flag for worker to detect
     batch.is_cancel_requested = True
     db.commit()
 
