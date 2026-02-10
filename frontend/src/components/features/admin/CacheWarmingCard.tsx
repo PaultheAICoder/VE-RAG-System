@@ -467,6 +467,7 @@ export function CacheWarmingCard({
       const response = await warmCacheFromFile(uploadedFile);
       startFileJob(response.id, response.total_queries);
       connectToSSE(response.id);
+      setUploadedFile(null); // Clear file from upload box
       await fetchQueue(); // Refresh queue to show new batch
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start warming';
@@ -641,30 +642,7 @@ export function CacheWarmingCard({
         </div>
       )}
 
-      {/* Progress Display */}
-      {isWarming && activeJobId && (
-        <div className="mb-4 p-4 rounded-lg bg-amber-50 dark:bg-amber-900/20">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium text-amber-700 dark:text-amber-400">
-              Warming Progress
-            </span>
-            <span className="text-sm text-amber-600 dark:text-amber-500">
-              {processed}/{total} queries
-            </span>
-          </div>
-          <div className="w-full bg-amber-200 dark:bg-amber-800 rounded-full h-2 mb-2">
-            <div
-              className="bg-amber-500 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${total > 0 ? (processed / total) * 100 : 0}%` }}
-            />
-          </div>
-          {estimatedTimeRemaining !== null && (
-            <p className="text-xs text-amber-600 dark:text-amber-500">
-              {formatTimeRemaining(estimatedTimeRemaining)}
-            </p>
-          )}
-        </div>
-      )}
+      {/* Progress display removed — queue row is the primary indicator */}
 
       {/* Failed Queries */}
       {failedQueries.length > 0 && status === 'completed' && (
