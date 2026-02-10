@@ -150,6 +150,45 @@ class TestRecoverStaleBatches:
 
         assert count == 0
 
+    @pytest.mark.asyncio
+    async def test_recover_resets_orphaned_processing_queries(self, db):
+        """Orphaned processing queries are reset to pending."""
+        from ai_ready_rag.db.models.warming import WarmingBatch, WarmingQuery
+
+        batch = WarmingBatch(
+            source_type="manual",
+            total_queries=3,
+            status="running",
+            worker_id="dead-worker",
+            worker_lease_expires_at=datetime.utcnow() - timedelta(hours=1),
+        )
+        db.add(batch)
+        db.flush()
+
+        # One completed, one stuck processing, one pending
+        q1 = WarmingQuery(batch_id=batch.id, query_text="Q1", sort_order=0, status="completed")
+        q2 = WarmingQuery(batch_id=batch.id, query_text="Q2", sort_order=1, status="processing")
+        q3 = WarmingQuery(batch_id=batch.id, query_text="Q3", sort_order=2, status="pending")
+        db.add_all([q1, q2, q3])
+        db.commit()
+
+        q2_id = q2.id
+        q1_id = q1.id
+
+        with patch("ai_ready_rag.workers.warming_worker.SessionLocal", return_value=db):
+            count = await recover_stale_batches()
+
+        assert count == 1  # 1 batch recovered
+
+        # processing query should now be pending
+        db.expire_all()
+        q2_updated = db.query(WarmingQuery).filter(WarmingQuery.id == q2_id).first()
+        assert q2_updated.status == "pending"
+
+        # completed query should be unchanged
+        q1_updated = db.query(WarmingQuery).filter(WarmingQuery.id == q1_id).first()
+        assert q1_updated.status == "completed"
+
 
 class TestFindPendingBatch:
     """Test batch discovery."""
