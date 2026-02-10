@@ -140,7 +140,7 @@ async def warm_query_with_retry(
         try:
             request = RAGRequest(
                 query=query_row.query_text,
-                user_tags=[],  # Admin context -- cached without tag restriction
+                user_tags=None,  # None = no tag filtering (admin/warming bypass)
                 tenant_id="default",
                 is_warming=True,
             )
