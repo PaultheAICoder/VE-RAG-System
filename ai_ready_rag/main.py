@@ -26,8 +26,9 @@ from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.error_handlers import register_error_handlers
 from ai_ready_rag.core.logging import configure_logging
 from ai_ready_rag.core.redis import close_redis_pool, get_redis_pool
+from ai_ready_rag.core.security import hash_password
 from ai_ready_rag.db.database import SessionLocal, init_db
-from ai_ready_rag.db.models import Document
+from ai_ready_rag.db.models import Document, SystemSetup, User
 from ai_ready_rag.middleware.request_logging import RequestLoggingMiddleware
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.workers.warming_cleanup import WarmingCleanupService
@@ -36,6 +37,46 @@ from ai_ready_rag.workers.warming_worker import WarmingWorker, recover_stale_bat
 settings = get_settings()
 configure_logging(settings.log_level, settings.log_format)
 logger = logging.getLogger(__name__)
+
+
+def seed_admin_user() -> None:
+    """Seed admin user from config if no admin exists. Idempotent."""
+    db = SessionLocal()
+    try:
+        # Check if any admin user exists
+        existing_admin = db.query(User).filter(User.role == "admin").first()
+        if existing_admin:
+            logger.debug("Admin user already exists: %s", existing_admin.email)
+            return
+
+        # Create admin from config/env vars
+        admin_user = User(
+            email=settings.admin_email,
+            display_name=settings.admin_display_name,
+            password_hash=hash_password(settings.admin_password),
+            role="admin",
+            is_active=True,
+            must_reset_password=True,
+        )
+        db.add(admin_user)
+
+        # Ensure SystemSetup record exists with password_changed=False
+        existing_setup = db.query(SystemSetup).first()
+        if not existing_setup:
+            setup_record = SystemSetup(
+                setup_complete=False,
+                admin_password_changed=False,
+            )
+            db.add(setup_record)
+
+        db.commit()
+        logger.info("Auto-created admin user: %s", admin_user.email)
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to seed admin user")
+        raise
+    finally:
+        db.close()
 
 
 @asynccontextmanager
@@ -61,6 +102,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
 
     init_db()
+    seed_admin_user()
 
     # Initialize VectorService once (expensive — singleton for app lifetime)
     vector_service = get_vector_service(settings)
