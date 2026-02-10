@@ -140,7 +140,6 @@ export function CacheWarmingCard({
     failedQueries,
     estimatedTimeRemaining,
     startWarming,
-    completeWarming,
     setError,
     reset,
     startFileJob,
