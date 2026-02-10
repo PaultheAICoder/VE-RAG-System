@@ -229,7 +229,7 @@ export async function cancelWarmingJob(): Promise<WarmingJob> {
  */
 export async function bulkDeleteWarmingJobs(jobIds: string[]): Promise<{ deleted_count: number }> {
   return apiClient.delete<{ deleted_count: number }>('/api/admin/warming/queue/bulk', {
-    body: JSON.stringify({ job_ids: jobIds }),
+    job_ids: jobIds,
   });
 }
 

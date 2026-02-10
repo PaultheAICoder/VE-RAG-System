@@ -420,8 +420,9 @@ export function CacheWarmingCard({
 
     try {
       await onWarm(queries);
-      completeWarming();
+      reset(); // Return to idle — queue row shows real-time status
       setQueryText('');
+      await fetchQueue(); // Refresh queue to show new batch
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Warming failed';
       setError(message.includes('503') ? 'Redis unavailable -- please retry' : message);
@@ -458,6 +459,7 @@ export function CacheWarmingCard({
       const response = await warmCacheFromFile(uploadedFile);
       startFileJob(response.id, response.total_queries);
       connectToSSE(response.id);
+      await fetchQueue(); // Refresh queue to show new batch
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start warming';
       setFileError(message.includes('503') ? 'Redis unavailable -- please retry' : message);
@@ -600,18 +602,18 @@ export function CacheWarmingCard({
         </button>
       </div>
 
-      {/* Status Messages */}
-      {status === 'completed' && !isWarming && (
-        <div className="flex items-center gap-2 p-3 mb-4 rounded-lg bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400">
-          <CheckCircle size={18} />
+      {/* Status Messages — only shown for faults (queue row is the primary indicator) */}
+      {status === 'completed' && !isWarming && failedQueries.length > 0 && (
+        <div className="flex items-center gap-2 p-3 mb-4 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400">
+          <AlertTriangle size={18} />
           <span className="text-sm flex-1">
-            Warming complete: {total > 0 ? `${total - failedQueries.length}/${total}` : `${queriesCount}/${queriesCount}`} queries succeeded
+            Warming completed with issues: {total > 0 ? `${total - failedQueries.length}/${total}` : `${queriesCount}/${queriesCount}`} queries succeeded
             {lastWarmingTime && ` at ${formatLastWarmingTime(lastWarmingTime)}`}
-            {failedQueries.length > 0 && ` (${failedQueries.length} failed)`}
+            {` (${failedQueries.length} failed)`}
           </span>
           <button
             onClick={handleReset}
-            className="text-xs text-green-600 dark:text-green-400 hover:underline"
+            className="text-xs text-amber-600 dark:text-amber-400 hover:underline"
           >
             Dismiss
           </button>
