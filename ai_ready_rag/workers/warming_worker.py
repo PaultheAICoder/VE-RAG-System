@@ -202,6 +202,26 @@ class WarmingWorker:
                 success = await warm_query_with_retry(
                     self.rag_service, db, query_row, self.settings
                 )
+
+                # Check cancel after LLM call — discard result if cancelled
+                db.expire_all()
+                batch_check = db.query(WarmingBatch).filter(WarmingBatch.id == batch_id).first()
+                if batch_check and batch_check.is_cancel_requested:
+                    now = datetime.utcnow()
+                    db.execute(
+                        update(WarmingQuery)
+                        .where(
+                            WarmingQuery.id == query_row.id,
+                            WarmingQuery.status.notin_(["skipped"]),
+                        )
+                        .values(status="skipped", updated_at=now)
+                    )
+                    db.commit()
+                    cancel_batch(db, batch_id)
+                    cancelled = True
+                    logger.info(f"[WARM] Batch {batch_id} cancelled after LLM call")
+                    return
+
                 if success:
                     processed += 1
                     logger.debug(f"[WARM] Query {query_row.sort_order} completed")

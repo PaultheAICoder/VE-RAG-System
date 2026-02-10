@@ -1043,7 +1043,10 @@ export function CacheWarmingCard({
                                 </thead>
                                 <tbody>
                                   {expandedBatchQueries[job.id].map((query) => {
-                                    const qStatus = QUERY_STATUS_CONFIG[query.status];
+                                    // Normalize stale "cancelling" to "skipped" once batch is terminal
+                                    const effectiveStatus = (query.status === 'cancelling' && ['cancelled', 'completed', 'completed_with_errors'].includes(job.status))
+                                      ? 'skipped' : query.status;
+                                    const qStatus = QUERY_STATUS_CONFIG[effectiveStatus];
                                     return (
                                       <tr key={query.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
                                         <td className="py-1.5 px-2 text-gray-900 dark:text-white max-w-xs truncate" title={query.query_text}>
