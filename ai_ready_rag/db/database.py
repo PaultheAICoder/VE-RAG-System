@@ -58,6 +58,19 @@ def init_db():
     except Exception as e:
         logger.warning(f"Migration cleanup skipped: {e}")
 
+    # Migration: add unique constraint on warming_sse_events(job_id, batch_seq) (#214)
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_sse_events_job_batch_seq ON warming_sse_events(job_id, batch_seq)"
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"SSE unique index migration skipped: {e}")
+
     logger.info("database_initialized", extra={"database_url": settings.database_url})
 
 

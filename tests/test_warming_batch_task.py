@@ -402,7 +402,7 @@ class TestRetryPolicy:
         assert result is True
         db.refresh(query_row)
         assert query_row.status == "completed"
-        assert query_row.retry_count == 2
+        assert query_row.retry_count == 1
 
     @pytest.mark.asyncio
     async def test_max_retries_exhausted_fails(self, db, batch_with_queries, mock_settings):
@@ -421,7 +421,7 @@ class TestRetryPolicy:
         assert result is False
         db.refresh(query_row)
         assert query_row.status == "failed"
-        assert query_row.retry_count == 4  # 1 initial + 3 retries
+        assert query_row.retry_count == 3  # 3 retries (attempt index 3)
 
     @pytest.mark.asyncio
     async def test_non_retryable_error_fails_immediately(
@@ -437,7 +437,7 @@ class TestRetryPolicy:
         assert result is False
         db.refresh(query_row)
         assert query_row.status == "failed"
-        assert query_row.retry_count == 1
+        assert query_row.retry_count == 0  # 0 retries (failed on first attempt)
 
     @pytest.mark.asyncio
     async def test_error_message_truncated(self, db, batch_with_queries, mock_settings):

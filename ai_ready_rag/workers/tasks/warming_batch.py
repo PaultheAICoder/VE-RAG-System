@@ -152,7 +152,7 @@ async def warm_query_with_retry(
                 .where(WarmingQuery.id == query_row.id)
                 .values(
                     status="completed",
-                    retry_count=attempt + 1,
+                    retry_count=attempt,
                     processed_at=now(),
                     updated_at=now(),
                 )
@@ -178,7 +178,7 @@ async def warm_query_with_retry(
                         status="failed",
                         error_message=error_msg,
                         error_type=type(exc).__name__,
-                        retry_count=attempt + 1,
+                        retry_count=attempt,
                         processed_at=now(),
                         updated_at=now(),
                     )
@@ -195,7 +195,7 @@ async def warm_query_with_retry(
                     status="failed",
                     error_message=error_msg,
                     error_type=type(exc).__name__,
-                    retry_count=attempt + 1,
+                    retry_count=attempt,
                     processed_at=now(),
                     updated_at=now(),
                 )

@@ -3357,6 +3357,7 @@ async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
             progress_data = {
                 "batch_id": job_id,
                 "processed": processed,
+                "completed": completed_count,
                 "failed": failed_count,
                 "skipped": skipped_count,
                 "total": total_queries,
