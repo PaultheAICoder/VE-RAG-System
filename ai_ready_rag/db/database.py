@@ -58,26 +58,45 @@ def init_db():
     except Exception as e:
         logger.warning(f"Migration cleanup skipped: {e}")
 
-    # Migration: add batch_seq column to warming_sse_events (#214)
+    # Migration: recreate warming_sse_events without stale UNIQUE(event_id) (#214)
+    # The original table had UNIQUE(event_id) which conflicts with batch_seq-based
+    # event_ids (e.g., "1" collides across jobs). Recreate without that constraint.
     try:
         with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE warming_sse_events ADD COLUMN batch_seq INTEGER"))
-            conn.commit()
-    except Exception:
-        pass  # Column already exists
-
-    # Migration: add unique constraint on warming_sse_events(job_id, batch_seq) (#214)
-    try:
-        with engine.connect() as conn:
-            conn.execute(
+            has_stale_unique = conn.execute(
                 text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS "
-                    "uq_sse_events_job_batch_seq ON warming_sse_events(job_id, batch_seq)"
+                    "SELECT 1 FROM sqlite_master WHERE name='sqlite_autoindex_warming_sse_events_1'"
                 )
-            )
-            conn.commit()
+            ).fetchone()
+            if has_stale_unique:
+                conn.execute(text("DROP TABLE IF EXISTS warming_sse_events"))
+                conn.execute(
+                    text(
+                        "CREATE TABLE warming_sse_events ("
+                        "  id INTEGER NOT NULL PRIMARY KEY,"
+                        "  event_id VARCHAR NOT NULL,"
+                        "  event_type VARCHAR NOT NULL,"
+                        "  job_id VARCHAR,"
+                        "  batch_seq INTEGER,"
+                        "  payload TEXT NOT NULL,"
+                        "  created_at DATETIME"
+                        ")"
+                    )
+                )
+                conn.execute(text("CREATE INDEX idx_sse_events_job ON warming_sse_events (job_id)"))
+                conn.execute(
+                    text("CREATE INDEX idx_sse_events_created ON warming_sse_events (created_at)")
+                )
+                conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX uq_sse_events_job_batch_seq "
+                        "ON warming_sse_events(job_id, batch_seq)"
+                    )
+                )
+                conn.commit()
+                logger.info("Recreated warming_sse_events without stale UNIQUE(event_id)")
     except Exception as e:
-        logger.warning(f"SSE unique index migration skipped: {e}")
+        logger.warning(f"SSE table migration skipped: {e}")
 
     # Migration: add confidence_score column to warming_queries (#189)
     try:
