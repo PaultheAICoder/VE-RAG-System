@@ -32,7 +32,7 @@ from ai_ready_rag.core.dependencies import (
     require_admin,
     require_system_admin,
 )
-from ai_ready_rag.core.redis import get_redis_pool
+from ai_ready_rag.core.redis import get_redis_pool, is_redis_available
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import (
     CuratedQA,
@@ -2568,9 +2568,8 @@ async def upload_warming_file(
             detail=f"Too many queries ({len(queries)}). Maximum is {settings.warming_max_queries_per_batch}.",
         )
 
-    # Redis fail-fast: verify Redis is available before any DB writes
-    redis = await get_redis_pool()
-    if not redis:
+    # Redis fail-fast: ping Redis before any DB writes (cached pool is stale)
+    if not await is_redis_available():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Warming queue requires Redis. Please check Redis connection and retry.",
@@ -2604,8 +2603,9 @@ async def upload_warming_file(
     db.commit()
     db.refresh(batch)
 
-    # Enqueue ARQ job (Redis verified available above)
+    # Enqueue ARQ job (Redis verified available above by is_redis_available)
     try:
+        redis = await get_redis_pool()
         await redis.enqueue_job("process_warming_batch", batch.id)
     except Exception as e:
         logger.warning(f"ARQ enqueue failed for batch {batch.id}: {e}")
@@ -2660,9 +2660,8 @@ async def add_manual_warming_queries(
             detail=f"Too many queries ({len(queries)}). Maximum is {settings.warming_max_queries_per_batch}.",
         )
 
-    # Redis fail-fast: verify Redis is available before any DB writes
-    redis = await get_redis_pool()
-    if not redis:
+    # Redis fail-fast: ping Redis before any DB writes (cached pool is stale)
+    if not await is_redis_available():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Warming queue requires Redis. Please check Redis connection and retry.",
@@ -2695,8 +2694,9 @@ async def add_manual_warming_queries(
     db.commit()
     db.refresh(batch)
 
-    # Enqueue ARQ job (Redis verified available above)
+    # Enqueue ARQ job (Redis verified available above by is_redis_available)
     try:
+        redis = await get_redis_pool()
         await redis.enqueue_job("process_warming_batch", batch.id)
     except Exception as e:
         logger.warning(f"ARQ enqueue failed for batch {batch.id}: {e}")

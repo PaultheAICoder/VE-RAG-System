@@ -111,19 +111,33 @@ def running_batch(db, system_admin_user):
 # Mock redis helper
 # =============================================================================
 
-REDIS_MOCK_PATH = "ai_ready_rag.api.admin.get_redis_pool"
+REDIS_AVAILABLE_PATH = "ai_ready_rag.api.admin.is_redis_available"
+REDIS_POOL_PATH = "ai_ready_rag.api.admin.get_redis_pool"
 
 
 def _mock_redis_none():
-    """Return a mock that makes get_redis_pool return None."""
-    return patch(REDIS_MOCK_PATH, new_callable=AsyncMock, return_value=None)
+    """Mock is_redis_available to return False (Redis down)."""
+    return patch(REDIS_AVAILABLE_PATH, new_callable=AsyncMock, return_value=False)
 
 
 def _mock_redis_available():
-    """Return a mock that makes get_redis_pool return a working Redis mock."""
+    """Mock is_redis_available to return True + get_redis_pool to return working mock."""
     mock_redis = AsyncMock()
     mock_redis.enqueue_job = AsyncMock()
-    return patch(REDIS_MOCK_PATH, new_callable=AsyncMock, return_value=mock_redis)
+
+    class _Ctx:
+        def __enter__(self_):
+            self_._p1 = patch(REDIS_AVAILABLE_PATH, new_callable=AsyncMock, return_value=True)
+            self_._p2 = patch(REDIS_POOL_PATH, new_callable=AsyncMock, return_value=mock_redis)
+            self_._p1.__enter__()
+            self_._p2.__enter__()
+            return self_
+
+        def __exit__(self_, *args):
+            self_._p2.__exit__(*args)
+            self_._p1.__exit__(*args)
+
+    return _Ctx()
 
 
 # =============================================================================
