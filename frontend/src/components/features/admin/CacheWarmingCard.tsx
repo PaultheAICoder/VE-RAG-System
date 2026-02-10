@@ -356,8 +356,14 @@ export function CacheWarmingCard({
   const handleCancel = async () => {
     setActionLoading('cancel');
     try {
-      await cancelWarmingJob();
+      const result = await cancelWarmingJob() as { batch_id?: string; id?: string };
       await fetchQueue();
+      // Refresh expanded queries so pending→skipped and processing→cancelling are visible
+      const batchId = result.batch_id ?? result.id;
+      if (batchId && expandedBatchIds.has(batchId)) {
+        const response = await getBatchQueries(batchId);
+        setExpandedBatchQueries(batchId, response.queries);
+      }
     } catch (err) {
       setQueueError(err instanceof Error ? err.message : 'Failed to cancel job');
     } finally {
