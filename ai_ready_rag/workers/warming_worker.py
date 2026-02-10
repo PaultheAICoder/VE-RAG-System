@@ -14,7 +14,7 @@ from sqlalchemy import update
 
 from ai_ready_rag.config import Settings, get_settings
 from ai_ready_rag.db.database import SessionLocal
-from ai_ready_rag.db.models.warming import WarmingBatch
+from ai_ready_rag.db.models.warming import WarmingBatch, WarmingQuery
 from ai_ready_rag.workers.tasks.warming_batch import (
     acquire_batch_lease,
     cancel_batch,
@@ -303,6 +303,22 @@ async def recover_stale_batches() -> int:
                 }
             )
         )
+
+        # Reset orphaned "processing" queries back to "pending" for recovered batches
+        if count:
+            query_reset_count = (
+                db.query(WarmingQuery)
+                .filter(
+                    WarmingQuery.status == "processing",
+                    WarmingQuery.batch_id.in_(
+                        db.query(WarmingBatch.id).filter(WarmingBatch.status == "pending")
+                    ),
+                )
+                .update({"status": "pending"}, synchronize_session=False)
+            )
+            if query_reset_count:
+                logger.info(f"Reset {query_reset_count} orphaned processing queries to pending")
+
         db.commit()
         if count:
             logger.info(f"Recovered {count} warming batches with expired leases")

@@ -111,12 +111,33 @@ def running_batch(db, system_admin_user):
 # Mock redis helper
 # =============================================================================
 
-REDIS_MOCK_PATH = "ai_ready_rag.api.admin.get_redis_pool"
+REDIS_AVAILABLE_PATH = "ai_ready_rag.api.admin.is_redis_available"
+REDIS_POOL_PATH = "ai_ready_rag.api.admin.get_redis_pool"
 
 
 def _mock_redis_none():
-    """Return a mock that makes get_redis_pool return None."""
-    return patch(REDIS_MOCK_PATH, new_callable=AsyncMock, return_value=None)
+    """Mock is_redis_available to return False (Redis down)."""
+    return patch(REDIS_AVAILABLE_PATH, new_callable=AsyncMock, return_value=False)
+
+
+def _mock_redis_available():
+    """Mock is_redis_available to return True + get_redis_pool to return working mock."""
+    mock_redis = AsyncMock()
+    mock_redis.enqueue_job = AsyncMock()
+
+    class _Ctx:
+        def __enter__(self_):
+            self_._p1 = patch(REDIS_AVAILABLE_PATH, new_callable=AsyncMock, return_value=True)
+            self_._p2 = patch(REDIS_POOL_PATH, new_callable=AsyncMock, return_value=mock_redis)
+            self_._p1.__enter__()
+            self_._p2.__enter__()
+            return self_
+
+        def __exit__(self_, *args):
+            self_._p2.__exit__(*args)
+            self_._p1.__exit__(*args)
+
+    return _Ctx()
 
 
 # =============================================================================
@@ -126,7 +147,7 @@ def _mock_redis_none():
 
 class TestManualWarmingSubmit:
     def test_submit_success(self, client, system_admin_headers, db):
-        with _mock_redis_none():
+        with _mock_redis_available():
             response = client.post(
                 "/api/admin/warming/queue/manual",
                 json={"queries": ["What is PTO?", "How to request leave?"]},
@@ -149,16 +170,15 @@ class TestManualWarmingSubmit:
         assert response.status_code == 400
 
     def test_submit_only_comments(self, client, system_admin_headers):
-        with _mock_redis_none():
-            response = client.post(
-                "/api/admin/warming/queue/manual",
-                json={"queries": ["# this is a comment", "// also a comment"]},
-                headers=system_admin_headers,
-            )
+        response = client.post(
+            "/api/admin/warming/queue/manual",
+            json={"queries": ["# this is a comment", "// also a comment"]},
+            headers=system_admin_headers,
+        )
         assert response.status_code == 400
 
     def test_submit_strips_blanks_and_comments(self, client, system_admin_headers, db):
-        with _mock_redis_none():
+        with _mock_redis_available():
             response = client.post(
                 "/api/admin/warming/queue/manual",
                 json={"queries": ["  Valid query  ", "", "# comment", "Another valid"]},
@@ -169,7 +189,7 @@ class TestManualWarmingSubmit:
         assert data["total_queries"] == 2
 
     def test_submit_max_queries_exceeded(self, client, system_admin_headers):
-        with _mock_redis_none(), patch("ai_ready_rag.api.admin.get_settings") as mock_settings:
+        with _mock_redis_available(), patch("ai_ready_rag.api.admin.get_settings") as mock_settings:
             settings = mock_settings.return_value
             settings.warming_max_queries_per_batch = 2
             response = client.post(
@@ -179,6 +199,27 @@ class TestManualWarmingSubmit:
             )
         assert response.status_code == 400
         assert "Too many queries" in response.json()["detail"]
+
+    def test_submit_returns_503_when_redis_unavailable(self, client, system_admin_headers):
+        with _mock_redis_none():
+            response = client.post(
+                "/api/admin/warming/queue/manual",
+                json={"queries": ["What is PTO?"]},
+                headers=system_admin_headers,
+            )
+        assert response.status_code == 503
+        assert "Redis" in response.json()["detail"]
+
+    def test_submit_no_db_writes_when_redis_unavailable(self, client, system_admin_headers, db):
+        with _mock_redis_none():
+            response = client.post(
+                "/api/admin/warming/queue/manual",
+                json={"queries": ["What is PTO?"]},
+                headers=system_admin_headers,
+            )
+        assert response.status_code == 503
+        batch_count = db.query(WarmingBatch).count()
+        assert batch_count == 0
 
     def test_submit_unauthorized(self, client):
         response = client.post(
@@ -195,7 +236,7 @@ class TestManualWarmingSubmit:
 
 class TestUploadWarmingFile:
     def test_upload_txt_success(self, client, system_admin_headers, db):
-        with _mock_redis_none():
+        with _mock_redis_available():
             response = client.post(
                 "/api/admin/warming/queue/upload",
                 files={
@@ -211,7 +252,7 @@ class TestUploadWarmingFile:
         assert data["status"] == "pending"
 
     def test_upload_csv_success(self, client, system_admin_headers, db):
-        with _mock_redis_none():
+        with _mock_redis_available():
             response = client.post(
                 "/api/admin/warming/queue/upload",
                 files={"file": ("queries.csv", b"What is PTO?\nHow to request leave?", "text/csv")},
@@ -230,12 +271,11 @@ class TestUploadWarmingFile:
         assert "Invalid file type" in response.json()["detail"]
 
     def test_upload_empty_file(self, client, system_admin_headers):
-        with _mock_redis_none():
-            response = client.post(
-                "/api/admin/warming/queue/upload",
-                files={"file": ("queries.txt", b"", "text/plain")},
-                headers=system_admin_headers,
-            )
+        response = client.post(
+            "/api/admin/warming/queue/upload",
+            files={"file": ("queries.txt", b"", "text/plain")},
+            headers=system_admin_headers,
+        )
         assert response.status_code == 400
         assert "No valid questions" in response.json()["detail"]
 
@@ -249,7 +289,7 @@ class TestUploadWarmingFile:
         assert "UTF-8" in response.json()["detail"]
 
     def test_upload_strip_numbering(self, client, system_admin_headers, db):
-        with _mock_redis_none():
+        with _mock_redis_available():
             response = client.post(
                 "/api/admin/warming/queue/upload",
                 files={
@@ -265,7 +305,7 @@ class TestUploadWarmingFile:
         assert response.json()["total_queries"] == 2
 
     def test_upload_skips_comments(self, client, system_admin_headers, db):
-        with _mock_redis_none():
+        with _mock_redis_available():
             response = client.post(
                 "/api/admin/warming/queue/upload",
                 files={
@@ -279,6 +319,16 @@ class TestUploadWarmingFile:
             )
         assert response.status_code == 201
         assert response.json()["total_queries"] == 1
+
+    def test_upload_returns_503_when_redis_unavailable(self, client, system_admin_headers):
+        with _mock_redis_none():
+            response = client.post(
+                "/api/admin/warming/queue/upload",
+                files={"file": ("queries.txt", b"What is PTO?", "text/plain")},
+                headers=system_admin_headers,
+            )
+        assert response.status_code == 503
+        assert "Redis" in response.json()["detail"]
 
 
 # =============================================================================

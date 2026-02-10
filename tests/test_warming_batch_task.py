@@ -340,6 +340,42 @@ class TestBatchCompletion:
         db.refresh(batch_with_queries)
         assert batch_with_queries.status == "completed"
 
+    def test_finalize_with_processing_queries_does_not_complete(self, db, batch_with_queries):
+        """#18b: Batch with stuck processing queries cannot be finalized."""
+        queries = (
+            db.query(WarmingQuery)
+            .filter(WarmingQuery.batch_id == batch_with_queries.id)
+            .order_by(WarmingQuery.sort_order)
+            .all()
+        )
+        queries[0].status = "completed"
+        queries[1].status = "processing"  # Stuck
+        queries[2].status = "completed"
+        db.flush()
+
+        finalize_batch(db, batch_with_queries.id)
+        db.refresh(batch_with_queries)
+        # Batch should NOT be marked completed -- still has non-terminal query
+        assert batch_with_queries.status != "completed"
+        assert batch_with_queries.status != "completed_with_errors"
+
+    def test_finalize_with_pending_queries_does_not_complete(self, db, batch_with_queries):
+        """#18c: Batch with remaining pending queries cannot be finalized."""
+        queries = (
+            db.query(WarmingQuery)
+            .filter(WarmingQuery.batch_id == batch_with_queries.id)
+            .order_by(WarmingQuery.sort_order)
+            .all()
+        )
+        queries[0].status = "completed"
+        queries[1].status = "completed"
+        # queries[2] remains "pending"
+        db.flush()
+
+        finalize_batch(db, batch_with_queries.id)
+        db.refresh(batch_with_queries)
+        assert batch_with_queries.status != "completed"
+
 
 # =============================================================================
 # TestRetryPolicy (19-23)

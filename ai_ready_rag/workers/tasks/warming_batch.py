@@ -266,8 +266,26 @@ def finalize_batch(db: Session, batch_id: str) -> None:
 
     - All completed (+ skipped): "completed"
     - Any failed: "completed_with_errors"
+    - Guard: do NOT finalize if any queries are still pending/processing.
     """
     now = datetime.utcnow()
+
+    # Guard: don't finalize if any queries are still in non-terminal state
+    non_terminal_count = (
+        db.query(WarmingQuery)
+        .filter(
+            WarmingQuery.batch_id == batch_id,
+            WarmingQuery.status.in_(["pending", "processing"]),
+        )
+        .count()
+    )
+    if non_terminal_count > 0:
+        logger.warning(
+            f"Cannot finalize batch {batch_id}: "
+            f"{non_terminal_count} queries still in non-terminal state"
+        )
+        return
+
     failed_count = (
         db.query(WarmingQuery)
         .filter(WarmingQuery.batch_id == batch_id, WarmingQuery.status == "failed")

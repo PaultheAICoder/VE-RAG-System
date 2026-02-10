@@ -70,12 +70,29 @@ async def close_redis_pool() -> None:
 
 
 async def is_redis_available() -> bool:
-    """Check if Redis is connected and responding."""
+    """Check if Redis is connected and responding.
+
+    Unlike get_redis_pool(), this retries when the cached pool is None.
+    This allows recovery after Redis comes back online.
+    """
+    global _redis_pool, _redis_checked
+
     pool = await get_redis_pool()
+
+    # If pool is None, reset the check flag and try once more.
+    # This allows recovery when Redis was down at startup but is now back.
     if pool is None:
-        return False
+        _redis_checked = False
+        pool = await get_redis_pool()
+        if pool is None:
+            return False
+
     try:
         await pool.ping()
         return True
     except Exception:
+        # Pool exists but ping failed — Redis went down after connect.
+        # Invalidate the cached pool so next call retries.
+        _redis_pool = None
+        _redis_checked = False
         return False
