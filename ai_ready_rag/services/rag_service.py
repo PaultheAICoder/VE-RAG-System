@@ -412,7 +412,7 @@ def get_cached_qa(db: Session) -> tuple[dict[str, set[str]], dict, dict[str, lis
     return _qa_token_index or {}, _qa_lookup or {}, _qa_keywords_by_id or {}
 
 
-def check_curated_qa(query: str, db: Session):
+def check_curated_qa(query: str, db: Session) -> str | None:
     """Check if query matches any curated Q&A pair by keyword.
 
     Uses two-phase matching:
@@ -426,7 +426,7 @@ def check_curated_qa(query: str, db: Session):
         db: Database session
 
     Returns:
-        Matching CuratedQA object (highest priority), or None to proceed with RAG
+        Matching qa_id string (highest priority), or None to proceed with RAG
     """
     token_index, qa_lookup, keywords_by_id = get_cached_qa(db)
     query_tokens = tokenize_query(query)
@@ -442,7 +442,7 @@ def check_curated_qa(query: str, db: Session):
 
     # Phase 2: Verify full keyword match for each candidate
     # Iterate in priority order (qa_lookup preserves insertion order from query)
-    for qa_id, qa in qa_lookup.items():
+    for qa_id in qa_lookup:
         if qa_id not in candidate_qa_ids:
             continue
 
@@ -451,7 +451,7 @@ def check_curated_qa(query: str, db: Session):
         for keyword in keywords:
             if matches_keyword(keyword, query_tokens):
                 logger.info(f"Curated Q&A match: '{keyword}' -> qa_id={qa_id}")
-                return qa
+                return qa_id
 
     return None
 
@@ -1450,54 +1450,52 @@ class RAGService:
         await self.validate_model(model)
 
         # 0. Check curated Q&A first (highest priority - admin-approved answers)
-        curated_qa = check_curated_qa(request.query, db)
-        if curated_qa:
-            # Re-fetch from current session to avoid DetachedInstanceError
-            # (cached objects are not bound to the current db session)
+        matched_qa_id = check_curated_qa(request.query, db)
+        if matched_qa_id:
             from ai_ready_rag.db.models import CuratedQA
 
-            qa_id = curated_qa.id
-            curated_qa = db.query(CuratedQA).filter(CuratedQA.id == qa_id).first()
+            curated_qa = db.query(CuratedQA).filter(CuratedQA.id == matched_qa_id).first()
+            if curated_qa:
+                # Update access tracking (skip during warming to reduce DB writes)
+                if not request.is_warming:
+                    curated_qa.access_count += 1
+                    curated_qa.last_accessed_at = datetime.utcnow()
+                    db.commit()
 
-            # Update access tracking (skip during warming to reduce DB writes)
-            if not request.is_warming:
-                curated_qa.access_count += 1
-                curated_qa.last_accessed_at = datetime.utcnow()
-                db.commit()
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
+                # Build citation from source_reference
+                citation = Citation(
+                    source_id=f"curated:{curated_qa.id}",
+                    document_id=curated_qa.id,
+                    document_name=curated_qa.source_reference,
+                    chunk_index=0,
+                    page_number=None,
+                    section=curated_qa.source_reference,
+                    relevance_score=1.0,
+                    snippet=curated_qa.source_reference,
+                    snippet_full=curated_qa.source_reference,
+                )
 
-            # Build citation from source_reference
-            citation = Citation(
-                source_id=f"curated:{curated_qa.id}",
-                document_id=curated_qa.id,
-                document_name=curated_qa.source_reference,
-                chunk_index=0,
-                page_number=None,
-                section=curated_qa.source_reference,
-                relevance_score=1.0,
-                snippet=curated_qa.source_reference,
-                snippet_full=curated_qa.source_reference,
-            )
-
-            return RAGResponse(
-                answer=curated_qa.answer,
-                confidence=ConfidenceScore(
-                    overall=curated_qa.confidence,
-                    retrieval_score=1.0,
-                    coverage_score=1.0,
-                    llm_score=curated_qa.confidence,
-                ),
-                citations=[citation],
-                action="CITE",
-                route_to=None,
-                model_used="curated",
-                context_chunks_used=0,
-                context_tokens_used=0,
-                generation_time_ms=elapsed_ms,
-                grounded=True,
-                routing_decision=None,
-            )
+                return RAGResponse(
+                    answer=curated_qa.answer,
+                    confidence=ConfidenceScore(
+                        overall=curated_qa.confidence,
+                        retrieval_score=1.0,
+                        coverage_score=1.0,
+                        llm_score=curated_qa.confidence,
+                    ),
+                    citations=[citation],
+                    action="CITE",
+                    route_to=None,
+                    model_used="curated",
+                    context_chunks_used=0,
+                    context_tokens_used=0,
+                    generation_time_ms=elapsed_ms,
+                    grounded=True,
+                    routing_decision=None,
+                )
+            # else: Q&A deleted between cache hit and re-fetch; fall through to RAG
 
         # 1.25 Check cache first (if enabled)
         if self.cache and self.cache.enabled:

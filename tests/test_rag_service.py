@@ -1211,7 +1211,7 @@ class TestCuratedQA:
         result = check_curated_qa("What is the vacation policy?", db)
 
         assert result is not None
-        assert "20 days" in result.answer
+        assert result == qa.id
 
     def test_check_curated_qa_no_match(self, mock_settings, db):
         """Returns None when no keywords match."""
@@ -1267,7 +1267,7 @@ class TestCuratedQA:
         result = check_curated_qa("How do I request PTO?", db)
 
         assert result is not None
-        assert "High priority" in result.answer
+        assert result == qa2.id
 
     def test_check_curated_qa_disabled_ignored(self, mock_settings, db):
         """Disabled Q&A pairs are not matched."""
