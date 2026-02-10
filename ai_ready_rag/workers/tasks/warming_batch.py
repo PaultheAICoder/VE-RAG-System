@@ -215,12 +215,15 @@ async def warm_query_with_retry(
 
 
 def cancel_batch(db: Session, batch_id: str) -> None:
-    """Cancel a batch: skip remaining pending queries, mark batch cancelled."""
+    """Cancel a batch: skip remaining pending/processing queries, mark batch cancelled."""
     now = datetime.utcnow()
 
     db.execute(
         update(WarmingQuery)
-        .where(WarmingQuery.batch_id == batch_id, WarmingQuery.status == "pending")
+        .where(
+            WarmingQuery.batch_id == batch_id,
+            WarmingQuery.status.in_(["pending", "processing"]),
+        )
         .values(status="skipped", updated_at=now)
     )
     db.execute(
