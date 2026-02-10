@@ -563,6 +563,7 @@ export interface WarmingQuery {
   id: string;
   query_text: string;
   status: WarmingQueryStatus;
+  confidence_score: number | null;
   error_message: string | null;
   error_type: string | null;
   retry_count: number;

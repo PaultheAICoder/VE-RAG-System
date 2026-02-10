@@ -153,8 +153,11 @@ export async function retryQuery(
  * @param jobId - The warming job ID
  * @param lastEventId - Optional last event ID for resumption
  */
-export function getWarmProgressUrl(jobId: string, lastEventId?: string | null): string {
+export function getWarmProgressUrl(jobId: string, lastEventId?: string | null): string | null {
   const token = useAuthStore.getState().token;
+  if (!token) {
+    return null;
+  }
   let url = `/api/admin/warming/progress?job_id=${jobId}&token=${token}`;
   if (lastEventId) {
     url += `&last_event_id=${lastEventId}`;

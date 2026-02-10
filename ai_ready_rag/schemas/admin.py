@@ -584,6 +584,7 @@ class WarmingQueryResponse(BaseModel):
     id: str
     query_text: str
     status: str
+    confidence_score: int | None = None
     error_message: str | None = None
     error_type: str | None = None
     retry_count: int

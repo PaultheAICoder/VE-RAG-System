@@ -3062,6 +3062,7 @@ async def list_batch_queries(
                 id=q.id,
                 query_text=q.query_text,
                 status=q.status,
+                confidence_score=q.confidence_score,
                 error_message=q.error_message,
                 error_type=q.error_type,
                 retry_count=q.retry_count,

@@ -71,6 +71,14 @@ def init_db():
     except Exception as e:
         logger.warning(f"SSE unique index migration skipped: {e}")
 
+    # Migration: add confidence_score column to warming_queries (#189)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE warming_queries ADD COLUMN confidence_score INTEGER"))
+            conn.commit()
+    except Exception:
+        pass  # Column already exists
+
     logger.info("database_initialized", extra={"database_url": settings.database_url})
 
 

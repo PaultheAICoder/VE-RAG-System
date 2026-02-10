@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { Card, Button, Badge, Alert } from '../../ui';
 import { ConfirmModal } from './ConfirmModal';
+import { useAuthStore } from '../../../stores/authStore';
 import { useCacheWarmingStore } from '../../../stores/cacheWarmingStore';
 import {
   warmCacheFromFile,
@@ -239,6 +240,10 @@ export function CacheWarmingCard({
   // SSE connection with lastEventId support for reconnection
   const connectToSSE = useCallback((jobId: string) => {
     const url = getWarmProgressUrl(jobId, lastEventId);
+    if (!url) {
+      setError('Authentication token missing. Please log in again.');
+      return;
+    }
     const eventSource = new EventSource(url);
     eventSourceRef.current = eventSource;
     completedRef.current = false;
@@ -285,8 +290,13 @@ export function CacheWarmingCard({
           return;
         }
 
-        console.log('[SSE] Setting connection lost error');
-        setError('Connection to server lost. Please try again.');
+        // Check if token is still valid
+        const token = useAuthStore.getState().token;
+        if (!token) {
+          setError('Session expired. Please log in again.');
+        } else {
+          setError('Connection to server lost. Please try again.');
+        }
       }, 100);
 
       eventSource.close();
@@ -1033,7 +1043,7 @@ export function CacheWarmingCard({
                     {/* Expanded query detail row */}
                     {isExpanded && (
                       <tr>
-                        <td colSpan={6} className="p-0">
+                        <td colSpan={7} className="p-0">
                           <div className="bg-gray-50 dark:bg-gray-800/50 px-6 py-3 border-b border-gray-200 dark:border-gray-700">
                             {expandedBatchLoading[job.id] ? (
                               <div className="flex items-center gap-2 py-4 justify-center">
@@ -1046,6 +1056,7 @@ export function CacheWarmingCard({
                                   <tr className="border-b border-gray-200 dark:border-gray-600">
                                     <th className="text-left py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400">Query</th>
                                     <th className="text-left py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400 w-28">Status</th>
+                                    <th className="text-center py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400 w-20">Confidence</th>
                                     <th className="text-left py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400">Error</th>
                                     <th className="text-center py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400 w-16">Retries</th>
                                     <th className="text-right py-1.5 px-2 font-medium text-gray-500 dark:text-gray-400 w-20">Actions</th>
@@ -1066,6 +1077,21 @@ export function CacheWarmingCard({
                                               {qStatus.label}
                                             </span>
                                           </Badge>
+                                        </td>
+                                        <td className="py-1.5 px-2 text-center">
+                                          {query.confidence_score != null ? (
+                                            <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${
+                                              query.confidence_score >= 70
+                                                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                                                : query.confidence_score >= 40
+                                                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+                                                  : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                                            }`}>
+                                              {query.confidence_score}%
+                                            </span>
+                                          ) : (
+                                            <span className="text-gray-400">&mdash;</span>
+                                          )}
                                         </td>
                                         <td className="py-1.5 px-2 text-red-500 max-w-xs truncate" title={query.error_message ?? undefined}>
                                           {query.error_message || '-'}

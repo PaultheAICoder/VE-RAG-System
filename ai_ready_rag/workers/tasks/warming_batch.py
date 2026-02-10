@@ -144,7 +144,14 @@ async def warm_query_with_retry(
                 tenant_id="default",
                 is_warming=True,
             )
-            await rag_service.generate(request, db)
+            response = await rag_service.generate(request, db)
+
+            # Extract confidence score from RAG response
+            confidence = None
+            if hasattr(response, "confidence") and response.confidence is not None:
+                score = response.confidence.overall
+                if isinstance(score, int):
+                    confidence = score
 
             # Success
             db.execute(
@@ -152,6 +159,7 @@ async def warm_query_with_retry(
                 .where(WarmingQuery.id == query_row.id)
                 .values(
                     status="completed",
+                    confidence_score=confidence,
                     retry_count=attempt,
                     processed_at=now(),
                     updated_at=now(),
