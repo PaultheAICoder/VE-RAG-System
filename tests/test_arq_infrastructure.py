@@ -27,7 +27,7 @@ class TestConfigHasRedisSettings:
         from ai_ready_rag.config import Settings
 
         settings = Settings()
-        assert settings.arq_max_jobs == 10
+        assert settings.arq_max_jobs == 2
 
 
 class TestRedisPool:
@@ -162,7 +162,7 @@ class TestWorkerSettings:
         from ai_ready_rag.workers.settings import WorkerSettings
 
         assert WorkerSettings.job_timeout == 600
-        assert WorkerSettings.max_jobs == 10
+        assert WorkerSettings.max_jobs == 2
 
     def test_process_document_registered(self):
         """process_document task is registered in tasks package."""

@@ -22,6 +22,9 @@ else
     echo "Warning: No .env file found. Using defaults."
 fi
 
+# Prevent Tesseract OpenMP threads from stacking with ARQ job concurrency.
+export OMP_THREAD_LIMIT="${OMP_THREAD_LIMIT:-1}"
+
 echo "=== VE-RAG-System Startup ==="
 echo "Directory: $PROJECT_DIR"
 echo "Mode:      $MODE"

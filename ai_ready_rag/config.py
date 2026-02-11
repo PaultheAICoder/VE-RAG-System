@@ -38,8 +38,8 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "db_pool_size": 10,
         "db_pool_max_overflow": 20,
         "db_pool_timeout": 60,
-        # Concurrent processing - more for Spark
-        "max_concurrent_processing": 8,
+        # Concurrent processing - conservative to avoid tesseract/OCR race conditions
+        "max_concurrent_processing": 2,
     },
 }
 
@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     # Redis / ARQ Task Queue
     redis_url: str = "redis://localhost:6379"
     arq_job_timeout: int = 600  # 10 min max for document processing
-    arq_max_jobs: int = 10  # Max concurrent ARQ jobs
+    arq_max_jobs: int = 2  # Max concurrent ARQ jobs (low to avoid tesseract race conditions)
     arq_health_check_interval: int = 60  # Seconds between worker health checks
 
     # Vector Service

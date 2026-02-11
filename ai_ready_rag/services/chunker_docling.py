@@ -5,6 +5,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+# Prevent Tesseract OpenMP threads from stacking with ARQ job concurrency.
+# Each Tesseract call uses one thread; parallelism comes from the job queue.
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,41 +74,30 @@ class DoclingChunker:
 
             if self.enable_ocr:
                 try:
-                    from docling.datamodel.pipeline_options import TesseractOcrOptions
+                    # Use CLI-based Tesseract (subprocess per page) instead of the
+                    # C-binding (tesserocr).  The C library has process-global state
+                    # that is unsafe under ARQ's concurrent job execution — multiple
+                    # coroutines can race inside libtesseract once tesserocr releases
+                    # the GIL.  The CLI variant is immune: each page gets its own
+                    # short-lived tesseract process with isolated state.
+                    from docling.datamodel.pipeline_options import TesseractCliOcrOptions
 
                     tessdata_path = os.environ.get("TESSDATA_PREFIX")
                     logger.info(
-                        f"OCR config: TESSDATA_PREFIX={tessdata_path}, "
-                        f"lang={self.ocr_language}, force_ocr={self.force_full_page_ocr}"
+                        "OCR config: mode=cli, TESSDATA_PREFIX=%s, lang=%s, force_ocr=%s",
+                        tessdata_path,
+                        self.ocr_language,
+                        self.force_full_page_ocr,
                     )
 
-                    # Verify tesserocr can find languages before Docling init
-                    try:
-                        import tesserocr
-
-                        check_path = tessdata_path or None
-                        _, langs = (
-                            tesserocr.get_languages(check_path)
-                            if check_path
-                            else tesserocr.get_languages()
-                        )
-                        logger.info(f"tesserocr languages at '{check_path}': {langs}")
-                        if not langs and tessdata_path:
-                            logger.warning(
-                                "tesserocr found no languages — "
-                                "check TESSDATA_PREFIX path exists and contains .traineddata files"
-                            )
-                    except Exception as e:
-                        logger.warning(f"tesserocr pre-check failed: {e}")
-
-                    ocr_options = TesseractOcrOptions(
+                    ocr_options = TesseractCliOcrOptions(
                         lang=[self.ocr_language],
                         force_full_page_ocr=self.force_full_page_ocr,
                         path=tessdata_path,
                     )
                     pipeline_options.ocr_options = ocr_options
                 except ImportError:
-                    logger.warning("TesseractOcrOptions not available, OCR disabled")
+                    logger.warning("TesseractCliOcrOptions not available, OCR disabled")
 
             return DocumentConverter(
                 format_options={"pdf": PdfFormatOption(pipeline_options=pipeline_options)}
