@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from ai_ready_rag.config import Settings, get_settings
 from ai_ready_rag.db.database import SessionLocal
 from ai_ready_rag.db.models.warming import WarmingBatch
-from ai_ready_rag.services.sse_buffer_service import prune_old_events
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +72,8 @@ class WarmingCleanupService:
 
     async def _run_cleanup(self) -> None:
         """Perform all cleanup operations."""
+        from ai_ready_rag.services.sse_buffer_service import prune_old_events
+
         now = datetime.utcnow()
 
         db = SessionLocal()
