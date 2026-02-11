@@ -1,8 +1,8 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Upload, FileText } from 'lucide-react';
 
 interface UploadDropZoneProps {
-  onFilesSelected: (files: File[]) => void;
+  onFilesSelected: (files: File[], skippedFiles?: File[]) => void;
   disabled?: boolean;
 }
 
@@ -29,9 +29,67 @@ function isValidFile(file: File): boolean {
   return ALLOWED_EXTENSIONS.includes(ext);
 }
 
+async function readAllDirectoryEntries(
+  directory: FileSystemDirectoryEntry
+): Promise<FileSystemEntry[]> {
+  const reader = directory.createReader();
+  const entries: FileSystemEntry[] = [];
+
+  while (true) {
+    const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => {
+      reader.readEntries(resolve, reject);
+    });
+    if (batch.length === 0) break;
+    entries.push(...batch);
+  }
+
+  return entries;
+}
+
+async function entryToFiles(entry: FileSystemEntry): Promise<File[]> {
+  if (entry.isFile) {
+    const fileEntry = entry as FileSystemFileEntry;
+    const file = await new Promise<File>((resolve, reject) => {
+      fileEntry.file(resolve, reject);
+    });
+    return [file];
+  }
+
+  if (entry.isDirectory) {
+    const directoryEntry = entry as FileSystemDirectoryEntry;
+    const childEntries = await readAllDirectoryEntries(directoryEntry);
+    const nestedFiles = await Promise.all(childEntries.map((child) => entryToFiles(child)));
+    return nestedFiles.flat();
+  }
+
+  return [];
+}
+
+async function extractDroppedFiles(dataTransfer: DataTransfer): Promise<File[]> {
+  const items = dataTransfer.items ? Array.from(dataTransfer.items) : [];
+  const entries = items
+    .map((item) => item.webkitGetAsEntry())
+    .filter((entry): entry is FileSystemEntry => entry !== null);
+
+  if (entries.length === 0) {
+    return Array.from(dataTransfer.files);
+  }
+
+  const fileGroups = await Promise.all(entries.map((entry) => entryToFiles(entry)));
+  return fileGroups.flat();
+}
+
 export function UploadDropZone({ onFilesSelected, disabled = false }: UploadDropZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const folderInput = folderInputRef.current;
+    if (!folderInput) return;
+    folderInput.setAttribute('webkitdirectory', '');
+    folderInput.setAttribute('directory', '');
+  }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -48,18 +106,24 @@ export function UploadDropZone({ onFilesSelected, disabled = false }: UploadDrop
   }, []);
 
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    async (e: React.DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
       setIsDragging(false);
 
       if (disabled) return;
 
-      const files = Array.from(e.dataTransfer.files);
+      const files = await extractDroppedFiles(e.dataTransfer);
       const validFiles = files.filter(isValidFile);
+      const skippedFiles = files.filter((file) => !isValidFile(file));
 
       if (validFiles.length > 0) {
-        onFilesSelected(validFiles);
+        onFilesSelected(validFiles, skippedFiles);
+        return;
+      }
+
+      if (skippedFiles.length > 0) {
+        onFilesSelected([], skippedFiles);
       }
     },
     [disabled, onFilesSelected]
@@ -74,14 +138,33 @@ export function UploadDropZone({ onFilesSelected, disabled = false }: UploadDrop
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     const validFiles = files.filter(isValidFile);
+    const skippedFiles = files.filter((file) => !isValidFile(file));
 
     if (validFiles.length > 0) {
-      onFilesSelected(validFiles);
+      onFilesSelected(validFiles, skippedFiles);
+    } else if (skippedFiles.length > 0) {
+      onFilesSelected([], skippedFiles);
     }
 
     // Reset input
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+  };
+
+  const handleFolderInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    const validFiles = files.filter(isValidFile);
+    const skippedFiles = files.filter((file) => !isValidFile(file));
+
+    if (validFiles.length > 0) {
+      onFilesSelected(validFiles, skippedFiles);
+    } else if (skippedFiles.length > 0) {
+      onFilesSelected([], skippedFiles);
+    }
+
+    if (folderInputRef.current) {
+      folderInputRef.current.value = '';
     }
   };
 
@@ -112,6 +195,14 @@ export function UploadDropZone({ onFilesSelected, disabled = false }: UploadDrop
         className="hidden"
         disabled={disabled}
       />
+      <input
+        ref={folderInputRef}
+        type="file"
+        multiple
+        onChange={handleFolderInputChange}
+        className="hidden"
+        disabled={disabled}
+      />
 
       <div
         className={`
@@ -132,6 +223,19 @@ export function UploadDropZone({ onFilesSelected, disabled = false }: UploadDrop
       <p className="text-sm text-gray-500 dark:text-gray-400">
         PDF, DOCX, XLSX, PPTX, TXT, MD, HTML, CSV
       </p>
+      <button
+        type="button"
+        className="mt-3 text-sm text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (!disabled) {
+            folderInputRef.current?.click();
+          }
+        }}
+        disabled={disabled}
+      >
+        Or select a folder
+      </button>
     </div>
   );
 }
