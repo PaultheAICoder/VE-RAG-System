@@ -46,6 +46,9 @@ beautifulsoup4>=4.12.0
 python-magic>=0.4.27
 markdown>=3.5.0
 
+# ============== Email Extraction ==============
+extract-msg>=0.48.0
+
 # ============== Task Queue ==============
 arq>=0.26.0
 redis>=5.0.0

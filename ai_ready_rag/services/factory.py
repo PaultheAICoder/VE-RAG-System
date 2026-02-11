@@ -129,10 +129,23 @@ def get_chunker(
     elif backend == "simple":
         from ai_ready_rag.services.chunker_simple import SimpleChunker
 
-        logger.info("Creating SimpleChunker")
+        enable_ocr = (
+            processing_options.enable_ocr
+            if processing_options and processing_options.enable_ocr is not None
+            else settings.enable_ocr or False
+        )
+        ocr_language = (
+            processing_options.ocr_language
+            if processing_options and processing_options.ocr_language is not None
+            else settings.ocr_language
+        )
+
+        logger.info("Creating SimpleChunker with OCR=%s", enable_ocr)
         return SimpleChunker(
             chunk_size=settings.chunk_size * 4,  # Characters, not tokens
             chunk_overlap=settings.chunk_overlap * 4,
+            enable_ocr=enable_ocr,
+            ocr_language=ocr_language,
         )
     else:
         raise ValueError(f"Unknown chunker_backend: {backend}")

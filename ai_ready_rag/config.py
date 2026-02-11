@@ -188,6 +188,15 @@ class Settings(BaseSettings):
         "html",
         "htm",
         "csv",
+        # Image formats (OCR extraction)
+        "png",
+        "jpg",
+        "jpeg",
+        "tiff",
+        "tif",
+        # Email formats
+        "eml",
+        "msg",
     ]
 
     # Document Processing

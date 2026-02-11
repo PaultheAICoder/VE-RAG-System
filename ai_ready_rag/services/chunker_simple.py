@@ -16,13 +16,20 @@ class SimpleChunker:
     Uses minimal dependencies (no Docling, no Tesseract).
     """
 
+    # Max pixels before resize to prevent OOM (20 megapixels)
+    MAX_IMAGE_PIXELS = 20_000_000
+
     def __init__(
         self,
         chunk_size: int = 2000,
         chunk_overlap: int = 200,
+        enable_ocr: bool = False,
+        ocr_language: str = "eng",
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.enable_ocr = enable_ocr
+        self.ocr_language = ocr_language
         self.splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -92,7 +99,8 @@ class SimpleChunker:
     def _extract_text(self, path: Path) -> str:
         """Extract text from file based on extension.
 
-        Supports: PDF, DOCX, TXT, MD, CSV, HTML
+        Supports: PDF, DOCX, TXT, MD, CSV, HTML, XLSX, PPTX,
+                  PNG, JPG, JPEG, TIFF, TIF (OCR), EML, MSG (email)
         """
         ext = path.suffix.lower()
 
@@ -110,6 +118,12 @@ class SimpleChunker:
             return self._extract_xlsx(path)
         elif ext == ".pptx":
             return self._extract_pptx(path)
+        elif ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif"):
+            return self._extract_image(path)
+        elif ext == ".eml":
+            return self._extract_eml(path)
+        elif ext == ".msg":
+            return self._extract_msg(path)
         else:
             # Try as plain text
             try:
@@ -248,3 +262,116 @@ class SimpleChunker:
             if texts:
                 slides.append(f"Slide {i}:\n" + "\n".join(texts))
         return "\n\n".join(slides)
+
+    def _extract_image(self, path: Path) -> str:
+        """Extract text from image using OCR.
+
+        Requires enable_ocr=True. Raises ValueError if OCR is disabled.
+        Large images (>20MP) are resized to prevent OOM.
+        """
+        if not self.enable_ocr:
+            raise ValueError(
+                f"Cannot process image file '{path.name}': OCR is disabled. "
+                "Enable OCR (enable_ocr=True) to extract text from images."
+            )
+
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError as e:
+            raise ImportError(
+                "pytesseract and Pillow required for image extraction: "
+                "pip install pytesseract Pillow"
+            ) from e
+
+        image = Image.open(path)
+
+        # Resize large images to prevent OOM
+        width, height = image.size
+        pixels = width * height
+        if pixels > self.MAX_IMAGE_PIXELS:
+            scale = (self.MAX_IMAGE_PIXELS / pixels) ** 0.5
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            logger.warning(
+                "Image %s is %dx%d (%dMP), resizing to %dx%d",
+                path.name,
+                width,
+                height,
+                pixels // 1_000_000,
+                new_width,
+                new_height,
+            )
+            image = image.resize((new_width, new_height), Image.LANCZOS)
+
+        text = pytesseract.image_to_string(image, lang=self.ocr_language)
+        return text.strip()
+
+    def _extract_eml(self, path: Path) -> str:
+        """Extract text from .eml email files.
+
+        Extracts headers (From, To, Date, Subject) and body text.
+        Prefers plain text body; falls back to HTML with tag stripping.
+        """
+        import email
+        from email import policy
+
+        with open(path, "rb") as f:
+            msg = email.message_from_binary_file(f, policy=policy.default)
+
+        parts = []
+        parts.append(f"From: {msg.get('From', 'Unknown')}")
+        parts.append(f"To: {msg.get('To', 'Unknown')}")
+        parts.append(f"Date: {msg.get('Date', 'Unknown')}")
+        parts.append(f"Subject: {msg.get('Subject', 'No Subject')}")
+        parts.append("")
+
+        body = msg.get_body(preferencelist=("plain", "html"))
+        if body:
+            content = body.get_content()
+            if body.get_content_type() == "text/html":
+                content = self._strip_html_tags(content)
+            parts.append(content)
+
+        return "\n".join(parts)
+
+    def _extract_msg(self, path: Path) -> str:
+        """Extract text from Outlook .msg files.
+
+        Extracts headers (From, To, Date, Subject) and body text.
+        Binary attachments are skipped.
+        """
+        try:
+            import extract_msg
+        except ImportError as e:
+            raise ImportError(
+                "extract-msg required for .msg extraction: pip install extract-msg"
+            ) from e
+
+        msg = extract_msg.Message(path)
+        try:
+            parts = []
+            parts.append(f"From: {msg.sender or 'Unknown'}")
+            parts.append(f"To: {msg.to or 'Unknown'}")
+            parts.append(f"Date: {msg.date or 'Unknown'}")
+            parts.append(f"Subject: {msg.subject or 'No Subject'}")
+            parts.append("")
+            parts.append(msg.body or "")
+            return "\n".join(parts)
+        finally:
+            msg.close()
+
+    def _strip_html_tags(self, html: str) -> str:
+        """Strip HTML tags from content, returning plain text."""
+        try:
+            from bs4 import BeautifulSoup
+
+            soup = BeautifulSoup(html, "html.parser")
+            for element in soup(["script", "style"]):
+                element.decompose()
+            return soup.get_text(separator="\n", strip=True)
+        except ImportError:
+            import re
+
+            text = re.sub(r"<[^>]+>", " ", html)
+            return re.sub(r"\s+", " ", text).strip()

@@ -83,5 +83,14 @@ def get_mime_type(extension: str) -> str:
         "md": "text/markdown",
         "html": "text/html",
         "csv": "text/csv",
+        # Image formats
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "tiff": "image/tiff",
+        "tif": "image/tiff",
+        # Email formats
+        "eml": "message/rfc822",
+        "msg": "application/vnd.ms-outlook",
     }
     return mime_types.get(extension.lower(), "application/octet-stream")
