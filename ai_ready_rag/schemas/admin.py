@@ -557,6 +557,7 @@ class WarmingQueueJobResponse(BaseModel):
     submitted_by: str | None = None
     error_message: str | None = None
     worker_id: str | None = None
+    all_failed: bool = False
 
 
 class WarmingQueueListResponse(BaseModel):
@@ -599,6 +600,9 @@ class BatchQueriesResponse(BaseModel):
     queries: list[WarmingQueryResponse]
     total_count: int
     batch_id: str
+    completed: int = 0
+    failed: int = 0
+    pending: int = 0
 
 
 class QueryRetryResponse(BaseModel):

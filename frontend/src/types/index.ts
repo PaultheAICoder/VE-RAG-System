@@ -555,6 +555,7 @@ export interface WarmingJob {
   submitted_by: string | null;
   error_message: string | null;
   worker_id: string | null;
+  all_failed: boolean;
 }
 
 export type WarmingQueryStatus = 'pending' | 'processing' | 'cancelling' | 'completed' | 'failed' | 'skipped';
@@ -576,6 +577,9 @@ export interface BatchQueriesResponse {
   queries: WarmingQuery[];
   total_count: number;
   batch_id: string;
+  completed: number;
+  failed: number;
+  pending: number;
 }
 
 export interface QueryRetryResponse {

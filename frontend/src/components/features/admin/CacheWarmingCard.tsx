@@ -936,17 +936,17 @@ export function CacheWarmingCard({
                               {estimatedTimeRemaining && ` - ${formatTimeRemaining(estimatedTimeRemaining)}`}
                             </span>
                           )}
-                          {job.status === 'completed_with_errors' && (
-                            <span className="text-xs text-amber-600 mt-0.5 block">
-                              {job.failed_queries} of {job.total_queries} queries failed
-                            </span>
-                          )}
-                          {job.status === 'failed' && (
+                          {job.status === 'completed_with_errors' && job.all_failed && (
                             <span className="text-xs text-red-500 mt-0.5 block">
                               All queries failed
                             </span>
                           )}
-                          {job.status !== 'completed_with_errors' && job.status !== 'failed' && job.failed_queries > 0 && (
+                          {job.status === 'completed_with_errors' && !job.all_failed && (
+                            <span className="text-xs text-amber-600 mt-0.5 block">
+                              {job.failed_queries} of {job.total_queries} queries failed
+                            </span>
+                          )}
+                          {job.status !== 'completed_with_errors' && job.failed_queries > 0 && (
                             <span className="text-xs text-red-500 mt-0.5 block">
                               {job.failed_queries} failed
                             </span>
