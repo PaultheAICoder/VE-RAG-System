@@ -91,14 +91,15 @@ class TestGetTopQueries:
 
 
 class TestWarmCache:
-    """Tests for POST /api/admin/cache/warm endpoint (fully removed in #193)."""
+    """Tests for POST /api/admin/cache/warm endpoint (returns 410 Gone)."""
 
-    def test_endpoint_removed(self, client, admin_headers):
-        """Legacy endpoint fully removed -- no longer returns 410, returns 404/405."""
+    def test_endpoint_returns_410(self, client, admin_headers):
+        """Legacy endpoint returns 410 Gone with redirect guidance."""
         response = client.post(
             "/api/admin/cache/warm",
             json={"queries": ["What is the vacation policy?"]},
             headers=admin_headers,
         )
 
-        assert response.status_code in [404, 405]
+        assert response.status_code == 410
+        assert "warming/queue/manual" in response.json()["detail"]

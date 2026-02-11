@@ -437,6 +437,51 @@ class TestGetBatchDetail:
         )
         assert response.status_code == 404
 
+    def test_all_failed_flag_true(self, client, system_admin_headers, db, system_admin_user):
+        """P2-10: all_failed is true when all queries in batch failed."""
+        batch = WarmingBatch(
+            source_type="manual",
+            total_queries=2,
+            status="completed_with_errors",
+            submitted_by=system_admin_user.id,
+            created_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+        )
+        db.add(batch)
+        db.flush()
+        for i in range(2):
+            db.add(
+                WarmingQuery(
+                    batch_id=batch.id,
+                    query_text=f"Fail query {i}",
+                    status="failed",
+                    sort_order=i,
+                    submitted_by=system_admin_user.id,
+                    created_at=datetime.now(UTC),
+                    error_message="Test error",
+                    error_type="llm_error",
+                )
+            )
+        db.flush()
+
+        response = client.get(
+            f"/api/admin/warming/queue/{batch.id}",
+            headers=system_admin_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["all_failed"] is True
+
+    def test_all_failed_flag_false(self, client, system_admin_headers, completed_batch):
+        """P2-10: all_failed is false when some queries succeeded."""
+        response = client.get(
+            f"/api/admin/warming/queue/{completed_batch.id}",
+            headers=system_admin_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["all_failed"] is False
+
 
 # =============================================================================
 # Test Delete Batch
@@ -617,6 +662,22 @@ class TestBatchQueries:
         assert len(data["queries"]) == 3
         # Should be ordered by sort_order
         assert data["queries"][0]["sort_order"] == 0
+        # P2-9: Aggregate counts
+        assert data["completed"] == 0
+        assert data["failed"] == 0
+        assert data["pending"] == 3
+
+    def test_list_queries_aggregates_mixed(self, client, system_admin_headers, completed_batch):
+        """Aggregate counts reflect full batch even when filtered."""
+        response = client.get(
+            f"/api/admin/warming/batch/{completed_batch.id}/queries",
+            headers=system_admin_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["completed"] == 2
+        assert data["failed"] == 1
+        assert data["pending"] == 0
 
     def test_filter_queries_by_status(self, client, system_admin_headers, completed_batch):
         response = client.get(
@@ -740,35 +801,39 @@ class TestRetryEndpoints:
 # =============================================================================
 
 
-class TestLegacyEndpointsRemoved:
-    """Verify legacy 410 stubs fully removed in #193."""
+class TestLegacyEndpointsGone:
+    """Verify legacy endpoints return 410 Gone with redirect guidance."""
 
-    def test_cache_warm_removed(self, client, system_admin_headers):
+    def test_cache_warm_gone(self, client, system_admin_headers):
         response = client.post(
             "/api/admin/cache/warm",
             json={"queries": ["test"]},
             headers=system_admin_headers,
         )
-        assert response.status_code in [404, 405]
+        assert response.status_code == 410
+        assert "warming/queue/manual" in response.json()["detail"]
 
-    def test_warm_progress_removed(self, client, system_admin_headers):
+    def test_warm_progress_gone(self, client, system_admin_headers):
         response = client.get(
             "/api/admin/cache/warm-progress/some-id",
             headers=system_admin_headers,
         )
-        assert response.status_code in [404, 405]
+        assert response.status_code == 410
+        assert "warming/progress" in response.json()["detail"]
 
-    def test_warm_retry_removed(self, client, system_admin_headers):
+    def test_warm_retry_gone(self, client, system_admin_headers):
         response = client.post(
             "/api/admin/cache/warm-retry",
             json={"queries": ["test"]},
             headers=system_admin_headers,
         )
-        assert response.status_code in [404, 405]
+        assert response.status_code == 410
+        assert "warming/batch" in response.json()["detail"]
 
-    def test_warm_status_removed(self, client, system_admin_headers):
+    def test_warm_status_gone(self, client, system_admin_headers):
         response = client.get(
             "/api/admin/cache/warm-status/some-id",
             headers=system_admin_headers,
         )
-        assert response.status_code in [404, 405]
+        assert response.status_code == 410
+        assert "warming/queue" in response.json()["detail"]

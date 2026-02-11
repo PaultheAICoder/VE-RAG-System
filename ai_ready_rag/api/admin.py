@@ -2091,13 +2091,15 @@ def _batch_to_response(batch: WarmingBatch, db: Session) -> WarmingQueueJobRespo
         .filter(WarmingQuery.batch_id == batch.id)
         .first()
     )
+    failed_count = counts.failed if counts else 0
+    all_failed = failed_count == batch.total_queries and failed_count > 0
     return WarmingQueueJobResponse(
         id=batch.id,
         source_type=batch.source_type,
         original_filename=batch.original_filename,
         total_queries=batch.total_queries,
         completed_queries=counts.completed if counts else 0,
-        failed_queries=counts.failed if counts else 0,
+        failed_queries=failed_count,
         pending_queries=counts.pending if counts else 0,
         status=batch.status,
         is_paused=batch.is_paused,
@@ -2108,6 +2110,7 @@ def _batch_to_response(batch: WarmingBatch, db: Session) -> WarmingQueueJobRespo
         submitted_by=batch.submitted_by,
         error_message=batch.error_message,
         worker_id=batch.worker_id,
+        all_failed=all_failed,
     )
 
 
@@ -2553,7 +2556,7 @@ async def upload_warming_file(
     for line in text.split("\n"):
         line = line.strip()
         if line and not line.startswith("#") and not line.startswith("//"):
-            cleaned = _strip_numbering(line)
+            cleaned = re.sub(r"\s+", " ", _strip_numbering(line))
             if cleaned:
                 queries.append(cleaned)
 
@@ -2645,7 +2648,7 @@ async def add_manual_warming_queries(
     # Clean and validate queries (skip blanks and comments)
     queries = []
     for q in request.queries:
-        cleaned = q.strip()
+        cleaned = re.sub(r"\s+", " ", q.strip())
         if cleaned and not cleaned.startswith("#") and not cleaned.startswith("//"):
             queries.append(cleaned)
 
@@ -3071,6 +3074,17 @@ async def list_batch_queries(
     total_count = query.count()
     queries = query.order_by(WarmingQuery.sort_order.asc()).offset(offset).limit(limit).all()
 
+    # Aggregate counts across the full batch (unfiltered)
+    status_counts = (
+        db.query(
+            func.count(case((WarmingQuery.status == "completed", 1))).label("completed"),
+            func.count(case((WarmingQuery.status == "failed", 1))).label("failed"),
+            func.count(case((WarmingQuery.status == "pending", 1))).label("pending"),
+        )
+        .filter(WarmingQuery.batch_id == batch_id)
+        .first()
+    )
+
     return BatchQueriesResponse(
         queries=[
             WarmingQueryResponse(
@@ -3089,6 +3103,9 @@ async def list_batch_queries(
         ],
         total_count=total_count,
         batch_id=batch_id,
+        completed=status_counts.completed if status_counts else 0,
+        failed=status_counts.failed if status_counts else 0,
+        pending=status_counts.pending if status_counts else 0,
     )
 
 
@@ -3170,7 +3187,7 @@ async def retry_batch_failed_queries(
         db.query(WarmingQuery)
         .filter(
             WarmingQuery.batch_id == batch_id,
-            WarmingQuery.status.in_(["failed", "skipped"]),
+            WarmingQuery.status == "failed",
         )
         .update(
             {
@@ -3202,7 +3219,7 @@ async def retry_batch_failed_queries(
     return QueryRetryResponse(
         batch_id=batch_id,
         retried_count=retried_count,
-        message=f"Reset {retried_count} failed/skipped queries to pending.",
+        message=f"Reset {retried_count} failed queries to pending.",
     )
 
 
@@ -3279,6 +3296,43 @@ async def retry_single_query(
         status=query_row.status,
         retry_count=query_row.retry_count,
         batch_requeued=batch_requeued,
+    )
+
+
+# =============================================================================
+# Legacy Endpoint Stubs (410 Gone -- Phase 2 deprecation window)
+# =============================================================================
+
+
+@router.post("/cache/warm")
+async def warm_cache_legacy():
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This endpoint has been removed. Use POST /api/admin/warming/queue/manual instead.",
+    )
+
+
+@router.get("/cache/warm-progress/{job_id}")
+async def warm_progress_legacy(job_id: str):
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This endpoint has been removed. Use GET /api/admin/warming/progress instead.",
+    )
+
+
+@router.post("/cache/warm-retry")
+async def warm_retry_legacy():
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This endpoint has been removed. Use POST /api/admin/warming/batch/{batch_id}/retry instead.",
+    )
+
+
+@router.get("/cache/warm-status/{job_id}")
+async def warm_status_legacy(job_id: str):
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="This endpoint has been removed. Use GET /api/admin/warming/queue/{batch_id} instead.",
     )
 
 

@@ -334,16 +334,14 @@ class TestWarmingJobLifecycle:
 
 
 class TestDeprecatedEndpoints:
-    """Verify legacy warming endpoints have been fully removed (#193)."""
+    """Verify legacy warming endpoints return 410 Gone."""
 
-    def test_old_warm_endpoint_removed(self, client, admin_headers):
-        """Old /api/admin/cache/warm fully removed in Phase 6 cleanup."""
+    def test_old_warm_endpoint_gone(self, client, admin_headers):
+        """Old /api/admin/cache/warm returns 410 Gone with redirect guidance."""
         response = client.post(
             "/api/admin/cache/warm",
             headers=admin_headers,
             json={"queries": ["test"]},
         )
-        # Endpoint fully removed -- should be 404 or 405 (no route matches)
-        assert response.status_code in [404, 405], (
-            f"Old endpoint should be removed, not {response.status_code}"
-        )
+        assert response.status_code == 410
+        assert "warming/queue/manual" in response.json()["detail"]

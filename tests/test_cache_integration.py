@@ -379,23 +379,25 @@ class TestCacheWarming:
     process_warming_batch ARQ task.
     """
 
-    def test_legacy_warm_endpoint_removed(self, client, admin_headers):
-        """Legacy POST /cache/warm endpoint fully removed (#193)."""
+    def test_legacy_warm_endpoint_gone(self, client, admin_headers):
+        """Legacy POST /cache/warm returns 410 Gone with redirect guidance."""
         response = client.post(
             "/api/admin/cache/warm",
             json={"queries": ["Query 1"]},
             headers=admin_headers,
         )
-        assert response.status_code in [404, 405]
+        assert response.status_code == 410
+        assert "warming/queue/manual" in response.json()["detail"]
 
-    def test_legacy_warm_retry_removed(self, client, admin_headers):
-        """Legacy POST /cache/warm-retry endpoint fully removed (#193)."""
+    def test_legacy_warm_retry_gone(self, client, admin_headers):
+        """Legacy POST /cache/warm-retry returns 410 Gone with redirect guidance."""
         response = client.post(
             "/api/admin/cache/warm-retry",
             json={"queries": ["Query 1"]},
             headers=admin_headers,
         )
-        assert response.status_code in [404, 405]
+        assert response.status_code == 410
+        assert "warming/batch" in response.json()["detail"]
 
 
 class TestCacheEntryToResponse:
