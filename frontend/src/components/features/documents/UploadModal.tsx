@@ -36,15 +36,28 @@ export function UploadModal({
   // Results state
   const [showResults, setShowResults] = useState(false);
   const [uploadResults, setUploadResults] = useState<UploadResult[]>([]);
+  const [selectionSkippedResults, setSelectionSkippedResults] = useState<UploadResult[]>([]);
 
-  const handleFilesSelected = useCallback((files: File[]) => {
-    const newFiles: QueuedFile[] = files.map((file) => ({
-      id: generateId(),
-      file,
-      status: 'queued' as UploadStatus,
-      progress: 0,
-    }));
-    setQueuedFiles((prev) => [...prev, ...newFiles]);
+  const handleFilesSelected = useCallback((files: File[], skippedFiles: File[] = []) => {
+    if (files.length > 0) {
+      const newFiles: QueuedFile[] = files.map((file) => ({
+        id: generateId(),
+        file,
+        status: 'queued' as UploadStatus,
+        progress: 0,
+      }));
+      setQueuedFiles((prev) => [...prev, ...newFiles]);
+    }
+
+    if (skippedFiles.length > 0) {
+      const skippedResults: UploadResult[] = skippedFiles.map((file) => ({
+        filename: file.name,
+        status: 'skipped' as const,
+        error: 'Unsupported file type',
+      }));
+      setSelectionSkippedResults((prev) => [...prev, ...skippedResults]);
+    }
+
     setError(null);
   }, []);
 
@@ -147,7 +160,7 @@ export function UploadModal({
 
       // No duplicates - proceed with upload
       const results = await uploadFiles(filesToUpload, false);
-      setUploadResults(results);
+      setUploadResults([...results, ...selectionSkippedResults]);
       setIsUploading(false);
       onUploadComplete();
       setShowResults(true);
@@ -176,7 +189,7 @@ export function UploadModal({
     }));
 
     const uploadedResults = await uploadFiles(filesToUpload, false);
-    setUploadResults([...uploadedResults, ...skippedResults]);
+    setUploadResults([...uploadedResults, ...skippedResults, ...selectionSkippedResults]);
     setIsUploading(false);
     onUploadComplete();
     setShowResults(true);
@@ -191,7 +204,7 @@ export function UploadModal({
     // Upload all files with replace=true
     const filesToUpload = queuedFiles.filter((f) => f.status === 'queued');
     const results = await uploadFiles(filesToUpload, true);
-    setUploadResults(results);
+    setUploadResults([...results, ...selectionSkippedResults]);
     setIsUploading(false);
     onUploadComplete();
     setShowResults(true);
@@ -218,6 +231,7 @@ export function UploadModal({
     setError(null);
     setDuplicateCheck(null);
     setUploadResults([]);
+    setSelectionSkippedResults([]);
     onClose();
   };
 
@@ -281,6 +295,13 @@ export function UploadModal({
           {error && (
             <Alert variant="danger" onClose={() => setError(null)}>
               {error}
+            </Alert>
+          )}
+
+          {selectionSkippedResults.length > 0 && (
+            <Alert variant="warning">
+              {selectionSkippedResults.length} unsupported file
+              {selectionSkippedResults.length !== 1 ? 's were' : ' was'} skipped.
             </Alert>
           )}
 
