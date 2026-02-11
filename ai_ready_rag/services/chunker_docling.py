@@ -1,6 +1,7 @@
 """Docling chunker for production/Spark deployments."""
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -71,9 +72,11 @@ class DoclingChunker:
                 try:
                     from docling.datamodel.pipeline_options import TesseractOcrOptions
 
+                    tessdata_path = os.environ.get("TESSDATA_PREFIX")
                     ocr_options = TesseractOcrOptions(
                         lang=[self.ocr_language],
                         force_full_page_ocr=self.force_full_page_ocr,
+                        path=tessdata_path,
                     )
                     pipeline_options.ocr_options = ocr_options
                 except ImportError:
