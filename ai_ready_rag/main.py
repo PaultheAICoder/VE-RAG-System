@@ -31,6 +31,7 @@ from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import Document, SystemSetup, User
 from ai_ready_rag.middleware.request_logging import RequestLoggingMiddleware
 from ai_ready_rag.services.factory import get_vector_service
+from ai_ready_rag.workers.arq_worker import EmbeddedArqWorker
 from ai_ready_rag.workers.warming_cleanup import WarmingCleanupService
 from ai_ready_rag.workers.warming_worker import WarmingWorker, recover_stale_batches
 
@@ -112,8 +113,11 @@ async def lifespan(app: FastAPI):
 
     # Initialize Redis connection pool (None if unavailable — degraded mode)
     redis_pool = await get_redis_pool()
+    arq_worker: EmbeddedArqWorker | None = None
     if redis_pool:
         logger.info("Redis connected — ARQ task queue available")
+        arq_worker = EmbeddedArqWorker(redis_pool, settings, vector_service)
+        await arq_worker.start()
     else:
         logger.warning("Redis unavailable — running in degraded mode (BackgroundTasks fallback)")
 
@@ -159,6 +163,9 @@ async def lifespan(app: FastAPI):
 
     await warming_worker.stop()
     logger.info("WarmingWorker stopped")
+
+    if arq_worker:
+        await arq_worker.stop()
 
     await close_redis_pool()
 
