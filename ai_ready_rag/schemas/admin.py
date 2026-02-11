@@ -609,6 +609,16 @@ class QueryRetryResponse(BaseModel):
     message: str
 
 
+class SingleQueryRetryResponse(BaseModel):
+    """Response model for single query retry operation."""
+
+    query_id: str
+    batch_id: str
+    status: str
+    retry_count: int
+    batch_requeued: bool
+
+
 # =============================================================================
 # Cache Settings & Stats
 # =============================================================================
