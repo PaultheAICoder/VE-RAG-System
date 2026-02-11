@@ -153,6 +153,23 @@ async def warm_query_with_retry(
                 if isinstance(score, int):
                     confidence = score
 
+            # Check if batch was cancelled while LLM was processing
+            db.expire_all()
+            batch = db.query(WarmingBatch).filter(WarmingBatch.id == query_row.batch_id).first()
+            if batch and batch.is_cancel_requested:
+                db.execute(
+                    update(WarmingQuery)
+                    .where(WarmingQuery.id == query_row.id)
+                    .values(
+                        status="skipped",
+                        retry_count=attempt,
+                        processed_at=now(),
+                        updated_at=now(),
+                    )
+                )
+                db.commit()
+                return False
+
             # Success
             db.execute(
                 update(WarmingQuery)
