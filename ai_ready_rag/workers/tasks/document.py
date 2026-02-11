@@ -41,12 +41,15 @@ async def process_document(
     Returns:
         Dict with processing result (success, chunk_count, error)
     """
+    import os
+
     from ai_ready_rag.db.database import SessionLocal
     from ai_ready_rag.db.models import Document
     from ai_ready_rag.services.factory import get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingOptions, ProcessingService
 
     logger.info(f"[ARQ] Starting processing for document {document_id}")
+    logger.info(f"[ARQ] TESSDATA_PREFIX={os.environ.get('TESSDATA_PREFIX', 'NOT SET')}")
 
     semaphore = _get_semaphore()
     async with semaphore:

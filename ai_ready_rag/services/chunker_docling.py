@@ -73,6 +73,30 @@ class DoclingChunker:
                     from docling.datamodel.pipeline_options import TesseractOcrOptions
 
                     tessdata_path = os.environ.get("TESSDATA_PREFIX")
+                    logger.info(
+                        f"OCR config: TESSDATA_PREFIX={tessdata_path}, "
+                        f"lang={self.ocr_language}, force_ocr={self.force_full_page_ocr}"
+                    )
+
+                    # Verify tesserocr can find languages before Docling init
+                    try:
+                        import tesserocr
+
+                        check_path = tessdata_path or None
+                        _, langs = (
+                            tesserocr.get_languages(check_path)
+                            if check_path
+                            else tesserocr.get_languages()
+                        )
+                        logger.info(f"tesserocr languages at '{check_path}': {langs}")
+                        if not langs and tessdata_path:
+                            logger.warning(
+                                "tesserocr found no languages — "
+                                "check TESSDATA_PREFIX path exists and contains .traineddata files"
+                            )
+                    except Exception as e:
+                        logger.warning(f"tesserocr pre-check failed: {e}")
+
                     ocr_options = TesseractOcrOptions(
                         lang=[self.ocr_language],
                         force_full_page_ocr=self.force_full_page_ocr,
