@@ -2,10 +2,10 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | FINAL |
-| **Version** | v1.2 |
+| **Status** | FINAL (VALIDATED) |
+| **Version** | v1.3 |
 | **Author** | Claude (AI) + jjob |
-| **Date** | 2026-02-07 |
+| **Date** | 2026-02-10 |
 | **Replaces** | `CACHE_WARMING_QUEUE_v1.md`, `CACHE_WARMING_PERSISTENT_QUEUE.md` |
 
 ---
@@ -270,6 +270,8 @@ The batch always reaches a terminal state. There is no "batch failed" status —
 response.all_failed = (failed_count == batch.total_queries and failed_count > 0)
 ```
 
+> **Implementation confirmed (v1.3)**: `all_failed` is computed in the batch response serialization at read time (`WarmingQueueJobResponse.all_failed` in `schemas/admin.py`). Not stored in DB — derived from query counts at `admin.py:2095`.
+
 ### 4.2 Query State Machine
 
 ```
@@ -511,6 +513,8 @@ except Exception as e:
 ```
 
 **Fallback safety net**: If ARQ enqueue fails *after* queries are in DB, the batch stays `pending`. The WarmingWorker's polling loop (which runs on startup and periodically) will discover un-leased pending batches and process them. No data loss.
+
+> **Implementation confirmed (v1.3)**: Uses `is_redis_available()` with active ping and pool recovery (see `core/redis.py`). Both manual and upload endpoints check Redis availability before any DB writes.
 
 ### 6.3 New ARQ Task: `process_warming_batch`
 
@@ -789,7 +793,6 @@ async def _sse_event_generator(batch_id: str, last_event_id: str | None = None):
 | `warming_allowed_extensions` | Only relevant during file parsing, not a config setting |
 | `warming_archive_completed` | No files to archive (DB has full history) |
 | `warming_checkpoint_interval` | No file checkpointing (DB commits per-query) |
-| `warming_scan_interval_seconds` | No folder scanning (ARQ triggers work) |
 
 ### Kept Settings
 
@@ -807,6 +810,9 @@ async def _sse_event_generator(batch_id: str, last_event_id: str | None = None):
 | `warming_failed_retention_days` | Cleanup: delete old failed batches + queries |
 | `warming_cleanup_interval_hours` | Cleanup service interval |
 | `warming_checkpoint_time_seconds` | Max seconds between SSE event emissions |
+| `warming_scan_interval_seconds` | DB polling interval for pending batches in hybrid ARQ + polling model (default: 5s) |
+
+> **Note (v1.3)**: `warming_scan_interval_seconds` was originally listed as Removed (no folder scanning). In the implemented hybrid architecture, ARQ is the primary trigger for batch processing, but the WarmingWorker also polls the DB at this interval to pick up pending batches when ARQ enqueue fails. This provides resilience without file-system scanning.
 
 ### New Settings
 
@@ -908,7 +914,7 @@ Re-set all `failed` queries in a batch to `pending` (increments `retry_count`). 
 
 #### POST `/api/admin/warming/batch/{batch_id}/queries/{query_id}/retry`
 
-Re-set a **single** `failed` query to `pending` (increments `retry_count`). If the batch is in a terminal state (`completed_with_errors`), changes batch status back to `pending` and re-enqueues ARQ job.
+Re-set a **single** `failed` or `skipped` query to `pending` (increments `retry_count`). If the batch is in a terminal state (`completed_with_errors`), changes batch status back to `pending` and re-enqueues ARQ job.
 
 ```python
 # Response
@@ -920,8 +926,8 @@ Re-set a **single** `failed` query to `pending` (increments `retry_count`). If t
     "batch_requeued": true   # true if batch status was also changed
 }
 
-# Error: query is not in 'failed' status
-# 409 { "detail": "Query is not in failed status" }
+# Error: query is not in 'failed' or 'skipped' status
+# 409 { "detail": "Query is not in failed or skipped status" }
 ```
 
 ### Removed Endpoints (with deprecation window)
@@ -1131,6 +1137,8 @@ export async function retryQuery(batchId: string, queryId: string): Promise<void
 
 ## 13. Migration Plan
 
+> **Implementation note (v1.3, pre-production)**: Since the system was pre-production with no live data to preserve, migration was handled via direct `DROP TABLE IF EXISTS` in `init_db()` (see `database.py:52-57`). The staged migration plan below is retained for reference but was not executed.
+
 ### Step 1: Deploy new tables alongside old
 
 Both `warming_queue` (old) and `warming_batches` + `warming_queries` (new) exist simultaneously. New endpoints write to new tables. Old tables are read-only.
@@ -1204,7 +1212,7 @@ If issues are found after Phase 2, revert the API endpoints to use old tables. O
 - [ ] `services/warming_queue.py` deleted
 - [ ] Old tables dropped after migration confirmed
 - [ ] All warming-related tests pass
-- [ ] Legacy endpoints return 404
+- [ ] Legacy endpoints return 410 Gone with redirect guidance
 
 ### UX
 
@@ -1223,3 +1231,4 @@ If issues are found after Phase 2, revert the API endpoints to use old tables. O
 | v1.0 | 2026-02-07 | Claude + jjob | Initial draft |
 | v1.1 | 2026-02-07 | Claude + jjob | Address engineering review: add state machines (Sec 4), idempotency guards (Sec 5), batch completion criteria (Sec 4.1.1), pause/cancel semantics (Sec 4.3), 503 fail-fast for Redis down (Sec 6.2), SSE replay policy (Sec 7.2), retry algorithm (Sec 6.4), uniqueness constraints, cleanup indexes, lease renewal spec, stale reclamation, migration notification, UX text checklist. Effort estimate 6d → 8d. |
 | v1.2 | 2026-02-07 | Claude + jjob | Final review: single worker per batch invariant (Sec 5.2), monotonic SSE event ordering via `batch_seq` (Sec 3 warming_sse_events), derived `all_failed` flag (Sec 4.1.1), single-query retry endpoint (Sec 9), comment style support `#` and `//` (Sec 3 normalization), migration cancel reason in `error_message` (Sec 3 migration), legacy endpoint deprecation window with 410 Gone (Sec 9), over-limit validation with 400 (Sec 8). |
+| v1.3 | 2026-02-10 | Claude + jjob | Post-implementation validation: Confirm 503 Redis fail-fast (Sec 6.2, #213), move `warming_scan_interval_seconds` to Kept settings (Sec 8, hybrid ARQ+polling), confirm `warming_max_upload_size_mb` naming (Sec 8, #215), note direct table DROP migration (Sec 13, #193), confirm batch retry resets only `failed` (Sec 9, #216), update single-query retry to include `skipped` (Sec 9), confirm `all_failed` derived flag (Sec 4.1.1, #216), fix acceptance criteria 410 vs 404 (Sec 14). Status: FINAL (VALIDATED). |
