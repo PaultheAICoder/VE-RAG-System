@@ -557,12 +557,13 @@ export interface WarmingJob {
   worker_id: string | null;
 }
 
-export type WarmingQueryStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'skipped';
+export type WarmingQueryStatus = 'pending' | 'processing' | 'cancelling' | 'completed' | 'failed' | 'skipped';
 
 export interface WarmingQuery {
   id: string;
   query_text: string;
   status: WarmingQueryStatus;
+  confidence_score: number | null;
   error_message: string | null;
   error_type: string | null;
   retry_count: number;

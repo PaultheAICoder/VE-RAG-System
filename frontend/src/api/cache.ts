@@ -153,8 +153,11 @@ export async function retryQuery(
  * @param jobId - The warming job ID
  * @param lastEventId - Optional last event ID for resumption
  */
-export function getWarmProgressUrl(jobId: string, lastEventId?: string | null): string {
+export function getWarmProgressUrl(jobId: string, lastEventId?: string | null): string | null {
   const token = useAuthStore.getState().token;
+  if (!token) {
+    return null;
+  }
   let url = `/api/admin/warming/progress?job_id=${jobId}&token=${token}`;
   if (lastEventId) {
     url += `&last_event_id=${lastEventId}`;
@@ -229,7 +232,7 @@ export async function cancelWarmingJob(): Promise<WarmingJob> {
  */
 export async function bulkDeleteWarmingJobs(jobIds: string[]): Promise<{ deleted_count: number }> {
   return apiClient.delete<{ deleted_count: number }>('/api/admin/warming/queue/bulk', {
-    body: JSON.stringify({ job_ids: jobIds }),
+    job_ids: jobIds,
   });
 }
 

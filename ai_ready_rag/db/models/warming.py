@@ -81,6 +81,7 @@ class WarmingQuery(Base):
     status = Column(String, nullable=False, default="pending")
     error_message = Column(Text, nullable=True)
     error_type = Column(String, nullable=True)
+    confidence_score = Column(Integer, nullable=True)
     retry_count = Column(Integer, nullable=False, default=0)
     sort_order = Column(Integer, nullable=False, default=0)
     submitted_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

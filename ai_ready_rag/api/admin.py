@@ -23,7 +23,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
-from sqlalchemy import case, func
+from sqlalchemy import case, func, update
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
@@ -2920,7 +2920,46 @@ async def cancel_current_warming_job(
             detail="No running or paused batch to cancel.",
         )
 
+    # Check if any queries are still actively being processed
+    active_count = (
+        db.query(WarmingQuery)
+        .filter(
+            WarmingQuery.batch_id == batch.id,
+            WarmingQuery.status.in_(["pending", "processing"]),
+        )
+        .count()
+    )
+
+    if active_count == 0:
+        # No active queries — cancel immediately (worker already exited loop)
+        from ai_ready_rag.workers.tasks.warming_batch import cancel_batch
+
+        cancel_batch(db, batch.id)
+        store_sse_event(
+            db,
+            "cancel_requested",
+            batch.id,
+            {"batch_id": batch.id, "status": "cancelled"},
+        )
+        logger.info(f"Admin {current_user.email} cancelled warming batch {batch.id} (immediate)")
+        return {"batch_id": batch.id, "is_cancel_requested": True, "status": "cancelled"}
+
+    # Active queries remain — set flag for worker and immediately update query statuses
     batch.is_cancel_requested = True
+
+    # Immediately skip pending queries so UI reflects cancel right away
+    now = datetime.utcnow()
+    db.execute(
+        update(WarmingQuery)
+        .where(WarmingQuery.batch_id == batch.id, WarmingQuery.status == "pending")
+        .values(status="skipped", updated_at=now)
+    )
+    # Mark in-flight query as "cancelling" for accurate UI feedback
+    db.execute(
+        update(WarmingQuery)
+        .where(WarmingQuery.batch_id == batch.id, WarmingQuery.status == "processing")
+        .values(status="cancelling", updated_at=now)
+    )
     db.commit()
 
     store_sse_event(
@@ -3037,6 +3076,7 @@ async def list_batch_queries(
                 id=q.id,
                 query_text=q.query_text,
                 status=q.status,
+                confidence_score=q.confidence_score,
                 error_message=q.error_message,
                 error_type=q.error_type,
                 retry_count=q.retry_count,
@@ -3357,6 +3397,7 @@ async def _sse_event_generator(job_id: str, last_event_id: str | None = None):
             progress_data = {
                 "batch_id": job_id,
                 "processed": processed,
+                "completed": completed_count,
                 "failed": failed_count,
                 "skipped": skipped_count,
                 "total": total_queries,

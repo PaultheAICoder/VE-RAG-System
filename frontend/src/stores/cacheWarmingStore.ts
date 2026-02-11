@@ -140,6 +140,12 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
           status: 'idle',
           queriesCount: 0,
           error: null,
+          activeJobId: null,
+          processed: 0,
+          total: 0,
+          results: [],
+          failedQueries: [],
+          estimatedTimeRemaining: null,
         }),
 
       // File upload actions
@@ -247,7 +253,12 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
     {
       name: 'cache-warming-storage',
       partialize: (state) => ({
-        status: state.status,
+        // Don't persist transient error/warming states — they can't
+        // meaningfully resume after a page reload and leave a stale
+        // "An error occurred" banner.
+        status: state.status === 'error' || state.status === 'warming'
+          ? 'idle'
+          : state.status,
         queriesCount: state.queriesCount,
         lastWarmingTime: state.lastWarmingTime,
         activeJobId: state.activeJobId,
@@ -256,6 +267,13 @@ export const useCacheWarmingStore = create<CacheWarmingState>()(
         failedQueries: state.failedQueries,
         lastEventId: state.lastEventId,
       }),
+      onRehydrateStorage: () => (state) => {
+        // Sanitize stale error/warming from localStorage written before this fix
+        if (state && (state.status === 'error' || state.status === 'warming')) {
+          state.status = 'idle';
+          state.error = null;
+        }
+      },
     }
   )
 );

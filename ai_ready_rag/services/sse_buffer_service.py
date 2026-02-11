@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
@@ -39,30 +40,53 @@ def store_sse_event(
     from ai_ready_rag.db.models import WarmingSSEEvent
 
     if job_id is not None:
-        # Compute monotonic batch_seq per job
-        max_seq = (
-            db.query(func.max(WarmingSSEEvent.batch_seq))
-            .filter(WarmingSSEEvent.job_id == job_id)
-            .scalar()
-            or 0
-        )
-        batch_seq = max_seq + 1
-        event_id = str(batch_seq)
+        # Compute monotonic batch_seq per job with retry on race condition
+        max_retries = 3
+        for retry in range(max_retries):
+            max_seq = (
+                db.query(func.max(WarmingSSEEvent.batch_seq))
+                .filter(WarmingSSEEvent.job_id == job_id)
+                .scalar()
+                or 0
+            )
+            batch_seq = max_seq + 1
+            event_id = str(batch_seq)
+
+            event = WarmingSSEEvent(
+                event_id=event_id,
+                event_type=event_type,
+                job_id=job_id,
+                batch_seq=batch_seq,
+                payload=json.dumps(payload),
+                created_at=datetime.utcnow(),
+            )
+            db.add(event)
+            try:
+                db.commit()
+                break
+            except IntegrityError:
+                db.rollback()
+                if retry == max_retries - 1:
+                    raise
+                logger.warning(
+                    f"batch_seq collision for job {job_id} (seq={batch_seq}), "
+                    f"retry {retry + 1}/{max_retries}"
+                )
     else:
         # Global events without job context keep UUID
         batch_seq = None
         event_id = str(uuid.uuid4())
 
-    event = WarmingSSEEvent(
-        event_id=event_id,
-        event_type=event_type,
-        job_id=job_id,
-        batch_seq=batch_seq,
-        payload=json.dumps(payload),
-        created_at=datetime.utcnow(),
-    )
-    db.add(event)
-    db.commit()
+        event = WarmingSSEEvent(
+            event_id=event_id,
+            event_type=event_type,
+            job_id=job_id,
+            batch_seq=batch_seq,
+            payload=json.dumps(payload),
+            created_at=datetime.utcnow(),
+        )
+        db.add(event)
+        db.commit()
 
     logger.debug(f"Stored SSE event: {event_type} for job {job_id} (batch_seq={batch_seq})")
     return event_id
@@ -108,6 +132,7 @@ def _build_full_state_events(db: Session, job_id: str) -> list[dict]:
     progress_data = {
         "batch_id": job_id,
         "processed": processed,
+        "completed": completed_count,
         "failed": failed_count,
         "skipped": skipped_count,
         "total": batch.total_queries,

@@ -2,7 +2,17 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 
 from ai_ready_rag.db.database import Base
 from ai_ready_rag.db.models.base import TimestampMixin, generate_uuid
@@ -60,7 +70,7 @@ class WarmingSSEEvent(TimestampMixin, Base):
     __table_args__ = (
         Index("idx_sse_events_job", "job_id"),
         Index("idx_sse_events_created", "created_at"),
-        Index("idx_sse_events_batch_seq", "job_id", "batch_seq"),
+        UniqueConstraint("job_id", "batch_seq", name="uq_sse_events_job_batch_seq"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
