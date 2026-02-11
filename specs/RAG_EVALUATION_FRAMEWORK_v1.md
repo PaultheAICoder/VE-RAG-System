@@ -2,10 +2,10 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | DRAFT |
-| **Version** | v1.2 |
+| **Status** | FINAL — Ready for Implementation |
+| **Version** | v1.4 |
 | **Author** | Claude (AI) + jjob |
-| **Date** | 2026-02-10 |
+| **Date** | 2026-02-11 |
 | **Depends On** | RAG Service (rag_service.py), WarmingWorker pattern (warming_worker.py) |
 
 ---
@@ -43,7 +43,7 @@ Batch Evaluation Flow:
     → For each sample in dataset:
         → Check cancel flag
         → Run RAG pipeline with tag_scope (generate answer + retrieve contexts)
-        → Run RAGAS metrics (Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall)
+        → Run RAGAS metrics (Faithfulness, AnswerRelevancy, LLMContextPrecision, LLMContextRecall)
         → Store per-sample scores in EvaluationSample
         → Retry on transient failure (1 retry, 10s backoff)
     → Compute aggregate scores → Mark run complete
@@ -69,20 +69,20 @@ Dataset Management:
 
 | Metric | What It Measures | Requires Ground Truth | RAGAS Input Fields | Used In |
 |--------|-----------------|----------------------|-------------------|---------|
-| **Faithfulness** | Does the answer faithfully represent the context without hallucination? | No | `question`, `answer`, `contexts` | Batch + Live |
-| **AnswerRelevancy** | How relevant is the answer to the question? | No | `question`, `answer`, `contexts` | Batch + Live |
-| **ContextPrecision** | Are retrieved contexts ranked correctly (most relevant first)? | Yes | `question`, `contexts`, `ground_truth` | Batch only |
-| **ContextRecall** | Does the context contain enough information to answer? | Yes | `question`, `contexts`, `ground_truth` | Batch only |
+| **Faithfulness** | Does the answer faithfully represent the context without hallucination? | No | `user_input`, `response`, `retrieved_contexts` | Batch + Live |
+| **AnswerRelevancy** | How relevant is the answer to the question? | No | `user_input`, `response`, `retrieved_contexts` | Batch + Live |
+| **LLMContextPrecision** | Are retrieved contexts ranked correctly (most relevant first)? | Yes | `user_input`, `retrieved_contexts`, `reference` | Batch only |
+| **LLMContextRecall** | Does the context contain enough information to answer? | Yes | `user_input`, `retrieved_contexts`, `reference` | Batch only |
 
-**Why these 4**: They cover both retrieval quality (Context*) and generation quality (Faithfulness, AnswerRelevancy). Faithfulness and AnswerRelevancy work without ground truth, enabling live monitoring. ContextPrecision and ContextRecall require reference answers, limiting them to batch evaluation.
+**Why these 4**: They cover both retrieval quality (Context*) and generation quality (Faithfulness, AnswerRelevancy). Faithfulness and AnswerRelevancy work without ground truth, enabling live monitoring. LLMContextPrecision and LLMContextRecall require reference answers, limiting them to batch evaluation.
 
-**RAGAS v0.2 input contract**: RAGAS v0.2+ uses `ground_truth` (a string) for ContextRecall — it does NOT use a separate `reference_contexts` list. The `reference_contexts` field in our schema is stored for **human review and dataset provenance only**, not passed to RAGAS. See Section 5.2 for the exact field mapping.
+**RAGAS v0.4 input contract**: RAGAS v0.4 uses `reference` (a string) for LLMContextRecall — it does NOT use a separate `reference_contexts` list. The `reference_contexts` field in our schema is stored for **human review and dataset provenance only**, not passed to RAGAS. RAGAS v0.4 field names: `user_input` (question), `response` (answer), `retrieved_contexts` (list of context strings), `reference` (ground truth string). See Section 5.2 for the exact field mapping.
 
 ### Key Technical Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Evaluation engine | RAGAS via `LangchainLLMWrapper` | Industry standard, supports Ollama, no external API calls |
+| Evaluation engine | RAGAS v0.4 via `llm_factory()` + OpenAI-compatible Ollama endpoint | Industry standard, direct Ollama integration via `/v1` API, no LangChain wrapper needed |
 | LLM for evaluation | Same Ollama model as RAG | Air-gap compliant, no additional infrastructure |
 | Processing model | Sequential (not parallel) | Ollama is the bottleneck — parallelism causes resource contention |
 | Ollama timeout | 120 seconds per RAGAS call | Local evaluation is slow (10-60s per metric on typical hardware) |
@@ -135,8 +135,8 @@ CREATE TABLE evaluation_runs (
     -- Aggregate scores (computed on completion)
     avg_faithfulness        REAL,
     avg_answer_relevancy    REAL,
-    avg_context_precision   REAL,
-    avg_context_recall      REAL,
+    avg_llm_context_precision REAL,
+    avg_llm_context_recall  REAL,
 
     -- Reproducibility snapshot (see Section 3.1 for required fields)
     model_used              TEXT NOT NULL,                       -- e.g. "qwen3:8b"
@@ -172,8 +172,8 @@ The `config_snapshot` column stores a JSON object with the following **required*
 {
     "chat_model": "qwen3:8b",
     "embedding_model": "nomic-embed-text",
-    "rag_temperature": 0.1,
-    "chunk_strategy": "hybrid",
+    "temperature": 0.1,
+    "chunking_strategy": "hybrid",
     "chunk_max_tokens": 512,
     "chunk_overlap_tokens": 50,
     "retrieval_top_k": 5,
@@ -183,7 +183,7 @@ The `config_snapshot` column stores a JSON object with the following **required*
     "corpus_doc_count": 142,
     "corpus_last_ingested_at": "2026-02-09T14:30:00Z",
     "rag_timeout_seconds": 60,
-    "eval_ragas_timeout_seconds": 120
+    "eval_timeout_seconds": 120
 }
 ```
 
@@ -216,10 +216,10 @@ CREATE TABLE evaluation_samples (
     -- RAGAS metric scores (0.0 - 1.0, NULL if not computed)
     faithfulness            REAL,
     answer_relevancy        REAL,
-    context_precision       REAL,
-    context_recall          REAL,
+    llm_context_precision   REAL,
+    llm_context_recall      REAL,
 
-    generation_time_ms      INTEGER,                            -- Time for RAG pipeline
+    generation_time_ms      REAL,                               -- Time for RAG pipeline (float, matches RAGResponse)
     retry_count             INTEGER NOT NULL DEFAULT 0,         -- Number of retry attempts
     error_message           TEXT,
     error_type              TEXT,                                -- Exception class name
@@ -245,7 +245,7 @@ CREATE TABLE evaluation_datasets (
     description             TEXT,
     source_type             TEXT NOT NULL,                       -- manual | ragbench | synthetic | live_sample
     source_config           TEXT,                                -- JSON: {"subset": "techqa", "max_samples": 50}
-    sample_count            INTEGER NOT NULL DEFAULT 0,
+    sample_count            INTEGER NOT NULL DEFAULT 0,          -- Denormalized. MUST be updated on dataset_samples insert/delete.
     created_by              TEXT REFERENCES users(id) ON DELETE SET NULL,
     created_at              DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at              DATETIME NOT NULL DEFAULT (datetime('now'))
@@ -282,13 +282,13 @@ Stores evaluation scores for sampled live queries. Subject to automatic retentio
 ```sql
 CREATE TABLE live_evaluation_scores (
     id                      TEXT PRIMARY KEY,                    -- generate_uuid() in SQLAlchemy model
-    message_id              TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+    message_id              TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,  -- NOTE: Always NULL in Phase 3 (message_id not known at enqueue time). Retained for future backfill.
     question                TEXT NOT NULL,
     generated_answer        TEXT NOT NULL,
     faithfulness            REAL,
     answer_relevancy        REAL,
-    generation_time_ms      INTEGER,
-    eval_time_ms            INTEGER,
+    generation_time_ms      REAL,                               -- Float, matches RAGResponse.generation_time_ms
+    eval_time_ms            REAL,
     created_at              DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -385,6 +385,38 @@ A run-level `failed` status is reserved for infrastructure failures (e.g., Ollam
 - `skipped`: Set when a run is cancelled — remaining `pending` samples become `skipped`
 - Retry: On transient error with retries remaining, status resets to `pending` with incremented `retry_count`
 
+### 4.2.1 Distributed State Transition Invariants
+
+All status transitions are enforced via atomic `UPDATE ... WHERE status = <expected>` queries. If the `WHERE` clause matches 0 rows, the transition is rejected (another worker or cancel won the race). No in-memory status checks — the database is the source of truth.
+
+**Run transitions (atomic SQL guards):**
+
+| From | To | Guard (`WHERE` clause) | Trigger |
+|------|----|----------------------|---------|
+| `pending` | `running` | `status = 'pending'` | Worker lease claim (Section 6.1) |
+| `running` | `completed` | `status = 'running' AND worker_id = self.worker_id` | All samples resolved, 0 failures |
+| `running` | `completed_with_errors` | `status = 'running' AND worker_id = self.worker_id` | All samples resolved, some failures |
+| `running` | `failed` | `status = 'running' AND worker_id = self.worker_id` | Infrastructure error (catch-all) |
+| `running` | `cancelled` | `status = 'running' AND worker_id = self.worker_id` | `is_cancel_requested = True` or max duration |
+| `pending` | `cancelled` | `status = 'pending'` | Cancel on un-started run |
+| `running` (stale) | `pending` | `status = 'running' AND worker_lease_expires_at < now()` | Stale recovery (Section 6.4) |
+
+**Sample transitions (atomic SQL guards):**
+
+| From | To | Guard (`WHERE` clause) | Trigger |
+|------|----|----------------------|---------|
+| `pending` | `processing` | `status = 'pending'` | Worker claims sample |
+| `processing` | `completed` | `status = 'processing'` | RAGAS scores computed |
+| `processing` | `failed` | `status = 'processing'` | Non-retryable error or retries exhausted |
+| `failed` | `pending` | `status = 'failed' AND retry_count < max_retries` | Transient error retry |
+| `pending` | `skipped` | `status = 'pending'` | Run cancelled |
+
+**Race resolution rules:**
+1. **Cancel vs. processing:** Cancel sets `is_cancel_requested` on the run. The currently processing sample finishes normally. Worker checks the flag before starting the *next* sample.
+2. **Cancel vs. retry:** If a sample fails with a retryable error and the run is simultaneously cancelled, the retry resets the sample to `pending`, then the cancel sweep sets it to `skipped`. The cancel sweep's `UPDATE WHERE status = 'pending'` catches it.
+3. **Lease expiry vs. active processing:** If a worker's lease expires while it is processing a sample, another worker may reclaim the run. The original worker's subsequent `UPDATE WHERE worker_id = self.worker_id` on the run will match 0 rows — it detects it lost the lease and stops processing.
+4. **Double-claim prevention:** Two workers racing to claim the same run: both issue `UPDATE WHERE status = 'pending'`. SQLite's write serialization ensures exactly one succeeds (`rowcount = 1`); the other gets `rowcount = 0` and moves on.
+
 ### 4.3 Cancellation Semantics
 
 **Cancel** (`is_cancel_requested = True`):
@@ -399,6 +431,26 @@ A run-level `failed` status is reserved for infrastructure failures (e.g., Ollam
 
 **Idempotency**: Calling cancel on an already-cancelled or completed run returns 200 (no-op). Calling cancel on a `pending` run transitions directly to `cancelled`.
 
+### 4.4 Idempotency Contract
+
+All state-mutating operations are **replay-safe** — re-executing the same operation produces no side effects if the entity has already transitioned past the expected state.
+
+**Sample processing idempotency:**
+- `_claim_sample()` uses `UPDATE WHERE status = 'pending'` — if the sample is already `processing`/`completed`/`failed`/`skipped`, the UPDATE matches 0 rows and returns `False`. No double-processing.
+- `process_sample()` is a no-op if `sample.status != 'processing'` at entry — the method checks status before running RAGAS.
+- The `UNIQUE(run_id, sort_order)` constraint on `evaluation_samples` prevents duplicate sample rows for the same position in a run.
+
+**Run claiming idempotency:**
+- `_claim_run()` uses `UPDATE WHERE (status = 'pending' OR (status = 'running' AND lease_expired))` — if another worker already claimed the run, the UPDATE matches 0 rows. No duplicate claiming.
+- Re-claiming the same run by the same worker (restart scenario) is explicitly allowed: `OR (status = 'running' AND worker_id = self.worker_id)`.
+
+**Live score idempotency:**
+- Live scores are append-only (INSERT, never UPDATE). Duplicate scores for the same query are tolerable — they represent independent evaluations of separate RAG invocations, not retries.
+- No deduplication constraint is needed because the sampling hook fires at most once per `generate()` call.
+
+**Aggregate computation idempotency:**
+- `compute_aggregates()` is a pure function that reads completed samples and overwrites the aggregate columns. Re-running it produces the same result — safe to call after retries or partial failures.
+
 ---
 
 ## 5. EvaluationService
@@ -407,7 +459,7 @@ A run-level `failed` status is reserved for infrastructure failures (e.g., Ollam
 
 ```python
 class EvaluationService:
-    """Wraps RAGAS evaluation with Ollama via LangChain wrappers."""
+    """Wraps RAGAS evaluation with Ollama via OpenAI-compatible endpoint."""
 
     def __init__(self, settings: Settings, vector_service=None):
         self.settings = settings
@@ -415,28 +467,35 @@ class EvaluationService:
         self._rag_service: RAGService | None = None
 
     def _get_ragas_llm(self):
-        """Get RAGAS-compatible LLM wrapper for Ollama."""
-        from langchain_ollama import ChatOllama
-        from ragas.llms import LangchainLLMWrapper
+        """Get RAGAS-compatible LLM via Ollama's OpenAI-compatible endpoint."""
+        from openai import OpenAI
+        from ragas.llms import llm_factory
 
-        llm = ChatOllama(
-            base_url=self.settings.ollama_base_url,
-            model=self.settings.chat_model,
-            temperature=0.0,  # Deterministic for evaluation
-            timeout=self.settings.eval_ragas_timeout_seconds,
+        client = OpenAI(
+            api_key="ollama",  # Ollama ignores API key but field is required
+            base_url=f"{self.settings.ollama_base_url}/v1",
+            timeout=self.settings.eval_timeout_seconds,
         )
-        return LangchainLLMWrapper(llm)
+        return llm_factory(
+            model=self.settings.chat_model,
+            provider="openai",
+            client=client,
+        )
 
     def _get_ragas_embeddings(self):
-        """Get RAGAS-compatible embeddings wrapper for Ollama."""
-        from langchain_ollama import OllamaEmbeddings
-        from ragas.embeddings import LangchainEmbeddingsWrapper
+        """Get RAGAS-compatible embeddings via Ollama's OpenAI-compatible endpoint."""
+        from openai import OpenAI
+        from ragas.embeddings import embedding_factory
 
-        embeddings = OllamaEmbeddings(
-            base_url=self.settings.ollama_base_url,
-            model=self.settings.embedding_model,
+        client = OpenAI(
+            api_key="ollama",
+            base_url=f"{self.settings.ollama_base_url}/v1",
         )
-        return LangchainEmbeddingsWrapper(embeddings)
+        return embedding_factory(
+            model=self.settings.embedding_model,
+            provider="openai",
+            client=client,
+        )
 
     async def create_run(self, db: Session, dataset_id: str, name: str,
                          description: str | None, triggered_by: str | None,
@@ -486,44 +545,48 @@ class EvaluationService:
         Used by both batch processing and live monitoring.
         Returns dict of metric_name → score (0.0-1.0).
 
-        RAGAS v0.2 field mapping (see Section 5.2):
-        - question → "question"
-        - answer → "answer"
-        - contexts → "contexts" (list of retrieved context strings)
-        - ground_truth → "ground_truth" (string, for ContextRecall)
+        RAGAS v0.4 field mapping (see Section 5.2):
+        - question → "user_input"
+        - answer → "response"
+        - contexts → "retrieved_contexts" (list of context strings)
+        - ground_truth → "reference" (string, for LLMContextRecall)
         """
-        from ragas import evaluate
-        from ragas.metrics import (
-            Faithfulness,
-            AnswerRelevancy,
-            ContextPrecision,
-            ContextRecall,
-        )
-        from datasets import Dataset
+        from ragas import EvaluationDataset, evaluate
+        from ragas.metrics import Faithfulness, AnswerRelevancy
 
-        metrics = [Faithfulness(), AnswerRelevancy()]
+        ragas_llm = self._get_ragas_llm()
+        ragas_embeddings = self._get_ragas_embeddings()
+
+        metrics = [
+            Faithfulness(llm=ragas_llm),
+            AnswerRelevancy(llm=ragas_llm, embeddings=ragas_embeddings),
+        ]
         if ground_truth:
-            metrics.extend([ContextPrecision(), ContextRecall()])
+            from ragas.metrics import LLMContextPrecision, LLMContextRecall
+            metrics.extend([
+                LLMContextPrecision(llm=ragas_llm),
+                LLMContextRecall(llm=ragas_llm),
+            ])
 
-        eval_data = {
-            "question": [question],
-            "answer": [answer],
-            "contexts": [contexts],
+        eval_sample = {
+            "user_input": question,
+            "response": answer,
+            "retrieved_contexts": contexts,
         }
         if ground_truth:
-            eval_data["ground_truth"] = [ground_truth]
+            eval_sample["reference"] = ground_truth
 
-        dataset = Dataset.from_dict(eval_data)
+        dataset = EvaluationDataset.from_list([eval_sample])
 
-        result = evaluate(
-            dataset=dataset,
-            metrics=metrics,
-            llm=self._get_ragas_llm(),
-            embeddings=self._get_ragas_embeddings(),
-        )
+        # IMPORTANT: ragas.evaluate() is synchronous and CPU/IO-bound (LLM calls).
+        # Run in thread pool to avoid blocking the async event loop (heartbeat,
+        # SSE streams, other workers).
+        result = await asyncio.to_thread(evaluate, dataset=dataset, metrics=metrics)
+        df = result.to_pandas()
 
-        return {col: result[col][0] for col in result.columns if col not in
-                ("question", "answer", "contexts", "ground_truth")}
+        score_columns = [c for c in df.columns if c not in
+                         ("user_input", "response", "retrieved_contexts", "reference")]
+        return {col: float(df[col].iloc[0]) for col in score_columns}
 
     async def compute_aggregates(self, db: Session, run_id: str) -> None:
         """Calculate average scores across all completed samples in a run."""
@@ -532,7 +595,7 @@ class EvaluationService:
     async def score_live_query(self, question: str, answer: str,
                                 contexts: list[str],
                                 message_id: str | None = None,
-                                generation_time_ms: int | None = None) -> None:
+                                generation_time_ms: float | None = None) -> None:
         """Score a live query (Faithfulness + AnswerRelevancy only).
 
         Called from the live evaluation worker (Section 7.2).
@@ -581,16 +644,27 @@ class EvalRAGResult:
 
 # New method on RAGService:
 async def generate_for_eval(self, request: RAGRequest, db: Session) -> EvalRAGResult:
-    """Run the full RAG pipeline and return contexts alongside the response.
+    """Run the full retrieval+generation pipeline and return contexts alongside the response.
 
-    Identical to generate() but captures intermediate context chunks
-    that are normally discarded after response generation.
+    Unlike generate(), this method:
+    - Skips curated Q&A lookup (evaluation needs fresh RAG answers)
+    - Skips cache lookup/store (evaluation must not use cached responses)
+    - Skips direct routing (evaluation always requires retrieved contexts)
+
+    Runs steps 2-9 of generate() directly: retrieve → token budget →
+    build prompt → LLM generate → extract citations → confidence →
+    action → build RAGResponse. Returns both the response and the
+    intermediate context chunks that generate() normally discards.
 
     Used by EvaluationService.process_sample() and nowhere else.
     """
-    # Implementation: refactor generate() to call a shared _generate_inner()
-    # that returns (RAGResponse, final_chunks). generate() discards chunks;
-    # generate_for_eval() wraps them in EvalRAGResult.
+    # Implementation note: Do NOT refactor generate() itself.
+    # Instead, extract the retrieval+generation core (rag_service.py lines
+    # ~1546-1704) into a private _run_rag_pipeline() that returns
+    # (RAGResponse, list[QualityContext]). Then:
+    #   - generate() calls _run_rag_pipeline() after its early-return checks
+    #   - generate_for_eval() calls _run_rag_pipeline() directly
+    # This avoids touching the hot path while sharing the core logic.
     ...
 ```
 
@@ -618,9 +692,9 @@ scores = await self.evaluate_single(
     question=sample.question,
     answer=eval_result.response.answer,
     contexts=eval_result.retrieved_contexts,      # From EvalRAGResult
-    ground_truth=sample.ground_truth,             # String passed to RAGAS ContextRecall
+    ground_truth=sample.ground_truth,             # String passed to RAGAS LLMContextRecall
     # NOTE: sample.reference_contexts is NOT passed to RAGAS — it is stored
-    # for human review only (see Section 2, RAGAS v0.2 input contract)
+    # for human review only (see Section 2, RAGAS v0.4 input contract)
 )
 
 # 5. Store results
@@ -628,8 +702,8 @@ sample.generated_answer = eval_result.response.answer
 sample.retrieved_contexts = json.dumps(eval_result.retrieved_contexts)
 sample.faithfulness = scores.get("faithfulness")
 sample.answer_relevancy = scores.get("answer_relevancy")
-sample.context_precision = scores.get("context_precision")
-sample.context_recall = scores.get("context_recall")
+sample.llm_context_precision = scores.get("llm_context_precision")
+sample.llm_context_recall = scores.get("llm_context_recall")
 sample.generation_time_ms = eval_result.response.generation_time_ms
 sample.status = "completed"
 sample.processed_at = datetime.utcnow()
@@ -990,7 +1064,12 @@ async def recover_stale_evaluation_runs() -> int:
 **Solution:** `generate_for_eval()` (Section 5.2) is used for batch evaluation. For the live path, we add a lightweight context capture that avoids changing the hot-path return type:
 
 ```python
-# In RAGService.generate(), just before returning:
+# In RAGService.generate(), at the NORMAL return path ONLY (after step 9, ~line 1704).
+#
+# The 4 early-return paths (curated Q&A, cache hit, direct routing, zero-context)
+# do NOT capture eval_payload — they return before this code runs.
+# This is intentional: live evaluation only scores fresh RAG-pipeline responses
+# with retrieved contexts.
 
 # Capture eval payload for live sampling (lightweight — just text strings)
 eval_payload = None
@@ -1046,7 +1125,7 @@ class LiveEvaluationQueue:
                 pass
 
     def try_enqueue(self, question: str, answer: str, contexts: list[str],
-                    message_id: str | None, generation_time_ms: int | None) -> bool:
+                    message_id: str | None, generation_time_ms: float | None) -> bool:
         """Non-blocking enqueue. Returns False if queue is full (dropped)."""
         try:
             self._queue.put_nowait({
@@ -1083,7 +1162,27 @@ class LiveEvaluationQueue:
                 logger.debug(f"Live evaluation failed (non-blocking): {e}")
 ```
 
+**Scaling note:** `LiveEvaluationQueue` uses in-process `asyncio.Queue`, which is correct for the single-process DGX Spark deployment. For future multi-instance deployments, replace with ARQ/Redis consumer group — the `try_enqueue()` interface is designed as a single swap point. The batch `EvaluationWorker` already uses DB-based lease claiming and is multi-instance safe.
+
 ### 7.3 Sampling Hook in RAGService
+
+**Injection:** `LiveEvaluationQueue` is injected into `RAGService` via an optional constructor parameter, matching the existing pattern for `cache_service` and `vector_service`:
+
+```python
+# In RAGService.__init__():
+def __init__(
+    self,
+    settings: Settings,
+    vector_service: VectorServiceProtocol | None = None,
+    cache_service: CacheService | None = None,
+    default_model: str | None = None,
+    live_eval_queue: "LiveEvaluationQueue | None" = None,  # NEW — Phase 3
+):
+    ...
+    self._live_eval_queue = live_eval_queue
+```
+
+**Hook method:**
 
 ```python
 def _maybe_queue_for_evaluation(
@@ -1093,7 +1192,7 @@ def _maybe_queue_for_evaluation(
 
     Non-blocking. Never awaited. Never raises.
     """
-    if eval_payload is None:
+    if eval_payload is None or self._live_eval_queue is None:
         return
 
     try:
@@ -1104,17 +1203,31 @@ def _maybe_queue_for_evaluation(
             return
 
         # Non-blocking enqueue — drops if queue full
-        live_eval_queue = self._get_live_eval_queue()  # From app.state
-        if live_eval_queue:
-            live_eval_queue.try_enqueue(
-                question=request.query,
-                answer=response.answer,
-                contexts=eval_payload["contexts"],
-                message_id=None,  # message_id assigned after DB commit in chat flow
-                generation_time_ms=response.generation_time_ms,
-            )
+        self._live_eval_queue.try_enqueue(
+            question=request.query,
+            answer=response.answer,
+            contexts=eval_payload["contexts"],
+            message_id=None,  # message_id assigned after DB commit in chat flow
+            generation_time_ms=response.generation_time_ms,
+        )
     except Exception:
         pass  # Never block user response
+```
+
+**Wiring in `main.py` lifespan** (Phase 3): After creating `LiveEvaluationQueue`, inject it into `RAGService`:
+
+```python
+# In lifespan(), after LiveEvaluationQueue is created:
+rag_service._live_eval_queue = live_eval_queue
+```
+
+**`_get_live_sample_rate()` implementation:** Uses the existing `get_rag_setting()` pattern from `settings_service.py` — a standalone function that creates its own DB session, suitable for use from `RAGService` which may not have a session in the hot path:
+
+```python
+def _get_live_sample_rate(self) -> float:
+    """Read eval_live_sample_rate from AdminSetting (DB). Default 0.0 (disabled)."""
+    from ai_ready_rag.services.settings_service import get_rag_setting
+    return float(get_rag_setting("eval_live_sample_rate", default=0.0))
 ```
 
 ### 7.4 Admin Configuration
@@ -1142,7 +1255,7 @@ Live monitoring is controlled via `AdminSetting` keys (runtime-configurable with
 |---------|------|---------|---------|
 | `eval_enabled` | bool | `True` | Master switch for evaluation framework |
 | `eval_scan_interval_seconds` | int | 30 | Worker polling interval for pending runs |
-| `eval_ragas_timeout_seconds` | int | 120 | Per-sample RAGAS evaluation timeout |
+| `eval_timeout_seconds` | int | 120 | Per-sample RAGAS evaluation timeout |
 | `eval_delay_between_samples_seconds` | float | 1.0 | Throttle between samples (Ollama breathing room) |
 | `eval_lease_duration_minutes` | int | 15 | Worker lease duration for run claiming |
 | `eval_lease_renewal_seconds` | int | 60 | Lease renewal interval. **Invariant: must be < lease_duration** |
@@ -1159,13 +1272,45 @@ Live monitoring is controlled via `AdminSetting` keys (runtime-configurable with
 Add to `requirements-wsl.txt` and `requirements-spark.txt`:
 
 ```
-ragas>=0.2.0,<0.3.0
-datasets>=2.0.0,<3.0.0
+ragas>=0.4.0,<0.5.0
+openai>=1.0.0,<2.0.0
 ```
 
-**Pin rationale**: Upper bounds prevent breaking changes from RAGAS API redesigns (v0.3) or HuggingFace datasets major versions (v3). These are pinned consistently in both the spec and requirements files.
+**Pin rationale**: Upper bounds prevent breaking changes from RAGAS API redesigns (v0.5) or OpenAI client major versions (v2). RAGAS v0.4 uses `llm_factory()` with OpenAI-compatible endpoints — the `openai` package is used only as an HTTP client to Ollama's `/v1` endpoint, NOT for external API calls.
 
-**Note**: `datasets` is the HuggingFace `datasets` library, used by RAGAS internally and for RAGBench import in Phase 2.
+**Note**: The `openai` Python package is a lightweight HTTP client. It connects to `localhost:11434/v1` (Ollama) — no external network calls, fully air-gap compliant. The HuggingFace `datasets` library is a transitive dependency of RAGAS and is also used for RAGBench import in Phase 2.
+
+### 8.1 Observability Requirements
+
+Evaluation must emit structured log events at `INFO`/`WARNING` level for operational visibility. No external metrics infrastructure (Prometheus, Grafana) is required — logs are the primary observability channel for the single-node deployment.
+
+**Required log events (structured, JSON-parseable):**
+
+| Event | Level | Fields | When |
+|-------|-------|--------|------|
+| `eval.run.started` | INFO | `run_id`, `dataset_id`, `total_samples`, `worker_id` | Worker claims run |
+| `eval.run.completed` | INFO | `run_id`, `status`, `completed_samples`, `failed_samples`, `duration_seconds` | Run finishes |
+| `eval.sample.scored` | INFO | `run_id`, `sample_id`, `faithfulness`, `answer_relevancy`, `duration_ms` | Sample scored |
+| `eval.sample.failed` | WARNING | `run_id`, `sample_id`, `error_type`, `error_message`, `retry_count` | Sample fails |
+| `eval.sample.retried` | WARNING | `run_id`, `sample_id`, `attempt`, `error_type`, `backoff_seconds` | Transient retry |
+| `eval.lease.renewed` | DEBUG | `run_id`, `worker_id`, `new_expiry` | Heartbeat renewal |
+| `eval.lease.stale_recovered` | WARNING | `run_id`, `old_worker_id` | Stale recovery on startup |
+| `eval.live.enqueued` | DEBUG | `queue_depth` | Live sample accepted |
+| `eval.live.dropped` | WARNING | `queue_depth`, `queue_capacity` | Live sample dropped (full) |
+| `eval.live.scored` | INFO | `message_id`, `faithfulness`, `answer_relevancy`, `eval_time_ms` | Live score stored |
+
+**Health endpoint additions** (`GET /api/health`):
+
+```python
+# Add to existing health response:
+"evaluation": {
+    "worker_running": true,
+    "current_run_id": "abc123..." | null,
+    "live_queue_depth": 3,           # Current items in LiveEvaluationQueue
+    "live_queue_capacity": 10,       # Max capacity (eval_live_queue_size)
+    "live_drops_since_startup": 0,   # Counter of dropped samples
+}
+```
 
 ---
 
@@ -1247,8 +1392,8 @@ Get a single run with aggregate scores, config snapshot, and ETA.
     "admin_bypass_tags": false,
     "avg_faithfulness": 0.87,
     "avg_answer_relevancy": 0.92,
-    "avg_context_precision": 0.81,
-    "avg_context_recall": 0.75,
+    "avg_llm_context_precision": 0.81,
+    "avg_llm_context_recall": 0.75,
     "model_used": "qwen3:8b",
     "config_snapshot": { ... },
     "eta_seconds": 2400,                              -- Estimated time remaining
@@ -1278,8 +1423,8 @@ Paginated sample results for a run.
             "generated_answer": "According to the HR handbook...",
             "faithfulness": 0.95,
             "answer_relevancy": 0.88,
-            "context_precision": 0.90,
-            "context_recall": 0.82,
+            "llm_context_precision": 0.90,
+            "llm_context_recall": 0.82,
             "generation_time_ms": 3400,
             "retry_count": 0,
             "processed_at": "2026-02-10T08:31:12Z"
@@ -1331,8 +1476,8 @@ Dashboard summary: latest run, totals, score trends.
     "avg_scores": {
         "faithfulness": 0.85,
         "answer_relevancy": 0.89,
-        "context_precision": 0.78,
-        "context_recall": 0.72
+        "llm_context_precision": 0.78,
+        "llm_context_recall": 0.72
     },
     "score_trend": [  # Last 10 runs
         {"run_id": "...", "completed_at": "...", "avg_faithfulness": 0.82, ...},
@@ -1402,6 +1547,40 @@ Paginated list of samples in a dataset.
 
 Import from pre-downloaded RAGBench files.
 
+**Dataset integrity validation:** Before ingestion, the import endpoint verifies file integrity against a manifest:
+
+```
+data/ragbench/
+├── manifest.json              # SHA-256 checksums for all subset files
+├── techqa/
+│   └── dataset.parquet
+├── covidqa/
+│   └── dataset.parquet
+└── ...
+```
+
+```python
+# manifest.json format:
+{
+    "version": "1.0",
+    "generated_at": "2026-02-10T10:00:00Z",
+    "subsets": {
+        "techqa": {
+            "file": "techqa/dataset.parquet",
+            "sha256": "a1b2c3d4e5f6...",
+            "sample_count": 500,
+            "source_url": "https://huggingface.co/datasets/galileo-ai/ragbench"
+        }
+    }
+}
+```
+
+**Validation rules:**
+1. `manifest.json` must exist in `data/ragbench/` — 400 if missing
+2. Requested subset must exist in manifest — 404 if not found
+3. File SHA-256 must match manifest checksum — 422 if mismatch (corrupt/tampered file)
+4. Manifest is generated offline during air-gap package preparation (not at runtime)
+
 ```python
 # Request
 {
@@ -1416,8 +1595,11 @@ Import from pre-downloaded RAGBench files.
     "name": "RAGBench-TechQA-50",
     "source_type": "ragbench",
     "sample_count": 50,
-    "source_config": {"subset": "techqa", "max_samples": 50}
+    "source_config": {"subset": "techqa", "max_samples": 50, "sha256": "a1b2c3d4e5f6..."}
 }
+
+# Error: checksum mismatch
+# 422 { "detail": "Checksum mismatch for techqa/dataset.parquet: expected a1b2c3..., got f6e5d4..." }
 ```
 
 #### POST `/api/evaluations/datasets/generate-synthetic`
@@ -1504,7 +1686,7 @@ Add an **"Evaluations"** tab to `RAGQualityView.tsx` alongside existing tabs (Sy
 ├───────────────────────────────────────────────────────────────────────┤
 │                                                                       │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐        │
-│  │ Faithful.  │ │ Answer Rel │ │ Ctx Prec.  │ │ Ctx Recall │        │
+│  │ Faithful.  │ │ Answer Rel │ │ LLM Ctx P. │ │ LLM Ctx R. │        │
 │  │   0.87     │ │   0.92     │ │   0.81     │ │   0.75     │        │
 │  │  ▲ +0.03   │ │  ▼ -0.01  │ │  ▲ +0.05   │ │  ── 0.00  │        │
 │  └────────────┘ └────────────┘ └────────────┘ └────────────┘        │
@@ -1587,8 +1769,8 @@ export async function getLiveScores(params?: PaginationParams): Promise<LiveScor
 | `ai_ready_rag/main.py` | Add `EvaluationWorker` to lifespan startup/shutdown, mount evaluation router, call `recover_stale_evaluation_runs()` |
 | `ai_ready_rag/config.py` | Add `eval_*` settings (Section 8) |
 | `ai_ready_rag/services/rag_service.py` | Add `generate_for_eval()` method and `EvalRAGResult` dataclass (Section 5.2) |
-| `requirements-wsl.txt` | Add `ragas>=0.2.0,<0.3.0`, `datasets>=2.0.0,<3.0.0` |
-| `requirements-spark.txt` | Add `ragas>=0.2.0,<0.3.0`, `datasets>=2.0.0,<3.0.0` |
+| `requirements-wsl.txt` | Add `ragas>=0.4.0,<0.5.0`, `openai>=1.0.0,<2.0.0` |
+| `requirements-spark.txt` | Add `ragas>=0.4.0,<0.5.0`, `openai>=1.0.0,<2.0.0` |
 
 ### Phase 3: Created
 
@@ -1601,7 +1783,7 @@ export async function getLiveScores(params?: PaginationParams): Promise<LiveScor
 | File | Changes |
 |------|---------|
 | `ai_ready_rag/db/models/evaluation.py` | Add `LiveEvaluationScore` model |
-| `ai_ready_rag/services/rag_service.py` | Add `_maybe_queue_for_evaluation()` hook, `eval_payload` capture |
+| `ai_ready_rag/services/rag_service.py` | Add `live_eval_queue` optional `__init__` param, `_maybe_queue_for_evaluation()` hook, `eval_payload` capture |
 | `ai_ready_rag/main.py` | Add `LiveEvaluationQueue` to lifespan startup/shutdown |
 | `ai_ready_rag/workers/warming_cleanup.py` | Add live evaluation score purge job |
 
@@ -1621,7 +1803,7 @@ export async function getLiveScores(params?: PaginationParams): Promise<LiveScor
 
 | File | Changes |
 |------|---------|
-| `frontend/src/components/features/admin/RAGQualityView.tsx` | Add "Evaluations" tab |
+| `frontend/src/views/RAGQualityView.tsx` | Add "Evaluations" tab |
 | `frontend/src/types/index.ts` | Add evaluation-related TypeScript types |
 
 ---
@@ -1633,13 +1815,13 @@ export async function getLiveScores(params?: PaginationParams): Promise<LiveScor
 1. Create SQLAlchemy models: `EvaluationRun` (with lease + cancel + scope fields), `EvaluationSample` (with retry fields), `EvaluationDataset`, `DatasetSample`
 2. Create `EvaluationRepository` with `BaseRepository[T]` pattern
 3. Implement `EvalRAGResult` dataclass and `generate_for_eval()` on `RAGService`
-4. Implement `EvaluationService` with RAGAS wrapper (`LangchainLLMWrapper` for Ollama), tag-scoped evaluation, config snapshot capture
+4. Implement `EvaluationService` with RAGAS v0.4 wrapper (`llm_factory()` + OpenAI-compatible Ollama endpoint), tag-scoped evaluation, config snapshot capture
 5. Implement `EvaluationWorker` with lease-based claiming, heartbeat renewal, stale recovery, cancellation checks, retry policy, max duration enforcement
 6. Create Pydantic schemas for all request/response models
 7. Implement 10 REST endpoints under `/api/evaluations/*` (including cancel)
 8. Wire into `main.py` lifespan (start/stop worker, stale recovery)
 9. Add `eval_*` config settings
-10. Add `ragas>=0.2.0,<0.3.0` and `datasets>=2.0.0,<3.0.0` to requirements files
+10. Add `ragas>=0.4.0,<0.5.0` and `openai>=1.0.0,<2.0.0` to requirements files
 11. Write unit tests for service + API integration tests (including lease claiming, retry, cancel)
 
 **Risk**: Medium — RAGAS + Ollama integration may require timeout tuning. Lease logic adds complexity.
@@ -1700,8 +1882,8 @@ export async function getLiveScores(params?: PaginationParams): Promise<LiveScor
 - [ ] Worker processes samples sequentially through RAG pipeline + RAGAS
 - [ ] RAG pipeline is called with tag_scope from the run (not `user_tags=None` by default)
 - [ ] Retrieved contexts are captured via `generate_for_eval()` (not from `RAGResponse`)
-- [ ] Per-sample scores (Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall) are stored
-- [ ] RAGAS receives `ground_truth` string for ContextRecall (not `reference_contexts`)
+- [ ] Per-sample scores (Faithfulness, AnswerRelevancy, LLMContextPrecision, LLMContextRecall) are stored
+- [ ] RAGAS receives `reference` string for LLMContextRecall (not `reference_contexts`)
 - [ ] `reference_contexts` stored for human review only, not passed to RAGAS
 - [ ] Config snapshot captured at run creation with all required fields (Section 3.1)
 - [ ] Aggregate scores are computed on run completion
@@ -1755,7 +1937,7 @@ export async function getLiveScores(params?: PaginationParams): Promise<LiveScor
 - [ ] All IDs are unprefixed hex UUIDs (consistent with existing codebase)
 - [ ] Worker lease prevents duplicate processing across multiple app instances
 - [ ] Stale leases recovered on server startup
-- [ ] Dependency versions pinned with upper bounds: `ragas>=0.2.0,<0.3.0`, `datasets>=2.0.0,<3.0.0`
+- [ ] Dependency versions pinned with upper bounds: `ragas>=0.4.0,<0.5.0`, `openai>=1.0.0,<2.0.0`
 
 ---
 
@@ -1765,7 +1947,7 @@ export async function getLiveScores(params?: PaginationParams): Promise<LiveScor
 |------|--------|------------|
 | RAGAS + Ollama timeout | Samples fail silently | 120s timeout, 1 retry with 10s backoff on transient errors, fail with error_type + error_message on non-transient |
 | Ollama resource contention | RAG responses slow during evaluation | Sequential processing, configurable delay, admin can cancel runs, max duration auto-cancel |
-| RAGAS library breaking changes | Build failures | Pin `ragas>=0.2.0,<0.3.0` in all requirements files |
+| RAGAS library breaking changes | Build failures | Pin `ragas>=0.4.0,<0.5.0` in all requirements files |
 | Large datasets overwhelm Ollama | Worker runs for hours/days | `eval_max_samples_per_run` (default 500) enforced at submission, `eval_max_run_duration_hours` (default 8h) auto-cancels, ETA visibility |
 | TestsetGenerator poor quality | Useless synthetic datasets | Validate with manual spot-checks, allow dataset deletion |
 | Live sampling Ollama load | User-facing latency | Default 0% rate, bounded queue (max 2 concurrent, drop if full), admin opt-in only |
@@ -1787,11 +1969,11 @@ This section documents the resolutions to the 12 findings from engineering revie
 | 3 | P0 | Fire-and-forget lacks guardrails — unbounded tasks, no DB session lifecycle | Replaced with `LiveEvaluationQueue`: bounded `asyncio.Queue`, max 2 consumers, drop policy, DB sessions opened/closed per-evaluation. | 7.2, 7.3, 8, 11, 13 |
 | 4 | P1 | No lease/locking — unsafe for multi-process | Added full lease system: atomic `UPDATE WHERE` claiming, `worker_id` + `worker_lease_expires_at`, heartbeat renewal, stale recovery on startup. Mirrors WarmingWorker. | 3, 6.1, 6.2, 6.4, 8 |
 | 5 | P1 | Cancellation specified but not implementable | Added `POST /api/evaluations/runs/{run_id}/cancel`, `is_cancel_requested` column, worker cancel check before each sample, skip-remaining + partial aggregate logic. | 3, 4.3, 6.2, 9.1, 10.3, 13 |
-| 6 | P1 | Retrieval metrics underspecified — `reference_contexts` not wired | Clarified RAGAS v0.2 input contract: `ground_truth` (string) is what RAGAS uses for ContextRecall. `reference_contexts` stored for human review only, explicitly NOT passed to RAGAS. | 2, 3, 5.2, 5.3, 13 |
+| 6 | P1 | Retrieval metrics underspecified — `reference_contexts` not wired | Clarified RAGAS v0.4 input contract: `reference` (string) is what RAGAS uses for LLMContextRecall. `reference_contexts` stored for human review only, explicitly NOT passed to RAGAS. | 2, 3, 5.2, 5.3, 13 |
 | 7 | P1 | Config snapshot too vague | Defined explicit `EvalConfigSnapshot` schema (Section 3.1) with 12 required fields including prompt template hash, corpus state, and reranker config. Made `config_snapshot` NOT NULL. | 3, 3.1, 9.1, 13, 14 |
 | 8 | P2 | ID format inconsistency (prefixed vs hex) | Standardized: all IDs are unprefixed hex UUIDs via `generate_uuid()`. Added Section 3 ID format convention. Updated all API examples. | 3, 9 (all examples), 13 |
 | 9 | P2 | Retry promised but not designed | Added explicit retry taxonomy: `RETRYABLE_EXCEPTIONS` (ConnectionError, TimeoutError), 1 retry with 10s backoff, non-retryable fail immediately. Added `retry_count` + `error_type` to samples. | 3, 4.2, 6.3, 8, 13, 14 |
-| 10 | P2 | Dependency pinning inconsistent | Standardized to `ragas>=0.2.0,<0.3.0` and `datasets>=2.0.0,<3.0.0` everywhere. | 8, 12, 13, 14 |
+| 10 | P2 | Dependency pinning inconsistent | Standardized to `ragas>=0.4.0,<0.5.0` and `openai>=1.0.0,<2.0.0` everywhere. Upgraded from v0.2 to v0.4 for simpler Ollama integration via `llm_factory()`. | 8, 12, 13, 14 |
 | 11 | P2 | No runtime/capacity planning | Added `eval_max_samples_per_run` (500), `eval_max_run_duration_hours` (8h, auto-cancel), ETA computation on running runs. | 3, 6.2, 8, 9.1, 13, 14 |
 | 12 | P2 | Live score privacy/retention gap | Added `eval_live_retention_days` (30d) with auto-purge, admin-only access on live endpoints, future `eval_live_redact_pii` setting. | 3, 7.5, 8, 9.4, 11, 13, 14 |
 
@@ -1804,3 +1986,5 @@ This section documents the resolutions to the 12 findings from engineering revie
 | v1.0 | 2026-02-10 | Claude + jjob | Initial draft |
 | v1.1 | 2026-02-10 | Claude + jjob | Address all 12 engineering review findings (3 P0, 3 P1, 6 P2). Added: tag-scoped access control with admin bypass (Sec 3, 5.3); `EvalRAGResult` + `generate_for_eval()` interface (Sec 5.2); bounded `LiveEvaluationQueue` with drop policy (Sec 7.2); lease-based worker claiming with heartbeat + stale recovery (Sec 6.1-6.4); cancel endpoint + `is_cancel_requested` flow (Sec 4.3, 9.1); RAGAS v0.2 input contract clarification (Sec 2, 5.2); mandatory config snapshot schema (Sec 3.1); standardized hex UUID IDs (Sec 3); retry taxonomy with backoff (Sec 6.3); pinned deps `<0.3.0`/`<3.0.0` (Sec 8); capacity controls: max samples, max duration, ETA (Sec 6.2, 8, 9.1); live score retention + privacy (Sec 7.5). Added Section 15 (review resolution traceability). |
 | v1.2 | 2026-02-10 | Claude + jjob | Resolve 4 spec-finalization blockers + 1 ambiguity: (1) ID format — removed `lower(hex(randomblob(16)))` from DDL, added note that SQLAlchemy `default=generate_uuid` is canonical, DDL is illustrative (Sec 3); (2) Stale-lease recovery at runtime — worker poll loop now queries `pending OR (running AND expired lease)` each cycle, not only on startup (Sec 6.2); (3) Missing `updated_at` on `evaluation_samples` — added column (Sec 3); (4) Async contract — added `await` to all `compute_aggregates()` calls, made `_cancel_run()` async (Sec 6.2); (5) `tag_scope`/`admin_bypass_tags` mutual exclusivity — defined explicit 4-case validation matrix, added 422 for "both set" case (Sec 5.1, 9.1). |
+| v1.3 | 2026-02-10 | Claude + jjob | **P0 fixes:** (1) **RAGAS v0.2 → v0.4 upgrade**: Replaced `LangchainLLMWrapper` with `llm_factory()` + OpenAI-compatible Ollama endpoint; updated metric classes (`ContextPrecision` → `LLMContextPrecision`, `ContextRecall` → `LLMContextRecall`); updated field names (`question` → `user_input`, `answer` → `response`, `contexts` → `retrieved_contexts`, `ground_truth` → `reference`); rewrote `_get_ragas_llm()`, `_get_ragas_embeddings()`, `evaluate_single()` for v0.4 API; changed deps from `ragas>=0.2.0,<0.3.0` + `datasets` to `ragas>=0.4.0,<0.5.0` + `openai>=1.0.0,<2.0.0` (Sec 2, 5.1, 5.3, 8, 11, 13, 14, 15). (2) Corrected `RAGQualityView.tsx` path from `components/features/admin/` to `views/` (Sec 11). (3) Changed `generation_time_ms` DDL from `INTEGER` to `REAL` and type hints from `int` to `float` to match codebase (Sec 3, 5.1, 7.2). (4) Clarified `generate_for_eval()` skips curated Q&A/cache/direct routing; implementation via `_run_rag_pipeline()` shared helper (Sec 5.2). **P1 fixes:** (5) Renamed DDL columns and API fields from `context_precision`/`context_recall` to `llm_context_precision`/`llm_context_recall` to match RAGAS v0.4 metric class output names (Sec 3, 5.3, 9.1, 9.4). (6) `LiveEvaluationQueue` injected via `RAGService.__init__()` parameter instead of `app.state` access (Sec 7.3, 11). (7) Defined `_get_live_sample_rate()` using existing `get_rag_setting()` pattern (Sec 7.3). (8) Wrapped `ragas.evaluate()` in `asyncio.to_thread()` to prevent event loop blocking (Sec 5.1). (9) Clarified `eval_payload` capture applies only to normal return path, not 4 early-return paths (Sec 7.1). **P2 fixes:** (10) Config snapshot field renames for industry alignment: `rag_temperature` → `temperature`, `chunk_strategy` → `chunking_strategy`, `eval_ragas_timeout_seconds` → `eval_timeout_seconds` (Sec 3.1, 5.1, 8). (11) Added note that `live_evaluation_scores.message_id` is always NULL in Phase 3, retained for future backfill (Sec 3). (12) Added note that `evaluation_datasets.sample_count` is denormalized and must be updated on `dataset_samples` insert/delete (Sec 3). (13) Updated UI wireframe metric labels to reflect RAGAS v0.4 names: "LLM Ctx P." / "LLM Ctx R." (Sec 10.1). |
+| v1.4 | 2026-02-11 | Claude + jjob | **Engineering team review — 4 accepted findings (of 12):** (1) **Idempotency contract** (Sec 4.4): Defined replay-safe behavior for sample processing, run claiming, live scores, and aggregate computation; documented that DB row = idempotency key, `UPDATE WHERE status = <expected>` prevents double-processing. (2) **Distributed state transition invariants** (Sec 4.2.1): Added explicit state transition tables for runs and samples with atomic SQL `WHERE` guards; documented 4 race resolution rules (cancel vs processing, cancel vs retry, lease expiry vs active, double-claim prevention). (3) **Observability requirements** (Sec 8.1): Added 10 structured log events (`eval.run.started`, `eval.sample.scored`, `eval.live.dropped`, etc.) with required fields; added health endpoint evaluation status block. (4) **Dataset integrity checksums** (Sec 9.3): Added `manifest.json` with SHA-256 checksums for RAGBench files; validation on import with 400/404/422 error responses. Also added multi-instance scaling note on `LiveEvaluationQueue` (Sec 7.2). |
