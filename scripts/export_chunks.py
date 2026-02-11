@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""Export all document chunks and Ollama-generated questions to a single Excel workbook.
+
+Creates a workbook with:
+- Documents tab: all ready documents listed by ID + filename
+- One tab per document: all chunks for that document
+- Questions tab: Ollama-recommended questions for each document
+
+Usage:
+    python scripts/export_chunks.py                     # output to data/chunks_MM_DD_YYYY.xlsx
+    python scripts/export_chunks.py -o custom_name.xlsx # custom output path
+"""
+
+import argparse
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import httpx
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from qdrant_client import QdrantClient
+from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from ai_ready_rag.config import get_settings
+from ai_ready_rag.db.database import SessionLocal, init_db
+from ai_ready_rag.db.models import Document
+
+# Styles
+HEADER_FONT = Font(bold=True, color="FFFFFF")
+HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+WRAP_ALIGN = Alignment(wrap_text=True, vertical="top")
+BOLD_FONT = Font(bold=True)
+
+
+def get_ready_documents() -> list[dict]:
+    """Fetch all documents with status=ready from the database."""
+    init_db()
+    db = SessionLocal()
+    try:
+        docs = (
+            db.query(Document)
+            .filter(Document.status == "ready")
+            .order_by(Document.uploaded_at.desc())
+            .all()
+        )
+        return [
+            {
+                "id": doc.id,
+                "filename": doc.original_filename or doc.filename,
+                "file_type": doc.file_type,
+                "file_size": doc.file_size,
+                "status": doc.status,
+                "chunk_count": doc.chunk_count,
+                "word_count": doc.word_count,
+                "tags": ", ".join(t.name for t in doc.tags) if doc.tags else "",
+                "uploaded_at": str(doc.uploaded_at) if doc.uploaded_at else "",
+            }
+            for doc in docs
+        ]
+    finally:
+        db.close()
+
+
+def get_chunks(qdrant: QdrantClient, document_id: str) -> list[dict]:
+    """Fetch all chunks for a document from Qdrant."""
+    points, _ = qdrant.scroll(
+        collection_name="documents",
+        scroll_filter=Filter(
+            must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
+        ),
+        with_payload=True,
+        with_vectors=False,
+        limit=1000,
+    )
+
+    chunks = []
+    for p in points:
+        payload = p.payload or {}
+        chunks.append(
+            {
+                "index": payload.get("chunk_index", 0),
+                "text": payload.get("chunk_text", ""),
+                "words": len(payload.get("chunk_text", "").split()),
+                "chars": len(payload.get("chunk_text", "")),
+                "page": payload.get("page_number"),
+                "section": payload.get("section"),
+            }
+        )
+
+    return sorted(chunks, key=lambda c: c["index"])
+
+
+def generate_questions(chunks: list[dict], doc_name: str, settings) -> list[str]:
+    """Ask Ollama for recommended questions. Returns list of question strings."""
+    if not chunks:
+        return []
+
+    sample_size = min(12, len(chunks))
+    step = max(1, len(chunks) // sample_size)
+    sampled = [chunks[i] for i in range(0, len(chunks), step)][:sample_size]
+
+    total_words = sum(c["words"] for c in chunks)
+    content_summary = "\n\n".join(f"[Chunk {c['index']}]: {c['text'][:300]}" for c in sampled)
+
+    prompt = f"""You are analyzing a document that has been chunked for a RAG system.
+Document: {doc_name}
+Total chunks: {len(chunks)}
+Total words: {total_words:,}
+
+Here are representative samples from the document:
+
+{content_summary}
+
+Based on this content, suggest 10 specific questions that a user could ask this RAG system.
+Focus on questions that:
+1. Can be answered from the document content
+2. Cover different sections/topics in the document
+3. Range from simple factual to analytical
+4. Would be useful for someone who needs information from this document
+
+Format: Number each question on its own line. No other text."""
+
+    try:
+        with httpx.Client(timeout=300) as client:
+            response = client.post(
+                f"{settings.ollama_base_url}/api/generate",
+                json={
+                    "model": settings.chat_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.3},
+                },
+            )
+            response.raise_for_status()
+            answer = response.json().get("response", "").strip()
+
+            # Parse numbered questions
+            questions = []
+            for line in answer.split("\n"):
+                line = line.strip()
+                if line and line[0].isdigit():
+                    q = line.lstrip("0123456789").lstrip(".)- ").strip()
+                    if q:
+                        questions.append(q)
+            return questions
+
+    except httpx.TimeoutException:
+        print(f"    WARNING: Ollama timed out for '{doc_name}'")
+        return [f"[Ollama timed out — try: ollama pull {settings.chat_model}]"]
+    except httpx.ConnectError:
+        print(f"    WARNING: Cannot connect to Ollama at {settings.ollama_base_url}")
+        return ["[Ollama not reachable]"]
+    except Exception as e:
+        print(f"    WARNING: Ollama error for '{doc_name}': {e}")
+        return [f"[Error: {e}]"]
+
+
+def make_sheet_name(filename: str, used_names: set[str]) -> str:
+    """Create a valid Excel sheet name (max 31 chars, unique, no invalid chars)."""
+    # Remove invalid Excel sheet name characters
+    for ch in ["\\", "/", "*", "?", ":", "[", "]"]:
+        filename = filename.replace(ch, "_")
+
+    name = filename[:31]
+
+    # Deduplicate
+    if name in used_names:
+        for i in range(2, 100):
+            suffix = f"_{i}"
+            candidate = filename[: 31 - len(suffix)] + suffix
+            if candidate not in used_names:
+                name = candidate
+                break
+
+    used_names.add(name)
+    return name
+
+
+def styled_header(ws, headers: list[str], row: int = 1) -> None:
+    """Write a styled header row."""
+    for col_num, header in enumerate(headers, 1):
+        cell = ws.cell(row=row, column=col_num, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center")
+
+
+def auto_width(ws, max_width: int = 60) -> None:
+    """Auto-fit column widths based on content."""
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            val = str(cell.value or "")
+            # Use first line only for multi-line cells
+            first_line = val.split("\n")[0] if "\n" in val else val
+            max_len = max(max_len, len(first_line))
+        ws.column_dimensions[col_letter].width = min(max_len + 2, max_width)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Export all chunks and questions to Excel")
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Output file path (default: data/chunks_MM_DD_YYYY.xlsx)",
+    )
+    args = parser.parse_args()
+
+    settings = get_settings()
+
+    # Determine output path with auto-increment if file exists
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        today = datetime.now().strftime("%m_%d_%Y")
+        base_dir = Path("data")
+        output_path = base_dir / f"chunks_{today}.xlsx"
+
+        # Auto-increment: chunks_02_11_2026.xlsx → chunks_02_11_2026_2.xlsx → _3.xlsx
+        if output_path.exists():
+            counter = 2
+            while True:
+                output_path = base_dir / f"chunks_{today}_{counter}.xlsx"
+                if not output_path.exists():
+                    break
+                counter += 1
+
+    # Create parent directory
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 60)
+    print("RAG Document & Chunk Export")
+    print("=" * 60)
+
+    # Step 1: Get documents
+    print("\n[1/3] Fetching documents...")
+    docs = get_ready_documents()
+    print(f"  Found {len(docs)} ready documents")
+
+    if not docs:
+        print("No ready documents to export.")
+        return
+
+    # Step 2: Build workbook
+    wb = Workbook()
+    used_sheet_names: set[str] = set()
+
+    # --- Documents tab ---
+    ws_docs = wb.active
+    ws_docs.title = "Documents"
+    used_sheet_names.add("Documents")
+
+    doc_headers = [
+        "ID",
+        "Filename",
+        "Type",
+        "Size (bytes)",
+        "Chunks",
+        "Words",
+        "Tags",
+        "Uploaded",
+    ]
+    styled_header(ws_docs, doc_headers)
+
+    for row_num, doc in enumerate(docs, 2):
+        ws_docs.cell(row=row_num, column=1, value=doc["id"])
+        ws_docs.cell(row=row_num, column=2, value=doc["filename"])
+        ws_docs.cell(row=row_num, column=3, value=doc["file_type"])
+        ws_docs.cell(row=row_num, column=4, value=doc["file_size"])
+        ws_docs.cell(row=row_num, column=5, value=doc["chunk_count"])
+        ws_docs.cell(row=row_num, column=6, value=doc["word_count"])
+        ws_docs.cell(row=row_num, column=7, value=doc["tags"])
+        ws_docs.cell(row=row_num, column=8, value=doc["uploaded_at"])
+
+    auto_width(ws_docs)
+    ws_docs.freeze_panes = "A2"
+
+    # --- Chunk tabs + Questions ---
+    print("\n[2/3] Fetching chunks and generating questions...")
+    print(f"  Model: {settings.chat_model}")
+
+    qdrant = QdrantClient(url=settings.qdrant_url)
+    all_questions: list[dict] = []  # {"filename": ..., "question": ...}
+
+    for i, doc in enumerate(docs, 1):
+        filename = doc["filename"]
+        doc_id = doc["id"]
+
+        print(f"\n  [{i}/{len(docs)}] {filename}")
+
+        # Fetch chunks
+        chunks = get_chunks(qdrant, doc_id)
+        print(f"    Chunks: {len(chunks)}")
+
+        # Create chunk tab
+        sheet_name = make_sheet_name(filename, used_sheet_names)
+        ws_chunk = wb.create_sheet(sheet_name)
+
+        chunk_headers = ["Index", "Words", "Characters", "Page", "Section", "Text"]
+        styled_header(ws_chunk, chunk_headers)
+
+        for row_num, c in enumerate(chunks, 2):
+            ws_chunk.cell(row=row_num, column=1, value=c["index"])
+            ws_chunk.cell(row=row_num, column=2, value=c["words"])
+            ws_chunk.cell(row=row_num, column=3, value=c["chars"])
+            ws_chunk.cell(row=row_num, column=4, value=c["page"])
+            ws_chunk.cell(row=row_num, column=5, value=c["section"])
+            text_cell = ws_chunk.cell(row=row_num, column=6, value=c["text"])
+            text_cell.alignment = WRAP_ALIGN
+
+        ws_chunk.column_dimensions["A"].width = 8
+        ws_chunk.column_dimensions["B"].width = 8
+        ws_chunk.column_dimensions["C"].width = 12
+        ws_chunk.column_dimensions["D"].width = 8
+        ws_chunk.column_dimensions["E"].width = 15
+        ws_chunk.column_dimensions["F"].width = 100
+        ws_chunk.freeze_panes = "A2"
+
+        # Generate questions
+        print("    Generating questions...", end=" ", flush=True)
+        questions = generate_questions(chunks, filename, settings)
+        print(f"{len(questions)} questions")
+
+        for q in questions:
+            all_questions.append({"filename": filename, "question": q})
+
+    # --- Questions tab ---
+    print(f"\n[3/3] Writing Questions tab ({len(all_questions)} total questions)...")
+
+    ws_questions = wb.create_sheet("Questions")
+    used_sheet_names.add("Questions")
+
+    q_headers = ["Filename", "Question"]
+    styled_header(ws_questions, q_headers)
+
+    for row_num, qr in enumerate(all_questions, 2):
+        ws_questions.cell(row=row_num, column=1, value=qr["filename"])
+        q_cell = ws_questions.cell(row=row_num, column=2, value=qr["question"])
+        q_cell.alignment = WRAP_ALIGN
+
+    ws_questions.column_dimensions["A"].width = 40
+    ws_questions.column_dimensions["B"].width = 100
+    ws_questions.freeze_panes = "A2"
+
+    # Save
+    wb.save(str(output_path))
+    print(f"\n{'=' * 60}")
+    print(f"Exported to: {output_path}")
+    print(f"  Documents: {len(docs)}")
+    print(f"  Chunk tabs: {len(docs)}")
+    print(f"  Questions: {len(all_questions)}")
+    print(f"{'=' * 60}")
+
+
+if __name__ == "__main__":
+    main()
