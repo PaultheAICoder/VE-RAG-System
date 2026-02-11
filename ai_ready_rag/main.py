@@ -116,6 +116,18 @@ async def lifespan(app: FastAPI):
     arq_worker: EmbeddedArqWorker | None = None
     if redis_pool:
         logger.info("Redis connected — ARQ task queue available")
+
+        # Flush stale ARQ job results from previous server runs.
+        # Without this, reprocessing a document that previously failed can
+        # silently return the old cached result instead of re-executing.
+        try:
+            stale_keys = await redis_pool.keys("arq:result:*")
+            if stale_keys:
+                await redis_pool.delete(*stale_keys)
+                logger.info(f"Cleared {len(stale_keys)} stale ARQ result keys")
+        except Exception as e:
+            logger.warning(f"Failed to clear stale ARQ results: {e}")
+
         arq_worker = EmbeddedArqWorker(redis_pool, settings, vector_service)
         await arq_worker.start()
     else:

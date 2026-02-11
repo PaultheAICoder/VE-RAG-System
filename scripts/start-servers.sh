@@ -26,6 +26,59 @@ echo "=== VE-RAG-System Startup ==="
 echo "Directory: $PROJECT_DIR"
 echo "Mode:      $MODE"
 
+# Pre-flight health checks
+preflight_checks() {
+    echo "=== Pre-flight checks ==="
+    local failed=0
+
+    # Redis
+    if command -v redis-cli &>/dev/null; then
+        if redis-cli ping &>/dev/null; then
+            echo "  ✓ Redis ........ OK"
+        else
+            echo "  ✗ Redis ........ NOT RESPONDING (is redis-server running?)"
+            failed=1
+        fi
+    elif curl -s "http://localhost:6379" &>/dev/null || timeout 2 bash -c 'echo PING | nc -q1 localhost 6379' 2>/dev/null | grep -q PONG; then
+        echo "  ✓ Redis ........ OK"
+    else
+        echo "  ⚠ Redis ........ UNREACHABLE (ARQ worker will be disabled, using BackgroundTasks fallback)"
+    fi
+
+    # Qdrant
+    if curl -sf "http://localhost:6333/healthz" &>/dev/null; then
+        echo "  ✓ Qdrant ....... OK"
+    else
+        echo "  ✗ Qdrant ....... NOT RESPONDING (is qdrant running?)"
+        echo "    Try: docker start qdrant"
+        failed=1
+    fi
+
+    # Ollama
+    if curl -sf "http://localhost:11434/api/version" &>/dev/null; then
+        echo "  ✓ Ollama ....... OK"
+        # Check required models
+        for model in nomic-embed-text qwen3:8b; do
+            if ollama list 2>/dev/null | grep -q "^${model}"; then
+                echo "    ✓ $model"
+            else
+                echo "    ⚠ $model not found (run: ollama pull $model)"
+            fi
+        done
+    else
+        echo "  ✗ Ollama ....... NOT RESPONDING (is ollama running?)"
+        echo "    Try: ollama serve"
+        failed=1
+    fi
+
+    if [ "$failed" -eq 1 ]; then
+        echo ""
+        echo "ERROR: Required services are not running. Fix the issues above and try again."
+        exit 1
+    fi
+    echo ""
+}
+
 # Initialize database and create admin/tags
 init_database() {
     echo "=== Initializing database ==="
@@ -105,6 +158,7 @@ start_backend() {
 # Run based on mode
 case "$MODE" in
     backend)
+        preflight_checks
         init_database
         start_backend
         ;;
@@ -113,6 +167,7 @@ case "$MODE" in
         wait
         ;;
     all)
+        preflight_checks
         init_database
         build_frontend
         start_backend
