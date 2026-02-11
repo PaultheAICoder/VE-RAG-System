@@ -10,6 +10,7 @@ import type {
   WarmingJob,
   WarmingJobListResponse,
   BatchQueriesResponse,
+  SingleQueryRetryResponse,
   QueryRetryResponse,
   WarmingQueryStatus,
 } from '../types';
@@ -141,8 +142,8 @@ export async function retryBatch(batchId: string): Promise<QueryRetryResponse> {
 export async function retryQuery(
   batchId: string,
   queryId: string,
-): Promise<QueryRetryResponse> {
-  return apiClient.post<QueryRetryResponse>(
+): Promise<SingleQueryRetryResponse> {
+  return apiClient.post<SingleQueryRetryResponse>(
     `/api/admin/warming/batch/${batchId}/queries/${queryId}/retry`
   );
 }

@@ -102,6 +102,7 @@ from ai_ready_rag.schemas.admin import (
     SecuritySettingsResponse,
     SettingsAuditEntry,
     SettingsAuditResponse,
+    SingleQueryRetryResponse,
     StartReindexRequest,
     SynonymCreate,
     SynonymListResponse,
@@ -2541,10 +2542,10 @@ async def upload_warming_file(
         ) from None
 
     # Check file size
-    if len(content) > settings.warming_max_file_size_mb * 1024 * 1024:
+    if len(content) > settings.warming_max_upload_size_mb * 1024 * 1024:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File exceeds maximum size of {settings.warming_max_file_size_mb} MB.",
+            detail=f"File exceeds maximum size of {settings.warming_max_upload_size_mb} MB.",
         )
 
     # Parse queries (one per line, strip numbering, skip blanks/comments)
@@ -3207,7 +3208,7 @@ async def retry_batch_failed_queries(
 
 @router.post(
     "/warming/batch/{batch_id}/queries/{query_id}/retry",
-    response_model=QueryRetryResponse,
+    response_model=SingleQueryRetryResponse,
 )
 async def retry_single_query(
     batch_id: str,
@@ -3241,7 +3242,7 @@ async def retry_single_query(
 
     if query_row.status not in ("failed", "skipped"):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot retry query with status '{query_row.status}'. Only failed/skipped queries can be retried.",
         )
 
@@ -3252,11 +3253,13 @@ async def retry_single_query(
     query_row.processed_at = None
 
     # If batch is terminal, reset to pending
+    batch_requeued = False
     terminal_statuses = {"completed", "completed_with_errors", "cancelled"}
     if batch.status in terminal_statuses:
         batch.status = "pending"
         batch.completed_at = None
         batch.is_cancel_requested = False
+        batch_requeued = True
 
     db.commit()
 
@@ -3270,10 +3273,12 @@ async def retry_single_query(
 
     logger.info(f"Admin {current_user.email} retried query {query_id} in batch {batch_id}")
 
-    return QueryRetryResponse(
+    return SingleQueryRetryResponse(
+        query_id=query_id,
         batch_id=batch_id,
-        retried_count=1,
-        message=f"Reset query {query_id} to pending.",
+        status=query_row.status,
+        retry_count=query_row.retry_count,
+        batch_requeued=batch_requeued,
     )
 
 

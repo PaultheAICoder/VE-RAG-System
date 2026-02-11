@@ -584,6 +584,14 @@ export interface QueryRetryResponse {
   message: string;
 }
 
+export interface SingleQueryRetryResponse {
+  query_id: string;
+  batch_id: string;
+  status: string;
+  retry_count: number;
+  batch_requeued: boolean;
+}
+
 export interface WarmingJobListResponse {
   jobs: WarmingJob[];
   total_count: number;

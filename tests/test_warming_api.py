@@ -712,7 +712,11 @@ class TestRetryEndpoints:
             )
         assert response.status_code == 200
         data = response.json()
-        assert data["retried_count"] == 1
+        assert data["query_id"] == failed_query.id
+        assert data["batch_id"] == completed_batch.id
+        assert data["status"] == "pending"
+        assert "retry_count" in data
+        assert "batch_requeued" in data
 
     def test_retry_non_failed_query(self, client, system_admin_headers, completed_batch, db):
         completed_query = (
@@ -727,7 +731,7 @@ class TestRetryEndpoints:
             f"/api/admin/warming/batch/{completed_batch.id}/queries/{completed_query.id}/retry",
             headers=system_admin_headers,
         )
-        assert response.status_code == 400
+        assert response.status_code == 409
         assert "failed" in response.json()["detail"].lower()
 
 
