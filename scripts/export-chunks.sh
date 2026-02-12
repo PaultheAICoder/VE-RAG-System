@@ -1,11 +1,11 @@
 #!/bin/bash
-# Export all RAG document chunks and Ollama-generated questions to Excel.
+# Export per-document chunk + question Excel files.
 #
-# Output: data/chunks_MM_DD_YYYY.xlsx
+# Output: data/chunks_MM_DD_YYYY/ (one .xlsx per document)
 #
 # Usage:
 #   ./scripts/export-chunks.sh
-#   ./scripts/export-chunks.sh -o custom_output.xlsx
+#   ./scripts/export-chunks.sh -o custom_dir
 
 set -euo pipefail
 
