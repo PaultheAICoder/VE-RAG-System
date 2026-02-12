@@ -55,10 +55,23 @@ class DoclingChunker:
         """Create configured Docling document converter."""
         try:
             from docling.datamodel.pipeline_options import (
+                AcceleratorDevice,
+                AcceleratorOptions,
                 PdfPipelineOptions,
                 TableStructureOptions,
             )
             from docling.document_converter import DocumentConverter, PdfFormatOption
+
+            # Use GPU if available, fall back to CPU
+            try:
+                import torch
+
+                device = (
+                    AcceleratorDevice.CUDA if torch.cuda.is_available() else AcceleratorDevice.CPU
+                )
+            except ImportError:
+                device = AcceleratorDevice.CPU
+            logger.info("Docling accelerator: %s", device.value)
 
             table_options = TableStructureOptions(
                 do_cell_matching=True,
@@ -70,6 +83,7 @@ class DoclingChunker:
                 do_table_structure=True,
                 table_structure_options=table_options,
                 generate_picture_images=self.include_image_descriptions,
+                accelerator_options=AcceleratorOptions(device=device),
             )
 
             if self.enable_ocr:

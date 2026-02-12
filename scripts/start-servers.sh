@@ -25,6 +25,11 @@ fi
 # Prevent Tesseract OpenMP threads from stacking with ARQ job concurrency.
 export OMP_THREAD_LIMIT="${OMP_THREAD_LIMIT:-1}"
 
+# Ensure CUDA libraries are discoverable (DGX Spark).
+if [ -d "/usr/local/cuda/targets/sbsa-linux/lib" ]; then
+    export LD_LIBRARY_PATH="/usr/local/cuda/targets/sbsa-linux/lib:${LD_LIBRARY_PATH:-}"
+fi
+
 echo "=== VE-RAG-System Startup ==="
 echo "Directory: $PROJECT_DIR"
 echo "Mode:      $MODE"
