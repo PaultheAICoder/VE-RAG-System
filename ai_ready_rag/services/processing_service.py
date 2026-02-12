@@ -135,6 +135,21 @@ class ProcessingService:
             if not chunk_dicts:
                 raise ValueError("No chunks extracted from document")
 
+            # Filter out junk chunks (OCR artifacts, single chars, etc.)
+            # Short chunks produce deceptively high similarity scores and
+            # pollute search results, causing citation failures.
+            MIN_CHUNK_WORDS = 5
+            before_filter = len(chunk_dicts)
+            chunk_dicts = [cd for cd in chunk_dicts if len(cd["text"].split()) >= MIN_CHUNK_WORDS]
+            if before_filter != len(chunk_dicts):
+                logger.info(
+                    f"Filtered {before_filter - len(chunk_dicts)} tiny chunks "
+                    f"(<{MIN_CHUNK_WORDS} words) from {before_filter} total"
+                )
+
+            if not chunk_dicts:
+                raise ValueError("No chunks extracted from document")
+
             # Convert to ChunkInfo objects
             chunks = [
                 ChunkInfo(

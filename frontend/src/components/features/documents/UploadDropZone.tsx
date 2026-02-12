@@ -83,13 +83,20 @@ export function UploadDropZone({ onFilesSelected, disabled = false }: UploadDrop
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const lastPickerOpenAtRef = useRef(0);
 
-  useEffect(() => {
+  const configureFolderInput = useCallback(() => {
     const folderInput = folderInputRef.current;
     if (!folderInput) return;
     folderInput.setAttribute('webkitdirectory', '');
     folderInput.setAttribute('directory', '');
+    // Enforce single-folder selection semantics.
+    folderInput.removeAttribute('multiple');
   }, []);
+
+  useEffect(() => {
+    configureFolderInput();
+  }, [configureFolderInput]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -129,11 +136,26 @@ export function UploadDropZone({ onFilesSelected, disabled = false }: UploadDrop
     [disabled, onFilesSelected]
   );
 
-  const handleClick = () => {
-    if (!disabled) {
+  const openPicker = useCallback(
+    (picker: 'file' | 'folder') => {
+      if (disabled) return;
+
+      const now = Date.now();
+      if (now - lastPickerOpenAtRef.current < 500) {
+        return;
+      }
+      lastPickerOpenAtRef.current = now;
+
+      if (picker === 'folder') {
+        configureFolderInput();
+        folderInputRef.current?.click();
+        return;
+      }
+
       fileInputRef.current?.click();
-    }
-  };
+    },
+    [configureFolderInput, disabled]
+  );
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -170,19 +192,18 @@ export function UploadDropZone({ onFilesSelected, disabled = false }: UploadDrop
 
   return (
     <div
-      onClick={handleClick}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       className={`
         relative border-2 border-dashed rounded-xl p-8
         flex flex-col items-center justify-center
-        cursor-pointer transition-all
+        transition-all
         ${disabled
-          ? 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 cursor-not-allowed'
+          ? 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50'
           : isDragging
             ? 'border-primary bg-primary/5 scale-[1.02]'
-            : 'border-gray-300 dark:border-gray-600 hover:border-primary hover:bg-gray-50 dark:hover:bg-gray-800/50'
+            : 'border-gray-300 dark:border-gray-600'
         }
       `}
     >
@@ -198,7 +219,6 @@ export function UploadDropZone({ onFilesSelected, disabled = false }: UploadDrop
       <input
         ref={folderInputRef}
         type="file"
-        multiple
         onChange={handleFolderInputChange}
         className="hidden"
         disabled={disabled}
@@ -217,25 +237,30 @@ export function UploadDropZone({ onFilesSelected, disabled = false }: UploadDrop
       </div>
 
       <p className="text-lg font-medium text-gray-700 dark:text-gray-300 mb-1">
-        {isDragging ? 'Drop files here' : 'Drop files here or click to browse'}
+        {isDragging ? 'Drop files here' : 'Drag and drop files or folders here'}
       </p>
 
       <p className="text-sm text-gray-500 dark:text-gray-400">
         PDF, DOCX, XLSX, PPTX, TXT, MD, HTML, CSV
       </p>
-      <button
-        type="button"
-        className="mt-3 text-sm text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
-        onClick={(e) => {
-          e.stopPropagation();
-          if (!disabled) {
-            folderInputRef.current?.click();
-          }
-        }}
-        disabled={disabled}
-      >
-        Or select a folder
-      </button>
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+        <button
+          type="button"
+          className="px-3 py-1.5 text-sm rounded-md border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          onClick={() => openPicker('file')}
+          disabled={disabled}
+        >
+          Select files
+        </button>
+        <button
+          type="button"
+          className="px-3 py-1.5 text-sm rounded-md border border-primary text-primary hover:bg-primary/5 disabled:opacity-50 disabled:cursor-not-allowed"
+          onClick={() => openPicker('folder')}
+          disabled={disabled}
+        >
+          Select folder
+        </button>
+      </div>
     </div>
   );
 }

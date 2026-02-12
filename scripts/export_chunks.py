@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Export all document chunks and Ollama-generated questions to a single Excel workbook.
+"""Export document chunks and Ollama-generated questions to Excel.
 
-Creates a workbook with:
-- Documents tab: all ready documents listed by ID + filename
-- One tab per document: all chunks for that document
-- Questions tab: Ollama-recommended questions for each document
+Creates one Excel file per document in a dated subfolder, each containing:
+- Chunks tab: all chunks for the document
+- Questions tab: Ollama-recommended questions for the document
 
 Usage:
-    python scripts/export_chunks.py                     # output to data/chunks_MM_DD_YYYY.xlsx
-    python scripts/export_chunks.py -o custom_name.xlsx # custom output path
+    python scripts/export_chunks.py                   # output to data/chunks_MM_DD_YYYY/
+    python scripts/export_chunks.py -o custom_dir     # custom output directory
 """
 
 import argparse
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -19,16 +19,24 @@ from pathlib import Path
 import httpx
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ai_ready_rag.config import get_settings
-from ai_ready_rag.db.database import SessionLocal, init_db
-from ai_ready_rag.db.models import Document
+from ai_ready_rag.config import get_settings  # noqa: E402
+from ai_ready_rag.db.database import SessionLocal, init_db  # noqa: E402
+from ai_ready_rag.db.models import Document  # noqa: E402
+
+# Regex to strip characters illegal in Excel XML (control chars except tab/newline/cr)
+_ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+
+def _sanitize(text: str) -> str:
+    """Remove characters that openpyxl/Excel cannot store in a cell."""
+    return _ILLEGAL_XML_CHARS.sub("", text) if text else text
+
 
 # Styles
 HEADER_FONT = Font(bold=True, color="FFFFFF")
@@ -107,6 +115,16 @@ def generate_questions(chunks: list[dict], doc_name: str, settings) -> list[str]
     total_words = sum(c["words"] for c in chunks)
     content_summary = "\n\n".join(f"[Chunk {c['index']}]: {c['text'][:300]}" for c in sampled)
 
+    # Scale question count by document size
+    if len(chunks) <= 3:
+        num_questions = 3
+    elif len(chunks) <= 10:
+        num_questions = 5
+    elif len(chunks) <= 50:
+        num_questions = 10
+    else:
+        num_questions = 15
+
     prompt = f"""You are analyzing a document that has been chunked for a RAG system.
 Document: {doc_name}
 Total chunks: {len(chunks)}
@@ -116,14 +134,14 @@ Here are representative samples from the document:
 
 {content_summary}
 
-Based on this content, suggest 10 specific questions that a user could ask this RAG system.
+Based on this content, suggest exactly {num_questions} specific questions that a user could ask this RAG system.
 Focus on questions that:
 1. Can be answered from the document content
 2. Cover different sections/topics in the document
 3. Range from simple factual to analytical
 4. Would be useful for someone who needs information from this document
 
-Format: Number each question on its own line. No other text."""
+Format: Number each question on its own line (1. question text). No other text."""
 
     try:
         with httpx.Client(timeout=300) as client:
@@ -160,27 +178,6 @@ Format: Number each question on its own line. No other text."""
         return [f"[Error: {e}]"]
 
 
-def make_sheet_name(filename: str, used_names: set[str]) -> str:
-    """Create a valid Excel sheet name (max 31 chars, unique, no invalid chars)."""
-    # Remove invalid Excel sheet name characters
-    for ch in ["\\", "/", "*", "?", ":", "[", "]"]:
-        filename = filename.replace(ch, "_")
-
-    name = filename[:31]
-
-    # Deduplicate
-    if name in used_names:
-        for i in range(2, 100):
-            suffix = f"_{i}"
-            candidate = filename[: 31 - len(suffix)] + suffix
-            if candidate not in used_names:
-                name = candidate
-                break
-
-    used_names.add(name)
-    return name
-
-
 def styled_header(ws, headers: list[str], row: int = 1) -> None:
     """Write a styled header row."""
     for col_num, header in enumerate(headers, 1):
@@ -190,56 +187,40 @@ def styled_header(ws, headers: list[str], row: int = 1) -> None:
         cell.alignment = Alignment(horizontal="center")
 
 
-def auto_width(ws, max_width: int = 60) -> None:
-    """Auto-fit column widths based on content."""
-    for col in ws.columns:
-        max_len = 0
-        col_letter = get_column_letter(col[0].column)
-        for cell in col:
-            val = str(cell.value or "")
-            # Use first line only for multi-line cells
-            first_line = val.split("\n")[0] if "\n" in val else val
-            max_len = max(max_len, len(first_line))
-        ws.column_dimensions[col_letter].width = min(max_len + 2, max_width)
+def _safe_filename(name: str) -> str:
+    """Convert a document name into a filesystem-safe filename (no extension)."""
+    stem = Path(name).stem
+    # Replace characters invalid on Windows/Linux
+    safe = re.sub(r'[\\/*?:"<>|]', "_", stem)
+    # Collapse runs of whitespace/underscores
+    safe = re.sub(r"[\s_]+", "_", safe).strip("_")
+    return safe[:120]  # Keep reasonable length
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export all chunks and questions to Excel")
+    parser = argparse.ArgumentParser(description="Export per-document chunk + question Excel files")
     parser.add_argument(
         "-o",
         "--output",
-        help="Output file path (default: data/chunks_MM_DD_YYYY.xlsx)",
+        help="Output directory (default: data/chunks_MM_DD_YYYY/)",
     )
     args = parser.parse_args()
 
     settings = get_settings()
+    today = datetime.now().strftime("%m_%d_%Y")
 
-    # Determine output path with auto-increment if file exists
-    if args.output:
-        output_path = Path(args.output)
-    else:
-        today = datetime.now().strftime("%m_%d_%Y")
-        base_dir = Path("data")
-        output_path = base_dir / f"chunks_{today}.xlsx"
+    # Determine output directory
+    out_dir = Path(args.output) if args.output else Path("data") / f"chunks_{today}"
 
-        # Auto-increment: chunks_02_11_2026.xlsx → chunks_02_11_2026_2.xlsx → _3.xlsx
-        if output_path.exists():
-            counter = 2
-            while True:
-                output_path = base_dir / f"chunks_{today}_{counter}.xlsx"
-                if not output_path.exists():
-                    break
-                counter += 1
-
-    # Create parent directory
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
-    print("RAG Document & Chunk Export")
+    print("RAG Document & Chunk Export (per-file)")
+    print(f"Output: {out_dir}/")
     print("=" * 60)
 
     # Step 1: Get documents
-    print("\n[1/3] Fetching documents...")
+    print("\n[1/2] Fetching documents...")
     docs = get_ready_documents()
     print(f"  Found {len(docs)} ready documents")
 
@@ -247,46 +228,10 @@ def main():
         print("No ready documents to export.")
         return
 
-    # Step 2: Build workbook
-    wb = Workbook()
-    used_sheet_names: set[str] = set()
-
-    # --- Documents tab ---
-    ws_docs = wb.active
-    ws_docs.title = "Documents"
-    used_sheet_names.add("Documents")
-
-    doc_headers = [
-        "ID",
-        "Filename",
-        "Type",
-        "Size (bytes)",
-        "Chunks",
-        "Words",
-        "Tags",
-        "Uploaded",
-    ]
-    styled_header(ws_docs, doc_headers)
-
-    for row_num, doc in enumerate(docs, 2):
-        ws_docs.cell(row=row_num, column=1, value=doc["id"])
-        ws_docs.cell(row=row_num, column=2, value=doc["filename"])
-        ws_docs.cell(row=row_num, column=3, value=doc["file_type"])
-        ws_docs.cell(row=row_num, column=4, value=doc["file_size"])
-        ws_docs.cell(row=row_num, column=5, value=doc["chunk_count"])
-        ws_docs.cell(row=row_num, column=6, value=doc["word_count"])
-        ws_docs.cell(row=row_num, column=7, value=doc["tags"])
-        ws_docs.cell(row=row_num, column=8, value=doc["uploaded_at"])
-
-    auto_width(ws_docs)
-    ws_docs.freeze_panes = "A2"
-
-    # --- Chunk tabs + Questions ---
-    print("\n[2/3] Fetching chunks and generating questions...")
-    print(f"  Model: {settings.chat_model}")
-
+    # Step 2: One workbook per document
+    print(f"\n[2/2] Exporting documents (model: {settings.chat_model})...")
     qdrant = QdrantClient(url=settings.qdrant_url)
-    all_questions: list[dict] = []  # {"filename": ..., "question": ...}
+    total_questions = 0
 
     for i, doc in enumerate(docs, 1):
         filename = doc["filename"]
@@ -298,9 +243,10 @@ def main():
         chunks = get_chunks(qdrant, doc_id)
         print(f"    Chunks: {len(chunks)}")
 
-        # Create chunk tab
-        sheet_name = make_sheet_name(filename, used_sheet_names)
-        ws_chunk = wb.create_sheet(sheet_name)
+        # Create workbook with Chunks tab
+        wb = Workbook()
+        ws_chunk = wb.active
+        ws_chunk.title = "Chunks"
 
         chunk_headers = ["Index", "Words", "Characters", "Page", "Section", "Text"]
         styled_header(ws_chunk, chunk_headers)
@@ -310,8 +256,8 @@ def main():
             ws_chunk.cell(row=row_num, column=2, value=c["words"])
             ws_chunk.cell(row=row_num, column=3, value=c["chars"])
             ws_chunk.cell(row=row_num, column=4, value=c["page"])
-            ws_chunk.cell(row=row_num, column=5, value=c["section"])
-            text_cell = ws_chunk.cell(row=row_num, column=6, value=c["text"])
+            ws_chunk.cell(row=row_num, column=5, value=_sanitize(c["section"] or ""))
+            text_cell = ws_chunk.cell(row=row_num, column=6, value=_sanitize(c["text"]))
             text_cell.alignment = WRAP_ALIGN
 
         ws_chunk.column_dimensions["A"].width = 8
@@ -326,35 +272,32 @@ def main():
         print("    Generating questions...", end=" ", flush=True)
         questions = generate_questions(chunks, filename, settings)
         print(f"{len(questions)} questions")
+        total_questions += len(questions)
 
-        for q in questions:
-            all_questions.append({"filename": filename, "question": q})
+        # Questions tab
+        ws_questions = wb.create_sheet("Questions")
+        q_headers = ["#", "Question"]
+        styled_header(ws_questions, q_headers)
 
-    # --- Questions tab ---
-    print(f"\n[3/3] Writing Questions tab ({len(all_questions)} total questions)...")
+        for row_num, q in enumerate(questions, 2):
+            ws_questions.cell(row=row_num, column=1, value=row_num - 1)
+            q_cell = ws_questions.cell(row=row_num, column=2, value=_sanitize(q))
+            q_cell.alignment = WRAP_ALIGN
 
-    ws_questions = wb.create_sheet("Questions")
-    used_sheet_names.add("Questions")
+        ws_questions.column_dimensions["A"].width = 5
+        ws_questions.column_dimensions["B"].width = 100
+        ws_questions.freeze_panes = "A2"
 
-    q_headers = ["Filename", "Question"]
-    styled_header(ws_questions, q_headers)
+        # Save per-document file
+        safe_name = _safe_filename(filename)
+        file_path = out_dir / f"{safe_name}_{today}.xlsx"
+        wb.save(str(file_path))
+        print(f"    Saved: {file_path.name}")
 
-    for row_num, qr in enumerate(all_questions, 2):
-        ws_questions.cell(row=row_num, column=1, value=qr["filename"])
-        q_cell = ws_questions.cell(row=row_num, column=2, value=qr["question"])
-        q_cell.alignment = WRAP_ALIGN
-
-    ws_questions.column_dimensions["A"].width = 40
-    ws_questions.column_dimensions["B"].width = 100
-    ws_questions.freeze_panes = "A2"
-
-    # Save
-    wb.save(str(output_path))
     print(f"\n{'=' * 60}")
-    print(f"Exported to: {output_path}")
-    print(f"  Documents: {len(docs)}")
-    print(f"  Chunk tabs: {len(docs)}")
-    print(f"  Questions: {len(all_questions)}")
+    print(f"Exported to: {out_dir}/")
+    print(f"  Files: {len(docs)}")
+    print(f"  Total questions: {total_questions}")
     print(f"{'=' * 60}")
 
 

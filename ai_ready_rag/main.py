@@ -117,11 +117,14 @@ async def lifespan(app: FastAPI):
     if redis_pool:
         logger.info("Redis connected — ARQ task queue available")
 
-        # Flush stale ARQ job results from previous server runs.
-        # Without this, reprocessing a document that previously failed can
-        # silently return the old cached result instead of re-executing.
+        # Flush stale ARQ state from previous server runs.
+        # - result keys: prevent old cached failures from blocking re-execution
+        # - in-progress keys: prevent orphaned job markers from filling job slots
+        # - retry keys: prevent stale retry backoff from delaying new attempts
         try:
-            stale_keys = await redis_pool.keys("arq:result:*")
+            stale_keys = []
+            for pattern in ("arq:result:*", "arq:in-progress:*", "arq:retry:*"):
+                stale_keys.extend(await redis_pool.keys(pattern))
             if stale_keys:
                 await redis_pool.delete(*stale_keys)
                 logger.info(f"Cleared {len(stale_keys)} stale ARQ result keys")
