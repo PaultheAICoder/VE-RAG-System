@@ -117,19 +117,28 @@ async def lifespan(app: FastAPI):
     if redis_pool:
         logger.info("Redis connected — ARQ task queue available")
 
-        # Flush stale ARQ state from previous server runs.
+        # Flush ALL stale ARQ state from previous server runs.
+        # - job keys: prevent stale queued jobs from running with outdated code/state
+        # - queue sorted set: the worker polls this; stale entries re-run old jobs
         # - result keys: prevent old cached failures from blocking re-execution
         # - in-progress keys: prevent orphaned job markers from filling job slots
         # - retry keys: prevent stale retry backoff from delaying new attempts
         try:
             stale_keys = []
-            for pattern in ("arq:result:*", "arq:in-progress:*", "arq:retry:*"):
+            for pattern in (
+                "arq:job:*",
+                "arq:result:*",
+                "arq:in-progress:*",
+                "arq:retry:*",
+            ):
                 stale_keys.extend(await redis_pool.keys(pattern))
+            # Also delete the queue sorted set itself
+            stale_keys.append("arq:queue")
             if stale_keys:
                 await redis_pool.delete(*stale_keys)
-                logger.info(f"Cleared {len(stale_keys)} stale ARQ result keys")
+                logger.info(f"Cleared {len(stale_keys)} stale ARQ keys")
         except Exception as e:
-            logger.warning(f"Failed to clear stale ARQ results: {e}")
+            logger.warning(f"Failed to clear stale ARQ keys: {e}")
 
         arq_worker = EmbeddedArqWorker(redis_pool, settings, vector_service)
         await arq_worker.start()
