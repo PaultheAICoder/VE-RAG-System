@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Export document chunks and Ollama-generated questions to Excel — remote version.
+"""Export document chunks and Ollama-generated questions to Markdown — remote version.
 
 Connects to a VE-RAG-System server via its REST API (no direct DB/Qdrant access needed).
 Designed to run from a laptop targeting a remote Spark server over SSH tunnel or direct URL.
 
-Output: data/chunks_MM_DD_YYYY/ (one .xlsx per document)
+Output: data/chunks_MM_DD_YYYY/ (one .md per document)
 
 Usage:
     python scripts/export_chunks_remote.py                          # default: localhost:8502
@@ -19,22 +19,6 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-
-# Regex to strip characters illegal in Excel XML (control chars except tab/newline/cr)
-_ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
-
-
-def _sanitize(text: str) -> str:
-    """Remove characters that openpyxl/Excel cannot store in a cell."""
-    return _ILLEGAL_XML_CHARS.sub("", text) if text else text
-
-
-# Styles
-HEADER_FONT = Font(bold=True, color="FFFFFF")
-HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-WRAP_ALIGN = Alignment(wrap_text=True, vertical="top")
 
 
 def get_api_client(base_url: str, email: str, password: str) -> tuple[httpx.Client, dict]:
@@ -47,27 +31,50 @@ def get_api_client(base_url: str, email: str, password: str) -> tuple[httpx.Clie
     return client, headers
 
 
-def get_ready_documents(client: httpx.Client, headers: dict) -> list[dict]:
+def get_tags(client: httpx.Client, headers: dict) -> list[dict]:
+    """Fetch all tags via API."""
+    r = client.get("/api/tags", headers=headers)
+    r.raise_for_status()
+    return r.json()
+
+
+def resolve_tag_id(client: httpx.Client, headers: dict, tag_name: str) -> str:
+    """Resolve a tag name to its ID."""
+    tags = get_tags(client, headers)
+    for t in tags:
+        if (
+            t["name"].lower() == tag_name.lower()
+            or t.get("display_name", "").lower() == tag_name.lower()
+        ):
+            return t["id"]
+    available = ", ".join(t["name"] for t in tags)
+    raise SystemExit(f"Tag '{tag_name}' not found. Available tags: {available}")
+
+
+def get_ready_documents(
+    client: httpx.Client, headers: dict, tag_id: str | None = None
+) -> list[dict]:
     """Fetch all documents with status=ready via API."""
     docs = []
-    page = 1
+    offset = 0
+    limit = 100
     while True:
-        r = client.get(f"/api/documents?per_page=100&page={page}&status=ready", headers=headers)
+        url = f"/api/documents?limit={limit}&offset={offset}&status=ready"
+        if tag_id:
+            url += f"&tag_id={tag_id}"
+        r = client.get(url, headers=headers)
         r.raise_for_status()
         data = r.json()
         docs.extend(data["documents"])
-        if page >= data.get("total_pages", 1):
+        if offset + limit >= data["total"]:
             break
-        page += 1
+        offset += limit
     return docs
 
 
 def get_chunks_via_api(client: httpx.Client, headers: dict, document_id: str) -> list[dict]:
-    """Fetch chunks for a document via the search/experimental endpoint.
-
-    Falls back to Qdrant direct if the API doesn't expose chunk listing.
-    """
-    # Try the document detail endpoint which may include chunks
+    """Fetch chunks for a document via API endpoints."""
+    # Try the document chunks endpoint
     try:
         r = client.get(f"/api/documents/{document_id}/chunks", headers=headers, timeout=30)
         if r.status_code == 200:
@@ -75,7 +82,7 @@ def get_chunks_via_api(client: httpx.Client, headers: dict, document_id: str) ->
     except Exception:
         pass
 
-    # Fallback: use the experimental search with a broad query scoped to this doc
+    # Fallback: search scoped to this doc
     try:
         r = client.post(
             "/api/chat/search",
@@ -87,12 +94,13 @@ def get_chunks_via_api(client: httpx.Client, headers: dict, document_id: str) ->
             results = r.json().get("results", [])
             chunks = []
             for i, result in enumerate(results):
+                text = result.get("text", result.get("chunk_text", ""))
                 chunks.append(
                     {
                         "index": result.get("chunk_index", i),
-                        "text": result.get("text", result.get("chunk_text", "")),
-                        "words": len(result.get("text", result.get("chunk_text", "")).split()),
-                        "chars": len(result.get("text", result.get("chunk_text", ""))),
+                        "text": text,
+                        "words": len(text.split()),
+                        "chars": len(text),
                         "page": result.get("page_number"),
                         "section": result.get("section"),
                     }
@@ -124,12 +132,13 @@ def get_chunks_via_qdrant(qdrant_url: str, document_id: str) -> list[dict]:
         chunks = []
         for p in points:
             payload = p.payload or {}
+            text = payload.get("chunk_text", "")
             chunks.append(
                 {
                     "index": payload.get("chunk_index", 0),
-                    "text": payload.get("chunk_text", ""),
-                    "words": len(payload.get("chunk_text", "").split()),
-                    "chars": len(payload.get("chunk_text", "")),
+                    "text": text,
+                    "words": len(text.split()),
+                    "chars": len(text),
                     "page": payload.get("page_number"),
                     "section": payload.get("section"),
                 }
@@ -206,22 +215,13 @@ Format: Number each question on its own line (1. question text). No other text."
 
     except httpx.TimeoutException:
         print(f"    WARNING: Ollama timed out for '{doc_name}'")
-        return [f"[Ollama timed out — try: ollama pull {model}]"]
+        return [f"[Ollama timed out - try: ollama pull {model}]"]
     except httpx.ConnectError:
         print(f"    WARNING: Cannot connect to Ollama at {ollama_url}")
         return ["[Ollama not reachable]"]
     except Exception as e:
         print(f"    WARNING: Ollama error for '{doc_name}': {e}")
         return [f"[Error: {e}]"]
-
-
-def styled_header(ws, headers: list[str], row: int = 1) -> None:
-    """Write a styled header row."""
-    for col_num, header in enumerate(headers, 1):
-        cell = ws.cell(row=row, column=col_num, value=header)
-        cell.font = HEADER_FONT
-        cell.fill = HEADER_FILL
-        cell.alignment = Alignment(horizontal="center")
 
 
 def _safe_filename(name: str) -> str:
@@ -232,9 +232,53 @@ def _safe_filename(name: str) -> str:
     return safe[:120]
 
 
+def write_markdown(
+    file_path: Path,
+    filename: str,
+    chunks: list[dict],
+    questions: list[str] | None,
+) -> None:
+    """Write a single document's chunks and questions as Markdown."""
+    total_words = sum(c["words"] for c in chunks)
+    total_chars = sum(c["chars"] for c in chunks)
+
+    lines = [
+        f"# {filename}",
+        "",
+        f"**Chunks:** {len(chunks)} | **Words:** {total_words:,} | **Characters:** {total_chars:,}",
+        "",
+    ]
+
+    if questions:
+        lines.append("## Suggested Questions")
+        lines.append("")
+        for i, q in enumerate(questions, 1):
+            lines.append(f"{i}. {q}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append("## Chunks")
+    lines.append("")
+
+    for c in chunks:
+        page_str = f"Page {c['page']}" if c["page"] else "—"
+        section_str = c.get("section") or "—"
+        lines.append(f"### Chunk {c['index']}  ({c['words']} words, {page_str})")
+        if section_str != "—":
+            lines.append(f"**Section:** {section_str}")
+        lines.append("")
+        lines.append(c["text"])
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    file_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Export per-document chunk + question Excel files (remote)"
+        description="Export per-document chunk + question Markdown files (remote)"
     )
     parser.add_argument("--host", default="172.16.20.51", help="Server host (default: Spark)")
     parser.add_argument("--port", default="8502", help="Server port (default: 8502)")
@@ -247,6 +291,9 @@ def main():
         "-o", "--output", help="Output directory (default: data/chunks_MM_DD_YYYY/)"
     )
     parser.add_argument(
+        "--tag", default=None, help="Export only documents with this tag (name or display name)"
+    )
+    parser.add_argument(
         "--no-questions", action="store_true", help="Skip Ollama question generation"
     )
     args = parser.parse_args()
@@ -255,7 +302,10 @@ def main():
     ollama_url = args.ollama_url or f"http://{args.host}:11434"
     qdrant_url = args.qdrant_url or f"http://{args.host}:6333"
     today = datetime.now().strftime("%m_%d_%Y")
-    out_dir = Path(args.output) if args.output else Path("data") / f"chunks_{today}"
+    tag_suffix = f"_{args.tag.lower()}" if args.tag else ""
+    out_dir = (
+        Path(args.output) if args.output else Path("data") / "spark" / f"chunks_{today}{tag_suffix}"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
@@ -271,9 +321,15 @@ def main():
     client, headers = get_api_client(base_url, args.email, args.password)
     print("OK")
 
+    # Resolve tag filter
+    tag_id = None
+    if args.tag:
+        tag_id = resolve_tag_id(client, headers, args.tag)
+        print(f"Filtering by tag: {args.tag}")
+
     # Fetch documents
     print("Fetching documents...", end=" ", flush=True)
-    docs = get_ready_documents(client, headers)
+    docs = get_ready_documents(client, headers, tag_id=tag_id)
     print(f"{len(docs)} ready documents")
 
     if not docs:
@@ -298,55 +354,18 @@ def main():
             print("    SKIP: no chunks found")
             continue
 
-        # Create workbook
-        wb = Workbook()
-        ws_chunk = wb.active
-        ws_chunk.title = "Chunks"
-
-        chunk_headers = ["Index", "Words", "Characters", "Page", "Section", "Text"]
-        styled_header(ws_chunk, chunk_headers)
-
-        for row_num, c in enumerate(chunks, 2):
-            ws_chunk.cell(row=row_num, column=1, value=c["index"])
-            ws_chunk.cell(row=row_num, column=2, value=c["words"])
-            ws_chunk.cell(row=row_num, column=3, value=c["chars"])
-            ws_chunk.cell(row=row_num, column=4, value=c["page"])
-            ws_chunk.cell(row=row_num, column=5, value=_sanitize(c.get("section") or ""))
-            text_cell = ws_chunk.cell(row=row_num, column=6, value=_sanitize(c["text"]))
-            text_cell.alignment = WRAP_ALIGN
-
-        ws_chunk.column_dimensions["A"].width = 8
-        ws_chunk.column_dimensions["B"].width = 8
-        ws_chunk.column_dimensions["C"].width = 12
-        ws_chunk.column_dimensions["D"].width = 8
-        ws_chunk.column_dimensions["E"].width = 15
-        ws_chunk.column_dimensions["F"].width = 100
-        ws_chunk.freeze_panes = "A2"
-
         # Generate questions
+        questions = None
         if not args.no_questions:
             print("    Generating questions...", end=" ", flush=True)
             questions = generate_questions_remote(ollama_url, args.model, chunks, filename)
             print(f"{len(questions)} questions")
             total_questions += len(questions)
 
-            ws_questions = wb.create_sheet("Questions")
-            q_headers = ["#", "Question"]
-            styled_header(ws_questions, q_headers)
-
-            for row_num, q in enumerate(questions, 2):
-                ws_questions.cell(row=row_num, column=1, value=row_num - 1)
-                q_cell = ws_questions.cell(row=row_num, column=2, value=_sanitize(q))
-                q_cell.alignment = WRAP_ALIGN
-
-            ws_questions.column_dimensions["A"].width = 5
-            ws_questions.column_dimensions["B"].width = 100
-            ws_questions.freeze_panes = "A2"
-
-        # Save
+        # Save markdown
         safe_name = _safe_filename(filename)
-        file_path = out_dir / f"{safe_name}_{today}.xlsx"
-        wb.save(str(file_path))
+        file_path = out_dir / f"{safe_name}_{today}.md"
+        write_markdown(file_path, filename, chunks, questions)
         print(f"    Saved: {file_path.name}")
 
     client.close()
