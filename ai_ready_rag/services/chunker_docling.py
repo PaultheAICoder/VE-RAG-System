@@ -99,6 +99,14 @@ class DoclingChunker:
                 except ImportError:
                     logger.warning("TesseractCliOcrOptions not available, OCR disabled")
 
+            # Debug: log final OCR options type before creating converter
+            logger.info(
+                "Creating DocumentConverter: do_ocr=%s, ocr_options_type=%s, ocr_options_kind=%s",
+                pipeline_options.do_ocr,
+                type(pipeline_options.ocr_options).__name__,
+                getattr(pipeline_options.ocr_options, "kind", "N/A"),
+            )
+
             return DocumentConverter(
                 format_options={"pdf": PdfFormatOption(pipeline_options=pipeline_options)}
             )
@@ -153,6 +161,20 @@ class DoclingChunker:
 
         converter = self._get_converter()
         chunker, tokenizer = self._get_chunker()
+
+        # Debug: log converter pipeline state
+        try:
+            fmt_opts = converter.format_to_options.get("pdf")
+            if fmt_opts:
+                po = fmt_opts.pipeline_options
+                logger.info(
+                    "Converter pipeline check: do_ocr=%s, ocr_type=%s, ocr_kind=%s",
+                    po.do_ocr,
+                    type(po.ocr_options).__name__,
+                    getattr(po.ocr_options, "kind", "N/A"),
+                )
+        except Exception as dbg_err:
+            logger.warning("Debug pipeline check failed: %s", dbg_err)
 
         # Convert document
         result = converter.convert(str(path))
