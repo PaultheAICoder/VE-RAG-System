@@ -168,6 +168,30 @@ class ProcessingService:
             # Calculate word count
             word_count = sum(len(c.text.split()) for c in chunks)
 
+            # Generate summary chunk if enabled
+            summary_meta_extra: dict | None = None
+            if self.settings.generate_summaries:
+                try:
+                    from ai_ready_rag.services.summary_generator import SummaryGenerator
+
+                    summary_model = self.settings.summary_model or self.settings.chat_model
+                    generator = SummaryGenerator(
+                        ollama_url=self.settings.ollama_base_url,
+                        model=summary_model,
+                    )
+                    summary_result = await generator.generate(
+                        chunks, document.original_filename, document.id
+                    )
+                    if summary_result:
+                        summary_chunk, summary_meta_extra = summary_result
+                        chunks.append(summary_chunk)
+                        logger.info(
+                            f"Summary chunk added for document {document.id} "
+                            f"(type={summary_meta_extra.get('document_type')})"
+                        )
+                except Exception as e:
+                    logger.warning(f"Summary generation failed for {document.id}, continuing: {e}")
+
             # Extract tag names for vector indexing
             tag_names = [tag.name for tag in document.tags]
 
@@ -179,6 +203,10 @@ class ProcessingService:
                 }
                 for chunk in chunks
             ]
+
+            # Add extra metadata fields to the summary chunk entry
+            if summary_meta_extra and chunk_metadata:
+                chunk_metadata[-1].update(summary_meta_extra)
 
             # Index to vector store
             await self.vector_service.add_document(

@@ -23,6 +23,8 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "db_pool_timeout": 30,
         # Concurrent processing - limited for laptop
         "max_concurrent_processing": 3,
+        # Summary generation
+        "generate_summaries": True,
     },
     "spark": {
         "vector_backend": "qdrant",
@@ -40,6 +42,8 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "db_pool_timeout": 60,
         # Concurrent processing - conservative to avoid tesseract/OCR race conditions
         "max_concurrent_processing": 2,
+        # Summary generation
+        "generate_summaries": True,
     },
 }
 
@@ -86,6 +90,7 @@ class Settings(BaseSettings):
 
     # Feature Flags
     enable_rag: bool = True  # Enabled for RAG functionality
+    generate_summaries: bool | None = None  # None = use profile default
     # Setup Wizard
     skip_setup_wizard: bool = False  # Set to True to bypass setup check for automated deployments
 
@@ -118,6 +123,7 @@ class Settings(BaseSettings):
 
     # RAG Service
     chat_model: str | None = None  # None = use profile default
+    summary_model: str | None = None  # Override model for summaries (default: use chat_model)
     rag_temperature: float = 0.1
     rag_timeout_seconds: int = 30
     rag_confidence_threshold: int = 40
