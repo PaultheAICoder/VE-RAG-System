@@ -67,7 +67,8 @@ async def enqueue_document_processing(
 
     Returns the ARQ job_id if enqueued via ARQ, None if using BackgroundTasks fallback.
     """
-    redis = await get_redis_pool()
+    settings = get_settings()
+    redis = await get_redis_pool() if settings.use_arq_worker else None
     if redis:
         try:
             job = await redis.enqueue_job(
