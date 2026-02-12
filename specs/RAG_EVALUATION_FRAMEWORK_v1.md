@@ -3,9 +3,9 @@
 | Field | Value |
 |-------|-------|
 | **Status** | FINAL — Ready for Implementation |
-| **Version** | v1.4 |
+| **Version** | v1.5 |
 | **Author** | Claude (AI) + jjob |
-| **Date** | 2026-02-11 |
+| **Date** | 2026-02-12 |
 | **Depends On** | RAG Service (rag_service.py), WarmingWorker pattern (warming_worker.py) |
 
 ---
@@ -137,6 +137,7 @@ CREATE TABLE evaluation_runs (
     avg_answer_relevancy    REAL,
     avg_llm_context_precision REAL,
     avg_llm_context_recall  REAL,
+    invalid_score_count     INTEGER NOT NULL DEFAULT 0,      -- Count of NULL metric cells from sanitization (visibility)
 
     -- Reproducibility snapshot (see Section 3.1 for required fields)
     model_used              TEXT NOT NULL,                       -- e.g. "qwen3:8b"
@@ -253,6 +254,11 @@ CREATE TABLE evaluation_datasets (
 
 CREATE INDEX idx_evaluation_datasets_source ON evaluation_datasets(source_type);
 ```
+
+**`sample_count` invariants:**
+- Updated in the **same transaction** as `dataset_samples` INSERT/DELETE operations.
+- On bulk insert: if partial failure occurs, both `dataset_samples` inserts and `sample_count` update roll back together.
+- A periodic maintenance task (`recompute_dataset_sample_counts()`) corrects drift by running `UPDATE evaluation_datasets SET sample_count = (SELECT COUNT(*) FROM dataset_samples WHERE dataset_id = evaluation_datasets.id)`. Exposed via `POST /api/evaluations/datasets/recompute-counts` (admin-only, idempotent).
 
 ### New Table: `dataset_samples`
 
@@ -561,7 +567,13 @@ class EvaluationService:
             Faithfulness(llm=ragas_llm),
             AnswerRelevancy(llm=ragas_llm, embeddings=ragas_embeddings),
         ]
-        if ground_truth:
+
+        # Normalize ground truth: strip whitespace, treat empty as None
+        # This prevents silent skipping of retrieval metrics for malformed dataset rows
+        ground_truth_normalized = ground_truth.strip() if ground_truth else None
+        ground_truth_normalized = ground_truth_normalized or None  # "" → None
+
+        if ground_truth_normalized:
             from ragas.metrics import LLMContextPrecision, LLMContextRecall
             metrics.extend([
                 LLMContextPrecision(llm=ragas_llm),
@@ -573,8 +585,8 @@ class EvaluationService:
             "response": answer,
             "retrieved_contexts": contexts,
         }
-        if ground_truth:
-            eval_sample["reference"] = ground_truth
+        if ground_truth_normalized:
+            eval_sample["reference"] = ground_truth_normalized
 
         dataset = EvaluationDataset.from_list([eval_sample])
 
@@ -586,10 +598,68 @@ class EvaluationService:
 
         score_columns = [c for c in df.columns if c not in
                          ("user_input", "response", "retrieved_contexts", "reference")]
-        return {col: float(df[col].iloc[0]) for col in score_columns}
+        raw_scores = {col: df[col].iloc[0] for col in score_columns}
+        return self._sanitize_scores(raw_scores)
+
+    @staticmethod
+    def _sanitize_scores(raw_scores: dict) -> dict[str, float | None]:
+        """Sanitize RAGAS metric outputs before persistence.
+
+        RAGAS can return None, NaN, Inf, or out-of-range values depending on
+        model output quality — especially with local Ollama models.
+
+        Rules:
+        - Accept only finite floats in [0.0, 1.0]
+        - Clamp values slightly outside range (e.g., -0.01 → 0.0, 1.02 → 1.0)
+          with tolerance of 0.05
+        - Reject values outside tolerance as None with warning
+        - None/NaN/Inf → None (stored as NULL in DB)
+        - NULL values are excluded from aggregate computation
+        """
+        import math
+
+        sanitized = {}
+        CLAMP_TOLERANCE = 0.05
+
+        for key, value in raw_scores.items():
+            if value is None:
+                sanitized[key] = None
+                continue
+
+            try:
+                fval = float(value)
+            except (TypeError, ValueError):
+                logger.warning(f"Metric {key}: non-numeric value {value!r}, storing as NULL")
+                sanitized[key] = None
+                continue
+
+            if not math.isfinite(fval):
+                logger.warning(f"Metric {key}: non-finite value {fval}, storing as NULL")
+                sanitized[key] = None
+                continue
+
+            if -CLAMP_TOLERANCE <= fval < 0.0:
+                sanitized[key] = 0.0
+            elif 1.0 < fval <= 1.0 + CLAMP_TOLERANCE:
+                sanitized[key] = 1.0
+            elif 0.0 <= fval <= 1.0:
+                sanitized[key] = fval
+            else:
+                logger.warning(
+                    f"Metric {key}: out-of-range value {fval}, storing as NULL"
+                )
+                sanitized[key] = None
+
+        return sanitized
 
     async def compute_aggregates(self, db: Session, run_id: str) -> None:
-        """Calculate average scores across all completed samples in a run."""
+        """Calculate average scores across all completed samples in a run.
+
+        NULL metric values (from sanitization) are excluded from averages.
+        Uses SQL AVG() which ignores NULLs by default. Also stores the count
+        of invalid (NULL) scores per metric for visibility:
+            run.invalid_score_count = total NULL metric cells across all completed samples
+        """
         ...
 
     async def score_live_query(self, question: str, answer: str,
@@ -697,15 +767,26 @@ scores = await self.evaluate_single(
     # for human review only (see Section 2, RAGAS v0.4 input contract)
 )
 
-# 5. Store results
+# 5. Store results (scores are already sanitized by evaluate_single → _sanitize_scores)
 sample.generated_answer = eval_result.response.answer
 sample.retrieved_contexts = json.dumps(eval_result.retrieved_contexts)
-sample.faithfulness = scores.get("faithfulness")
-sample.answer_relevancy = scores.get("answer_relevancy")
+sample.faithfulness = scores.get("faithfulness")          # None if invalid/missing
+sample.answer_relevancy = scores.get("answer_relevancy")  # None if invalid/missing
 sample.llm_context_precision = scores.get("llm_context_precision")
 sample.llm_context_recall = scores.get("llm_context_recall")
 sample.generation_time_ms = eval_result.response.generation_time_ms
-sample.status = "completed"
+
+# If ALL metric scores are None, mark as failed with MetricValidationError
+metric_values = [scores.get(m) for m in ("faithfulness", "answer_relevancy")]
+if ground_truth:
+    metric_values.extend([scores.get(m) for m in ("llm_context_precision", "llm_context_recall")])
+if all(v is None for v in metric_values):
+    sample.status = "failed"
+    sample.error_type = "MetricValidationError"
+    sample.error_message = "All RAGAS metrics returned invalid values"
+else:
+    sample.status = "completed"
+
 sample.processed_at = datetime.utcnow()
 db.commit()
 ```
@@ -972,18 +1053,26 @@ async def _process_with_retry(self, db: Session, sample: EvaluationSample,
                                run: EvaluationRun) -> bool:
     """Process a sample with retry on transient errors.
 
+    Per-sample deadline: eval_sample_deadline_seconds (default: 300s / 5 min).
+    This is a hard wall-clock timeout around the entire sample lifecycle
+    (RAG call + all RAGAS metrics + DB write). Distinct from eval_timeout_seconds
+    which is the HTTP client timeout for individual Ollama calls within RAGAS.
+
     Retry policy:
     - Max retries: eval_max_retries_per_sample (default: 1)
     - Backoff: eval_retry_backoff_seconds (default: 10)
-    - Retryable: ConnectionError, TimeoutError
+    - Retryable: ConnectionError, TimeoutError (including deadline timeout on first attempt)
     - Non-retryable: ValueError, KeyError, RAGAS internal errors → fail immediately
+    - Deadline timeout on retry → fail immediately (no infinite retry loop)
     """
     max_retries = self.settings.eval_max_retries_per_sample
     backoff = self.settings.eval_retry_backoff_seconds
+    deadline = self.settings.eval_sample_deadline_seconds
 
     for attempt in range(max_retries + 1):
         try:
-            success = await self.eval_service.process_sample(db, sample, run)
+            async with asyncio.timeout(deadline):
+                success = await self.eval_service.process_sample(db, sample, run)
             return success
         except RETRYABLE_EXCEPTIONS as e:
             if attempt < max_retries:
@@ -1255,7 +1344,8 @@ Live monitoring is controlled via `AdminSetting` keys (runtime-configurable with
 |---------|------|---------|---------|
 | `eval_enabled` | bool | `True` | Master switch for evaluation framework |
 | `eval_scan_interval_seconds` | int | 30 | Worker polling interval for pending runs |
-| `eval_timeout_seconds` | int | 120 | Per-sample RAGAS evaluation timeout |
+| `eval_timeout_seconds` | int | 120 | HTTP client timeout for individual Ollama calls within RAGAS |
+| `eval_sample_deadline_seconds` | int | 300 | Hard wall-clock timeout per sample (RAG + all metrics + DB write) |
 | `eval_delay_between_samples_seconds` | float | 1.0 | Throttle between samples (Ollama breathing room) |
 | `eval_lease_duration_minutes` | int | 15 | Worker lease duration for run claiming |
 | `eval_lease_renewal_seconds` | int | 60 | Lease renewal interval. **Invariant: must be < lease_duration** |
@@ -1315,6 +1405,20 @@ Evaluation must emit structured log events at `INFO`/`WARNING` level for operati
 ---
 
 ## 9. API Endpoints
+
+### 9.0 Access Control
+
+**All `/api/evaluations/*` endpoints require admin role.** This applies uniformly to runs, datasets, and live monitoring endpoints. Non-admin users receive `403 Forbidden`.
+
+Implementation: Apply `Depends(require_admin)` to the evaluation router at the router level (not per-endpoint), matching the pattern used for `/api/admin/*`:
+
+```python
+router = APIRouter(
+    prefix="/api/evaluations",
+    tags=["evaluations"],
+    dependencies=[Depends(require_admin)],  # All endpoints admin-only
+)
+```
 
 ### 9.1 Evaluation Runs (Phase 1)
 
@@ -1530,6 +1634,18 @@ Create a manual dataset with inline samples.
     "source_type": "manual",
     "sample_count": 1,
     "created_at": "2026-02-10T10:00:00Z"
+}
+```
+
+**Ground-truth validation:** On dataset creation, all sample `ground_truth` values are normalized (`.strip()`). Empty/whitespace-only values are stored as NULL. A warning is returned in the response if any samples have NULL `ground_truth`, since retrieval metrics (LLMContextPrecision, LLMContextRecall) will be skipped for those samples during evaluation:
+
+```python
+# Response includes warning if applicable:
+{
+    "id": "...",
+    "name": "HR Policy QA Set",
+    "sample_count": 10,
+    "warning": "3 samples have no ground_truth — retrieval metrics will be skipped for these"
 }
 ```
 
@@ -1824,6 +1940,8 @@ export async function getLiveScores(params?: PaginationParams): Promise<LiveScor
 10. Add `ragas>=0.4.0,<0.5.0` and `openai>=1.0.0,<2.0.0` to requirements files
 11. Write unit tests for service + API integration tests (including lease claiming, retry, cancel)
 
+12. Add startup schema verification: on app boot, verify evaluation tables exist and required indexes are present. Fail-fast with actionable error message if migration is missing (e.g., `"Evaluation tables not found. Run database migration or restart with EVAL_ENABLED=false"`). Test that migration applies cleanly on a populated database.
+
 **Risk**: Medium — RAGAS + Ollama integration may require timeout tuning. Lease logic adds complexity.
 **Effort**: 5-7 days
 
@@ -1927,12 +2045,34 @@ export async function getLiveScores(params?: PaginationParams): Promise<LiveScor
 - [ ] Dataset manager allows CRUD operations
 - [ ] Live quality chart shows time-series data
 
+### Non-Functional — Metric Validation
+
+- [ ] RAGAS metric outputs are sanitized before DB persistence (Section 5.1 `_sanitize_scores`)
+- [ ] Only finite floats in [0.0, 1.0] are accepted; values within 0.05 tolerance are clamped
+- [ ] None/NaN/Inf/out-of-range values stored as NULL with warning log
+- [ ] NULL metric values excluded from aggregate computation (SQL `AVG()` ignores NULLs)
+- [ ] Samples where ALL metrics are NULL are marked `failed` with `error_type=MetricValidationError`
+- [ ] `invalid_score_count` on evaluation runs tracks total NULL metric cells for visibility
+
+### Non-Functional — Access Control
+
+- [ ] All `/api/evaluations/*` endpoints require admin role (router-level dependency)
+- [ ] Non-admin users receive 403 on all evaluation endpoints
+
+### Non-Functional — Concurrency Smoke Test
+
+- [ ] Run a 10-sample evaluation while chat is active on the same Spark instance
+- [ ] Verify chat responses complete without visible degradation (no timeout, no error)
+- [ ] Verify evaluation run completes successfully with valid aggregate scores
+
 ### Non-Functional
 
 - [ ] Evaluation never blocks user-facing RAG responses
-- [ ] 120-second timeout per RAGAS evaluation call
+- [ ] 300-second wall-clock deadline per sample (`eval_sample_deadline_seconds`); 120-second HTTP client timeout per Ollama call (`eval_timeout_seconds`)
 - [ ] Sequential sample processing (no Ollama contention)
 - [ ] Air-gap compatible: no external API calls, no runtime downloads
+- [ ] Startup schema verification: app fails fast with actionable error if evaluation tables are missing
+- [ ] Ground-truth values normalized (`.strip()`, empty → NULL) on dataset creation; warning returned if samples lack ground truth
 - [ ] Config snapshot stored per run for reproducibility (mandatory, explicit schema)
 - [ ] All IDs are unprefixed hex UUIDs (consistent with existing codebase)
 - [ ] Worker lease prevents duplicate processing across multiple app instances
@@ -1955,10 +2095,26 @@ export async function getLiveScores(params?: PaginationParams): Promise<LiveScor
 | Access control bypass in evaluation | Unrealistic scores, sensitive data exposure | Tag-scoped evaluation by default, admin bypass requires explicit opt-in + labeling |
 | Live score privacy/compliance | PII retention risk | 30-day auto-purge, admin-only access, future PII redaction setting |
 | Non-comparable runs | Misleading regression signals | Mandatory config snapshot with explicit schema; compare only runs with matching snapshots |
+| Client retry creates duplicates | Wasted compute from duplicate runs/datasets | **Future**: Add `Idempotency-Key` header support for POST /runs and /datasets. Current risk is low (single admin, local network). Existing UNIQUE constraint on `evaluation_datasets.name` prevents duplicate datasets. |
 
 ---
 
 ## 15. Engineering Review Resolutions
+
+### Round 2 (v1.5) — External Engineering Team Review
+
+| # | Priority | Finding | Resolution | Sections Updated |
+|---|----------|---------|------------|-----------------|
+| 13 | P0 | Admin-only not consistently specified across all evaluation endpoints | Added Section 9.0: all `/api/evaluations/*` endpoints require admin role via router-level `Depends(require_admin)`. Added acceptance criteria. | 9.0, 13 |
+| 14 | P0 | No handling for invalid RAGAS metric outputs (None, NaN, out-of-range) before DB write | Added `_sanitize_scores()` in `evaluate_single()`: accepts finite [0.0,1.0], clamps within 0.05 tolerance, NULL otherwise. All-NULL samples fail with `MetricValidationError`. Added `invalid_score_count` to runs. | 3, 5.1, 5.3, 13 |
+| 15 | P0 | No concrete load test pass/fail criteria | Added concurrency smoke test to acceptance criteria (10-sample eval + active chat). Full load test deferred — not warranted for single-admin air-gap deployment. | 13 |
+| 16 | P1 | `sample_count` denormalized without transactional update semantics | Added invariants: update in same transaction as INSERT/DELETE, `recompute_dataset_sample_counts()` maintenance task for drift correction. | 3 |
+| 17 | P1 | No idempotency for POST /runs and /datasets | Noted as future enhancement with `Idempotency-Key` header. Current risk low (single admin, UNIQUE constraint on dataset name). | 14 |
+| 18 | P1 | No end-to-end per-sample deadline | Added `eval_sample_deadline_seconds` (300s) via `asyncio.timeout()` wrapping entire `process_sample()`. Distinct from `eval_timeout_seconds` (HTTP client). | 6.3, 8, 13 |
+| 19 | P1 | Ground-truth gating ambiguous for empty/whitespace values | Normalize with `.strip()`, empty→None. Retrieval metrics only run on non-empty. Dataset creation validates and warns. | 5.1, 9.2 |
+| 20 | P2 | No migration acceptance gates | Startup schema verification with fail-fast on missing tables. Added acceptance criteria. | 12, 13 |
+
+### Round 1 (v1.0–v1.4) — Internal Review
 
 This section documents the resolutions to the 12 findings from engineering review of v1.0.
 
@@ -1987,4 +2143,5 @@ This section documents the resolutions to the 12 findings from engineering revie
 | v1.1 | 2026-02-10 | Claude + jjob | Address all 12 engineering review findings (3 P0, 3 P1, 6 P2). Added: tag-scoped access control with admin bypass (Sec 3, 5.3); `EvalRAGResult` + `generate_for_eval()` interface (Sec 5.2); bounded `LiveEvaluationQueue` with drop policy (Sec 7.2); lease-based worker claiming with heartbeat + stale recovery (Sec 6.1-6.4); cancel endpoint + `is_cancel_requested` flow (Sec 4.3, 9.1); RAGAS v0.2 input contract clarification (Sec 2, 5.2); mandatory config snapshot schema (Sec 3.1); standardized hex UUID IDs (Sec 3); retry taxonomy with backoff (Sec 6.3); pinned deps `<0.3.0`/`<3.0.0` (Sec 8); capacity controls: max samples, max duration, ETA (Sec 6.2, 8, 9.1); live score retention + privacy (Sec 7.5). Added Section 15 (review resolution traceability). |
 | v1.2 | 2026-02-10 | Claude + jjob | Resolve 4 spec-finalization blockers + 1 ambiguity: (1) ID format — removed `lower(hex(randomblob(16)))` from DDL, added note that SQLAlchemy `default=generate_uuid` is canonical, DDL is illustrative (Sec 3); (2) Stale-lease recovery at runtime — worker poll loop now queries `pending OR (running AND expired lease)` each cycle, not only on startup (Sec 6.2); (3) Missing `updated_at` on `evaluation_samples` — added column (Sec 3); (4) Async contract — added `await` to all `compute_aggregates()` calls, made `_cancel_run()` async (Sec 6.2); (5) `tag_scope`/`admin_bypass_tags` mutual exclusivity — defined explicit 4-case validation matrix, added 422 for "both set" case (Sec 5.1, 9.1). |
 | v1.3 | 2026-02-10 | Claude + jjob | **P0 fixes:** (1) **RAGAS v0.2 → v0.4 upgrade**: Replaced `LangchainLLMWrapper` with `llm_factory()` + OpenAI-compatible Ollama endpoint; updated metric classes (`ContextPrecision` → `LLMContextPrecision`, `ContextRecall` → `LLMContextRecall`); updated field names (`question` → `user_input`, `answer` → `response`, `contexts` → `retrieved_contexts`, `ground_truth` → `reference`); rewrote `_get_ragas_llm()`, `_get_ragas_embeddings()`, `evaluate_single()` for v0.4 API; changed deps from `ragas>=0.2.0,<0.3.0` + `datasets` to `ragas>=0.4.0,<0.5.0` + `openai>=1.0.0,<2.0.0` (Sec 2, 5.1, 5.3, 8, 11, 13, 14, 15). (2) Corrected `RAGQualityView.tsx` path from `components/features/admin/` to `views/` (Sec 11). (3) Changed `generation_time_ms` DDL from `INTEGER` to `REAL` and type hints from `int` to `float` to match codebase (Sec 3, 5.1, 7.2). (4) Clarified `generate_for_eval()` skips curated Q&A/cache/direct routing; implementation via `_run_rag_pipeline()` shared helper (Sec 5.2). **P1 fixes:** (5) Renamed DDL columns and API fields from `context_precision`/`context_recall` to `llm_context_precision`/`llm_context_recall` to match RAGAS v0.4 metric class output names (Sec 3, 5.3, 9.1, 9.4). (6) `LiveEvaluationQueue` injected via `RAGService.__init__()` parameter instead of `app.state` access (Sec 7.3, 11). (7) Defined `_get_live_sample_rate()` using existing `get_rag_setting()` pattern (Sec 7.3). (8) Wrapped `ragas.evaluate()` in `asyncio.to_thread()` to prevent event loop blocking (Sec 5.1). (9) Clarified `eval_payload` capture applies only to normal return path, not 4 early-return paths (Sec 7.1). **P2 fixes:** (10) Config snapshot field renames for industry alignment: `rag_temperature` → `temperature`, `chunk_strategy` → `chunking_strategy`, `eval_ragas_timeout_seconds` → `eval_timeout_seconds` (Sec 3.1, 5.1, 8). (11) Added note that `live_evaluation_scores.message_id` is always NULL in Phase 3, retained for future backfill (Sec 3). (12) Added note that `evaluation_datasets.sample_count` is denormalized and must be updated on `dataset_samples` insert/delete (Sec 3). (13) Updated UI wireframe metric labels to reflect RAGAS v0.4 names: "LLM Ctx P." / "LLM Ctx R." (Sec 10.1). |
+| v1.5 | 2026-02-12 | Claude + jjob | **Engineering team review round 2 — 8 findings addressed:** (1) **P0 Admin-only access control** (Sec 9.0): Added Section 9.0 declaring all `/api/evaluations/*` endpoints admin-only via router-level `Depends(require_admin)`. Added acceptance criteria. (2) **P0 Metric sanitization** (Sec 5.1): Added `_sanitize_scores()` method — accepts finite floats in [0.0, 1.0], clamps within 0.05 tolerance, rejects others as NULL. Samples with all-NULL metrics marked `failed` with `error_type=MetricValidationError`. Added `invalid_score_count` to `evaluation_runs` schema. `compute_aggregates` excludes NULLs. (3) **P1 Ground-truth normalization** (Sec 5.1, 9.2): `ground_truth` normalized with `.strip()`, empty→None before deciding retrieval metrics. Dataset creation validates and warns on missing ground truth. (4) **P1 Per-sample wall-clock deadline** (Sec 6.3, 8): Added `eval_sample_deadline_seconds` (default 300s) wrapping entire `process_sample()` via `asyncio.timeout()`. Distinct from `eval_timeout_seconds` (HTTP client timeout). Deadline timeout retryable once, then failed. (5) **P1 `sample_count` transactional invariants** (Sec 3): Update in same transaction as `dataset_samples` INSERT/DELETE. Added `recompute_dataset_sample_counts()` maintenance task. (6) **P1 Idempotency for POST /runs and /datasets**: Noted as future enhancement — current single-admin deployment has low retry risk. Existing DB constraints prevent duplicate datasets (UNIQUE name). (7) **P2 Migration acceptance gates** (Sec 12 Phase 1): Startup schema verification with fail-fast on missing tables. Added acceptance criteria. (8) **P2 Load test**: Added concurrency smoke test (10-sample eval + active chat) to acceptance criteria. Full load test deferred — single-admin air-gap deployment doesn't warrant formal load test criteria yet. |
 | v1.4 | 2026-02-11 | Claude + jjob | **Engineering team review — 4 accepted findings (of 12):** (1) **Idempotency contract** (Sec 4.4): Defined replay-safe behavior for sample processing, run claiming, live scores, and aggregate computation; documented that DB row = idempotency key, `UPDATE WHERE status = <expected>` prevents double-processing. (2) **Distributed state transition invariants** (Sec 4.2.1): Added explicit state transition tables for runs and samples with atomic SQL `WHERE` guards; documented 4 race resolution rules (cancel vs processing, cancel vs retry, lease expiry vs active, double-claim prevention). (3) **Observability requirements** (Sec 8.1): Added 10 structured log events (`eval.run.started`, `eval.sample.scored`, `eval.live.dropped`, etc.) with required fields; added health endpoint evaluation status block. (4) **Dataset integrity checksums** (Sec 9.3): Added `manifest.json` with SHA-256 checksums for RAGBench files; validation on import with 400/404/422 error responses. Also added multi-instance scaling note on `LiveEvaluationQueue` (Sec 7.2). |
