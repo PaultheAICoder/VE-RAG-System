@@ -1,5 +1,6 @@
 """Document processing service with profile-aware chunking."""
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -128,9 +129,11 @@ class ProcessingService:
             else:
                 chunker = self.chunker
 
-            # Chunk document using profile-appropriate chunker
+            # Chunk document using profile-appropriate chunker.
+            # Run in a thread so the async event loop stays responsive
+            # during long-running OCR/Docling processing.
             metadata = {"title": document.title} if document.title else None
-            chunk_dicts = chunker.chunk_document(str(file_path), metadata)
+            chunk_dicts = await asyncio.to_thread(chunker.chunk_document, str(file_path), metadata)
 
             if not chunk_dicts:
                 raise ValueError("No chunks extracted from document")
