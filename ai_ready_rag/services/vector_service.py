@@ -434,6 +434,11 @@ class VectorService:
                 "section": meta.get("section"),
             }
 
+            # Pass through extra metadata keys (e.g., is_summary, document_type)
+            for key, value in meta.items():
+                if key not in payload and value is not None:
+                    payload[key] = value
+
             points.append(
                 models.PointStruct(
                     id=chunk_id,

@@ -103,6 +103,7 @@ def get_chunks_via_api(client: httpx.Client, headers: dict, document_id: str) ->
                         "chars": len(text),
                         "page": result.get("page_number"),
                         "section": result.get("section"),
+                        "is_summary": result.get("is_summary", False),
                     }
                 )
             return sorted(chunks, key=lambda c: c["index"])
@@ -141,6 +142,7 @@ def get_chunks_via_qdrant(qdrant_url: str, document_id: str) -> list[dict]:
                     "chars": len(text),
                     "page": payload.get("page_number"),
                     "section": payload.get("section"),
+                    "is_summary": payload.get("is_summary", False),
                 }
             )
         return sorted(chunks, key=lambda c: c["index"])
@@ -264,7 +266,10 @@ def write_markdown(
     for c in chunks:
         page_str = f"Page {c['page']}" if c["page"] else "—"
         section_str = c.get("section") or "—"
-        lines.append(f"### Chunk {c['index']}  ({c['words']} words, {page_str})")
+        if c.get("is_summary"):
+            lines.append(f"### [SUMMARY] Chunk {c['index']}  ({c['words']} words)")
+        else:
+            lines.append(f"### Chunk {c['index']}  ({c['words']} words, {page_str})")
         if section_str != "—":
             lines.append(f"**Section:** {section_str}")
         lines.append("")
