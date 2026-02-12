@@ -67,6 +67,13 @@ async def process_document(
                 logger.error(f"Document {document_id} not found for processing")
                 return {"success": False, "error": "Document not found"}
 
+            # Idempotency guard: skip if another worker already processed this document.
+            # Prevents race conditions when duplicate jobs exist in the queue (e.g. a
+            # stale standalone ARQ CLI worker competing with the embedded worker).
+            if document.status == "ready":
+                logger.info(f"[ARQ] Document {document_id} already ready, skipping")
+                return {"success": True, "chunk_count": document.chunk_count, "skipped": True}
+
             # Use worker's vector service if available, otherwise create one
             vector_service = ctx.get("vector_service") or get_vector_service(settings)
             if not ctx.get("vector_service"):

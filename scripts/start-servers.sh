@@ -30,6 +30,17 @@ if [ -d "/usr/local/cuda/targets/sbsa-linux/lib" ]; then
     export LD_LIBRARY_PATH="/usr/local/cuda/targets/sbsa-linux/lib:${LD_LIBRARY_PATH:-}"
 fi
 
+# Kill any stale standalone ARQ CLI workers from previous runs.
+# The embedded ARQ worker inside FastAPI replaces the standalone process.
+# A leftover `arq` CLI process competes for Redis jobs using outdated code,
+# causing documents to fail with stale errors (see PROBLEM_STATEMENT_ARQ_OCR.md).
+stale_arq_pids=$(pgrep -f 'arq ai_ready_rag' 2>/dev/null || true)
+if [ -n "$stale_arq_pids" ]; then
+    echo "Killing stale ARQ CLI worker(s): $stale_arq_pids"
+    kill $stale_arq_pids 2>/dev/null || true
+    sleep 1
+fi
+
 echo "=== VE-RAG-System Startup ==="
 echo "Directory: $PROJECT_DIR"
 echo "Mode:      $MODE"
