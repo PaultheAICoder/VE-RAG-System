@@ -24,6 +24,10 @@ passlib[bcrypt]>=1.7.4
 # Qdrant for Spark deployment (NOT chromadb - incompatible with DGX onnxruntime)
 qdrant-client>=1.13.0
 
+# ============== Evaluation Framework ==============
+ragas>=0.4.0,<0.5.0
+openai>=1.0.0,<2.0.0
+
 # ============== Document Processing (Full Docling) ==============
 # Required for spark profile chunker_backend=docling
 docling>=2.0.0

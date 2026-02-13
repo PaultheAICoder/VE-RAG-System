@@ -105,6 +105,21 @@ from ai_ready_rag.schemas.document import (
     TagInfo,
     TagUpdateRequest,
 )
+from ai_ready_rag.schemas.evaluation import (
+    CancelRunResponse,
+    DatasetCreate,
+    DatasetListResponse,
+    DatasetResponse,
+    DatasetSampleCreate,
+    DatasetSampleListResponse,
+    DatasetSampleResponse,
+    EvaluationSampleListResponse,
+    EvaluationSampleResponse,
+    EvaluationSummaryResponse,
+    RunCreate,
+    RunListResponse,
+    RunResponse,
+)
 from ai_ready_rag.schemas.experimental import (
     GeneratePresentationRequest,
     PresentationResponse,
@@ -242,6 +257,20 @@ __all__ = [
     "WarmFileResponse",
     "WarmingQueueJobResponse",
     "WarmingQueueListResponse",
+    # evaluation
+    "CancelRunResponse",
+    "DatasetCreate",
+    "DatasetListResponse",
+    "DatasetResponse",
+    "DatasetSampleCreate",
+    "DatasetSampleListResponse",
+    "DatasetSampleResponse",
+    "EvaluationSampleListResponse",
+    "EvaluationSampleResponse",
+    "EvaluationSummaryResponse",
+    "RunCreate",
+    "RunListResponse",
+    "RunResponse",
     # experimental
     "GeneratePresentationRequest",
     "PresentationResponse",

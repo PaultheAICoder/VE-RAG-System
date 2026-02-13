@@ -1,0 +1,242 @@
+"""Evaluation framework API endpoints."""
+
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
+
+from ai_ready_rag.core.dependencies import require_admin
+from ai_ready_rag.db.database import get_db
+from ai_ready_rag.db.models import User
+from ai_ready_rag.db.models.evaluation import EvaluationDataset
+from ai_ready_rag.db.repositories.evaluation import (
+    DatasetSampleRepository,
+    EvaluationDatasetRepository,
+    EvaluationRunRepository,
+    recompute_dataset_sample_counts,
+)
+from ai_ready_rag.schemas.evaluation import (
+    DatasetCreate,
+    DatasetListResponse,
+    DatasetResponse,
+    DatasetSampleListResponse,
+    RunListResponse,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    dependencies=[Depends(require_admin)],  # All endpoints admin-only
+)
+
+
+# ========== Dataset CRUD ==========
+
+
+@router.get("/datasets", response_model=DatasetListResponse)
+async def list_datasets(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List evaluation datasets with pagination."""
+    repo = EvaluationDatasetRepository(db)
+    datasets, total = repo.list_paginated(limit=limit, offset=offset)
+    return DatasetListResponse(
+        datasets=[DatasetResponse.model_validate(d) for d in datasets],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/datasets", response_model=DatasetResponse, status_code=status.HTTP_201_CREATED)
+async def create_dataset(
+    request: DatasetCreate,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Create a manual dataset with inline samples."""
+    dataset_repo = EvaluationDatasetRepository(db)
+    sample_repo = DatasetSampleRepository(db)
+
+    # Check name uniqueness
+    if dataset_repo.get_by_name(request.name):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Dataset with name '{request.name}' already exists",
+        )
+
+    # Create dataset
+    dataset = EvaluationDataset(
+        name=request.name,
+        description=request.description,
+        source_type="manual",
+        sample_count=len(request.samples),
+        created_by=current_user.id,
+    )
+    dataset_repo.add(dataset)
+    dataset_repo.flush()  # Get dataset.id for FK
+
+    # Create samples (with ground-truth normalization)
+    samples_data = [s.model_dump() for s in request.samples]
+    sample_repo.bulk_create(dataset.id, samples_data)
+
+    # Count samples missing ground truth for warning
+    null_gt_count = sum(
+        1
+        for s in request.samples
+        if s.ground_truth is None
+        or (isinstance(s.ground_truth, str) and not s.ground_truth.strip())
+    )
+
+    db.commit()
+    db.refresh(dataset)
+
+    response = DatasetResponse.model_validate(dataset)
+    if null_gt_count > 0:
+        response.warning = (
+            f"{null_gt_count} samples have no ground_truth "
+            "-- retrieval metrics will be skipped for these"
+        )
+    return response
+
+
+@router.get("/datasets/{dataset_id}", response_model=DatasetResponse)
+async def get_dataset(
+    dataset_id: str,
+    db: Session = Depends(get_db),
+):
+    """Get a single dataset by ID."""
+    repo = EvaluationDatasetRepository(db)
+    dataset = repo.get(dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found")
+    return DatasetResponse.model_validate(dataset)
+
+
+@router.get("/datasets/{dataset_id}/samples", response_model=DatasetSampleListResponse)
+async def list_dataset_samples(
+    dataset_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List samples in a dataset with pagination."""
+    dataset_repo = EvaluationDatasetRepository(db)
+    if not dataset_repo.get(dataset_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found")
+
+    sample_repo = DatasetSampleRepository(db)
+    samples, total = sample_repo.list_by_dataset(dataset_id, limit=limit, offset=offset)
+    return DatasetSampleListResponse(
+        samples=samples,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.delete("/datasets/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_dataset(
+    dataset_id: str,
+    db: Session = Depends(get_db),
+):
+    """Delete dataset and all its samples.
+
+    Fails with 409 if any evaluation runs reference this dataset.
+    """
+    repo = EvaluationDatasetRepository(db)
+    dataset = repo.get(dataset_id)
+    if not dataset:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dataset not found")
+
+    if repo.has_active_runs(dataset_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete dataset with existing evaluation runs. Delete the runs first.",
+        )
+
+    repo.delete(dataset)
+    db.commit()
+    return None
+
+
+@router.post("/datasets/recompute-counts", status_code=status.HTTP_200_OK)
+async def recompute_counts(
+    db: Session = Depends(get_db),
+):
+    """Recompute all dataset sample_count values (admin-only, idempotent)."""
+    updated = recompute_dataset_sample_counts(db)
+    db.commit()
+    return {"updated": updated}
+
+
+# ========== Run Endpoints (Stubs -- return 501) ==========
+
+
+@router.get("/runs", response_model=RunListResponse)
+async def list_runs(
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List evaluation runs. Stub -- returns empty list."""
+    repo = EvaluationRunRepository(db)
+    runs, total = repo.list_paginated(status=status_filter, limit=limit, offset=offset)
+    return RunListResponse(runs=runs, total=total, limit=limit, offset=offset)
+
+
+@router.post("/runs", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+async def create_run():
+    """Trigger an evaluation run. Not yet implemented."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Evaluation run creation will be available in Phase 1 completion",
+    )
+
+
+@router.get("/runs/{run_id}")
+async def get_run(run_id: str):
+    """Get evaluation run details. Not yet implemented."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Evaluation run details will be available in Phase 1 completion",
+    )
+
+
+@router.delete("/runs/{run_id}", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+async def delete_run(run_id: str):
+    """Delete an evaluation run. Not yet implemented."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Evaluation run deletion will be available in Phase 1 completion",
+    )
+
+
+@router.post("/runs/{run_id}/cancel", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+async def cancel_run(run_id: str):
+    """Cancel a running evaluation. Not yet implemented."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Evaluation run cancellation will be available in Phase 1 completion",
+    )
+
+
+@router.get("/summary", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+async def get_summary():
+    """Dashboard summary. Not yet implemented."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Evaluation summary will be available in Phase 1 completion",
+    )
+
+
+@router.get("/runs/{run_id}/samples", status_code=status.HTTP_501_NOT_IMPLEMENTED)
+async def list_run_samples(run_id: str):
+    """List samples for a run. Not yet implemented."""
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Run sample listing will be available in Phase 1 completion",
+    )

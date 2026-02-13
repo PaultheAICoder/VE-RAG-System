@@ -20,6 +20,12 @@ from ai_ready_rag.db.models.cache import (
 )
 from ai_ready_rag.db.models.chat import ChatMessage, ChatSession
 from ai_ready_rag.db.models.document import Document
+from ai_ready_rag.db.models.evaluation import (
+    DatasetSample,
+    EvaluationDataset,
+    EvaluationRun,
+    EvaluationSample,
+)
 from ai_ready_rag.db.models.rag import CuratedQA, CuratedQAKeyword, QuerySynonym
 from ai_ready_rag.db.models.user import Tag, User
 from ai_ready_rag.db.models.warming import WarmingBatch, WarmingQuery
@@ -48,4 +54,8 @@ __all__ = [
     "CuratedQAKeyword",
     "WarmingBatch",
     "WarmingQuery",
+    "EvaluationDataset",
+    "DatasetSample",
+    "EvaluationRun",
+    "EvaluationSample",
 ]

@@ -181,6 +181,22 @@ class Settings(BaseSettings):
     sse_event_buffer_size: int = 1000  # Ring buffer size for replay
     sse_heartbeat_seconds: int = 30  # Heartbeat interval
 
+    # Evaluation Framework
+    eval_enabled: bool = True
+    eval_scan_interval_seconds: int = 30
+    eval_timeout_seconds: int = 120
+    eval_sample_deadline_seconds: int = 300
+    eval_delay_between_samples_seconds: float = 1.0
+    eval_lease_duration_minutes: int = 15
+    eval_lease_renewal_seconds: int = 60
+    eval_max_retries_per_sample: int = 1
+    eval_retry_backoff_seconds: int = 10
+    eval_max_samples_per_run: int = 500
+    eval_max_run_duration_hours: float = 8.0
+    eval_live_max_concurrent: int = 2
+    eval_live_queue_size: int = 10
+    eval_live_retention_days: int = 30
+
     # Document Management
     upload_dir: str = "./data/uploads"
     max_upload_size_mb: int = 100

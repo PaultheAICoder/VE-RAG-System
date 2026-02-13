@@ -15,6 +15,7 @@ from ai_ready_rag.api import (
     auth,
     chat,
     documents,
+    evaluations,
     experimental,
     health,
     jobs,
@@ -104,6 +105,36 @@ async def lifespan(app: FastAPI):
 
     init_db()
     seed_admin_user()
+
+    # Verify evaluation tables exist (fail-fast if eval_enabled and tables missing)
+    if settings.eval_enabled:
+        from sqlalchemy import inspect as sa_inspect
+
+        from ai_ready_rag.db.database import engine
+        from ai_ready_rag.db.models.evaluation import (
+            DatasetSample,
+            EvaluationDataset,
+            EvaluationRun,
+            EvaluationSample,
+        )
+
+        inspector = sa_inspect(engine)
+        existing_tables = set(inspector.get_table_names())
+        required_tables = {
+            EvaluationDataset.__tablename__,
+            DatasetSample.__tablename__,
+            EvaluationRun.__tablename__,
+            EvaluationSample.__tablename__,
+        }
+        missing = required_tables - existing_tables
+        if missing:
+            msg = (
+                f"Evaluation tables not found: {', '.join(sorted(missing))}. "
+                "Run database migration or restart with EVAL_ENABLED=false"
+            )
+            logger.error(msg)
+            raise RuntimeError(msg)
+        logger.info("Evaluation schema verified: all tables present")
 
     # Initialize VectorService once (expensive — singleton for app lifetime)
     vector_service = get_vector_service(settings)
@@ -231,6 +262,7 @@ app.include_router(documents.router, prefix="/api/documents", tags=["Documents"]
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["Jobs"])
 app.include_router(experimental.router, prefix="/api", tags=["Experimental"])
+app.include_router(evaluations.router, prefix="/api/evaluations", tags=["Evaluations"])
 
 # Serve React frontend static files if dist exists
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "dist"
