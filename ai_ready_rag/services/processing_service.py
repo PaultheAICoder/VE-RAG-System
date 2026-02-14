@@ -123,6 +123,32 @@ class ProcessingService:
             if not file_path.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
 
+            # Route Excel files to ingestkit if enabled
+            if file_path.suffix.lower() == ".xlsx" and self._should_use_ingestkit():
+                result, should_fallback = await self._process_with_ingestkit(document, db)
+                if not should_fallback and result is not None:
+                    # ingestkit handled it (success or failure)
+                    processing_time_ms = int((time.perf_counter() - start_time) * 1000)
+                    if result.success:
+                        document.status = "ready"
+                        document.chunk_count = result.chunk_count
+                        document.processing_time_ms = processing_time_ms
+                    else:
+                        document.status = "failed"
+                        document.error_message = result.error_message
+                        document.processing_time_ms = processing_time_ms
+                    db.commit()
+                    return ProcessingResult(
+                        success=result.success,
+                        chunk_count=result.chunk_count,
+                        page_count=result.page_count,
+                        word_count=result.word_count,
+                        processing_time_ms=processing_time_ms,
+                        error_message=result.error_message,
+                    )
+                # else: fallback to standard chunker pipeline below
+                logger.info("Falling back to standard chunker for %s", document.id)
+
             # Get chunker - use per-upload options if provided, otherwise use cached
             if processing_options:
                 chunker = get_chunker(self.settings, processing_options)
@@ -262,3 +288,33 @@ class ProcessingService:
                 processing_time_ms=processing_time_ms,
                 error_message=error_message,
             )
+
+    def _should_use_ingestkit(self) -> bool:
+        """Check if ingestkit-excel integration is enabled and available."""
+        if not self.settings.use_ingestkit_excel:
+            return False
+        try:
+            import ingestkit_excel  # noqa: F401
+
+            return True
+        except ImportError:
+            logger.warning("use_ingestkit_excel=True but ingestkit_excel not importable")
+            return False
+
+    async def _process_with_ingestkit(
+        self,
+        document: Document,
+        db: Session,
+    ) -> tuple[ProcessingResult | None, bool]:
+        """Delegate Excel processing to ingestkit-excel.
+
+        Returns:
+            Tuple of (result, should_fallback). If should_fallback is True,
+            caller should continue with the standard chunker pipeline.
+        """
+        from ai_ready_rag.services.excel_processing_service import (
+            ExcelProcessingService,
+        )
+
+        excel_service = ExcelProcessingService(self.settings)
+        return await excel_service.process_excel(document, db)

@@ -1,5 +1,7 @@
 """Document management service."""
 
+import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -24,6 +26,8 @@ from ai_ready_rag.utils.file_utils import (
     get_storage_usage,
     validate_file_extension,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentService:
@@ -346,6 +350,10 @@ class DocumentService:
         if not document:
             return False
 
+        # Clean up ingestkit Excel tables if present
+        if document.excel_db_table_names:
+            self._cleanup_excel_tables(document.excel_db_table_names)
+
         # Delete file from storage
         doc_dir = self.storage_path / document_id
         if doc_dir.exists():
@@ -356,6 +364,31 @@ class DocumentService:
         self.db.commit()
 
         return True
+
+    def _cleanup_excel_tables(self, table_names_json: str) -> None:
+        """Drop ingestkit Excel tables from the separate Excel tables DB."""
+        try:
+            table_names = json.loads(table_names_json)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Invalid excel_db_table_names JSON: %s", table_names_json)
+            return
+
+        db_path = self.settings.excel_tables_db_path
+        if not Path(db_path).exists():
+            return
+
+        try:
+            from ai_ready_rag.services.ingestkit_adapters import create_structured_db
+
+            structured_db = create_structured_db(db_path=db_path)
+            for table_name in table_names:
+                try:
+                    structured_db.drop_table(table_name)
+                    logger.info("Dropped Excel table '%s' from %s", table_name, db_path)
+                except Exception as e:
+                    logger.warning("Failed to drop Excel table '%s': %s", table_name, e)
+        except ImportError:
+            logger.warning("ingestkit not available for Excel table cleanup")
 
     def recover_stuck_documents(self, max_age_hours: int = 2) -> int:
         """Reset stuck processing documents to pending.

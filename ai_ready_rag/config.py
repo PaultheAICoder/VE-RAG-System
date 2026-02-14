@@ -222,6 +222,14 @@ class Settings(BaseSettings):
         "msg",
     ]
 
+    # ingestkit-excel integration
+    use_ingestkit_excel: bool = False  # Feature flag (off by default)
+    excel_classification_model: str = "qwen2.5:7b"
+    excel_reasoning_model: str = "deepseek-r1:14b"
+    excel_tables_db_path: str = "./data/excel_tables.db"
+    excel_enable_tier3: bool = True
+    excel_tier2_confidence_threshold: float = 0.6
+
     # Document Processing
     enable_ocr: bool | None = None  # None = use profile default
     ocr_language: str = "eng"
