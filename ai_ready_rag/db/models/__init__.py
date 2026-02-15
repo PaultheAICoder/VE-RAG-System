@@ -25,6 +25,7 @@ from ai_ready_rag.db.models.evaluation import (
     EvaluationDataset,
     EvaluationRun,
     EvaluationSample,
+    LiveEvaluationScore,
 )
 from ai_ready_rag.db.models.rag import CuratedQA, CuratedQAKeyword, QuerySynonym
 from ai_ready_rag.db.models.user import Tag, User
@@ -58,4 +59,5 @@ __all__ = [
     "DatasetSample",
     "EvaluationRun",
     "EvaluationSample",
+    "LiveEvaluationScore",
 ]

@@ -116,6 +116,7 @@ async def lifespan(app: FastAPI):
             EvaluationDataset,
             EvaluationRun,
             EvaluationSample,
+            LiveEvaluationScore,
         )
 
         inspector = sa_inspect(engine)
@@ -125,6 +126,7 @@ async def lifespan(app: FastAPI):
             DatasetSample.__tablename__,
             EvaluationRun.__tablename__,
             EvaluationSample.__tablename__,
+            LiveEvaluationScore.__tablename__,
         }
         missing = required_tables - existing_tables
         if missing:
@@ -207,6 +209,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize and start EvaluationWorker (if eval enabled)
     eval_worker = None
+    eval_service = None
     if settings.eval_enabled:
         from ai_ready_rag.services.evaluation_service import EvaluationService
         from ai_ready_rag.workers.evaluation_worker import (
@@ -226,6 +229,18 @@ async def lifespan(app: FastAPI):
 
     app.state.eval_worker = eval_worker
 
+    # Initialize and start LiveEvaluationQueue (if eval enabled)
+    live_eval_queue = None
+    if settings.eval_enabled and eval_service is not None:
+        from ai_ready_rag.workers.live_eval_queue import LiveEvaluationQueue
+
+        live_eval_queue = LiveEvaluationQueue(eval_service, settings)
+        await live_eval_queue.start()
+        rag_service._live_eval_queue = live_eval_queue
+        logger.info("LiveEvaluationQueue started")
+
+    app.state.live_eval_queue = live_eval_queue
+
     # Initialize and start WarmingCleanupService
     warming_cleanup = WarmingCleanupService(settings)
     await warming_cleanup.start()
@@ -236,6 +251,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     await warming_cleanup.stop()
     logger.info("WarmingCleanupService stopped")
+
+    if live_eval_queue:
+        await live_eval_queue.stop()
+        logger.info("LiveEvaluationQueue stopped")
 
     if eval_worker:
         await eval_worker.stop()

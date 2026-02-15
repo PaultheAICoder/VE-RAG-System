@@ -1,15 +1,17 @@
 """Evaluation framework API endpoints."""
 
 import logging
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.dependencies import require_admin
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import User
-from ai_ready_rag.db.models.evaluation import EvaluationDataset
+from ai_ready_rag.db.models.evaluation import EvaluationDataset, LiveEvaluationScore
 from ai_ready_rag.db.repositories.evaluation import (
     DatasetSampleRepository,
     EvaluationDatasetRepository,
@@ -25,6 +27,10 @@ from ai_ready_rag.schemas.evaluation import (
     DatasetSampleListResponse,
     EvaluationSampleListResponse,
     EvaluationSummaryResponse,
+    LiveScoreListResponse,
+    LiveScoreResponse,
+    LiveStatsHourly,
+    LiveStatsResponse,
     RAGBenchImportRequest,
     RunCreate,
     RunListResponse,
@@ -377,4 +383,112 @@ async def get_summary(
         total_datasets=data["total_datasets"],
         avg_scores=data["avg_scores"],
         score_trend=data["score_trend"],
+    )
+
+
+# ========== Live Monitoring Endpoints ==========
+
+
+@router.get("/live/stats", response_model=LiveStatsResponse)
+async def get_live_stats(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Live monitoring stats: aggregates, hourly breakdown, queue metrics."""
+    now = datetime.utcnow()
+    cutoff_24h = now - timedelta(hours=24)
+
+    # Total count
+    total_scores = db.query(func.count(LiveEvaluationScore.id)).scalar() or 0
+
+    # Last 24h count
+    scores_last_24h = (
+        db.query(func.count(LiveEvaluationScore.id))
+        .filter(LiveEvaluationScore.created_at >= cutoff_24h)
+        .scalar()
+        or 0
+    )
+
+    # Overall averages
+    avg_faithfulness = (
+        db.query(func.avg(LiveEvaluationScore.faithfulness))
+        .filter(LiveEvaluationScore.faithfulness.isnot(None))
+        .scalar()
+    )
+    avg_answer_relevancy = (
+        db.query(func.avg(LiveEvaluationScore.answer_relevancy))
+        .filter(LiveEvaluationScore.answer_relevancy.isnot(None))
+        .scalar()
+    )
+
+    # Hourly breakdown (last 24h) — SQLite strftime
+    hourly_rows = (
+        db.query(
+            func.strftime("%Y-%m-%dT%H:00:00", LiveEvaluationScore.created_at).label("hour"),
+            func.count(LiveEvaluationScore.id).label("count"),
+            func.avg(LiveEvaluationScore.faithfulness).label("avg_faithfulness"),
+            func.avg(LiveEvaluationScore.answer_relevancy).label("avg_answer_relevancy"),
+        )
+        .filter(LiveEvaluationScore.created_at >= cutoff_24h)
+        .group_by("hour")
+        .order_by("hour")
+        .all()
+    )
+
+    hourly_breakdown = [
+        LiveStatsHourly(
+            hour=row.hour,
+            count=row.count,
+            avg_faithfulness=round(row.avg_faithfulness, 4)
+            if row.avg_faithfulness is not None
+            else None,
+            avg_answer_relevancy=round(row.avg_answer_relevancy, 4)
+            if row.avg_answer_relevancy is not None
+            else None,
+        )
+        for row in hourly_rows
+    ]
+
+    # Queue stats from app.state
+    live_queue = getattr(request.app.state, "live_eval_queue", None)
+    queue_depth = live_queue.depth if live_queue else 0
+    queue_capacity = live_queue.capacity if live_queue else 0
+    drops = live_queue.drops_since_startup if live_queue else 0
+
+    return LiveStatsResponse(
+        total_scores=total_scores,
+        scores_last_24h=scores_last_24h,
+        avg_faithfulness=round(avg_faithfulness, 4) if avg_faithfulness is not None else None,
+        avg_answer_relevancy=round(avg_answer_relevancy, 4)
+        if avg_answer_relevancy is not None
+        else None,
+        hourly_breakdown=hourly_breakdown,
+        queue_depth=queue_depth,
+        queue_capacity=queue_capacity,
+        drops_since_startup=drops,
+    )
+
+
+@router.get("/live/scores", response_model=LiveScoreListResponse)
+async def list_live_scores(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Paginated live evaluation scores, newest first."""
+    total = db.query(func.count(LiveEvaluationScore.id)).scalar() or 0
+
+    scores = (
+        db.query(LiveEvaluationScore)
+        .order_by(LiveEvaluationScore.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    return LiveScoreListResponse(
+        scores=[LiveScoreResponse.model_validate(s) for s in scores],
+        total=total,
+        limit=limit,
+        offset=offset,
     )

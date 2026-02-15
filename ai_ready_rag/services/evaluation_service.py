@@ -603,6 +603,69 @@ class EvaluationService:
         finally:
             db.close()
 
+    async def score_live_query(
+        self,
+        query: str,
+        answer: str,
+        contexts: list[str],
+        model_used: str,
+        generation_time_ms: float | None = None,
+    ) -> None:
+        """Score a live query and persist to LiveEvaluationScore table.
+
+        Uses its own DB session (safe for asyncio consumer).
+        """
+        import time
+
+        from ai_ready_rag.db.database import SessionLocal
+        from ai_ready_rag.db.models.evaluation import LiveEvaluationScore
+
+        db = SessionLocal()
+        try:
+            eval_start = time.perf_counter()
+            scores = await self.evaluate_single(
+                question=query,
+                answer=answer,
+                contexts=contexts,
+                ground_truth=None,
+            )
+            eval_elapsed_ms = (time.perf_counter() - eval_start) * 1000
+
+            score_row = LiveEvaluationScore(
+                query=query,
+                answer=answer,
+                retrieved_contexts=json.dumps(contexts) if contexts else None,
+                model_used=model_used,
+                faithfulness=scores.get("faithfulness"),
+                answer_relevancy=scores.get("answer_relevancy"),
+                generation_time_ms=generation_time_ms,
+                evaluation_time_ms=eval_elapsed_ms,
+            )
+            db.add(score_row)
+            db.commit()
+            logger.info(
+                "Live eval scored: faithfulness=%s, relevancy=%s",
+                score_row.faithfulness,
+                score_row.answer_relevancy,
+            )
+        except Exception as e:
+            logger.error("Live eval scoring failed: %s", e)
+            try:
+                db.rollback()
+                error_row = LiveEvaluationScore(
+                    query=query,
+                    answer=answer[:500] if answer else "",
+                    model_used=model_used,
+                    generation_time_ms=generation_time_ms,
+                    error_message=str(e)[:500],
+                )
+                db.add(error_row)
+                db.commit()
+            except Exception:
+                logger.exception("Failed to persist live eval error row")
+        finally:
+            db.close()
+
     async def compute_aggregates(self, db: Session, run: EvaluationRun) -> EvaluationRun:
         """Compute aggregate scores for a completed run."""
         eval_sample_repo = EvaluationSampleRepository(db)

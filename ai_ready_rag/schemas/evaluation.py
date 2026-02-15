@@ -241,3 +241,55 @@ class EvaluationSummaryResponse(BaseModel):
     total_datasets: int
     avg_scores: dict
     score_trend: list[dict]
+
+
+# ---------- Live Monitoring Schemas ----------
+
+
+class LiveScoreResponse(BaseModel):
+    """Single live evaluation score."""
+
+    id: str
+    query: str
+    answer: str
+    model_used: str
+    faithfulness: float | None
+    answer_relevancy: float | None
+    generation_time_ms: float | None
+    evaluation_time_ms: float | None
+    error_message: str | None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LiveScoreListResponse(BaseModel):
+    """Paginated live scores."""
+
+    scores: list[LiveScoreResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class LiveStatsHourly(BaseModel):
+    """Per-hour aggregate for live monitoring."""
+
+    hour: str
+    count: int
+    avg_faithfulness: float | None
+    avg_answer_relevancy: float | None
+
+
+class LiveStatsResponse(BaseModel):
+    """Live monitoring dashboard stats."""
+
+    total_scores: int
+    scores_last_24h: int
+    avg_faithfulness: float | None
+    avg_answer_relevancy: float | None
+    hourly_breakdown: list[LiveStatsHourly]
+    queue_depth: int
+    queue_capacity: int
+    drops_since_startup: int

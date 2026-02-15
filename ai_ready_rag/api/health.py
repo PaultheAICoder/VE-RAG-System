@@ -23,6 +23,18 @@ async def health_check(request: Request):
         eval_status["worker_running"] = False
         eval_status["current_run_id"] = None
 
+    live_queue = getattr(request.app.state, "live_eval_queue", None)
+    if live_queue:
+        eval_status["live_queue_depth"] = live_queue.depth
+        eval_status["live_queue_capacity"] = live_queue.capacity
+        eval_status["live_queue_drops"] = live_queue.drops_since_startup
+        eval_status["live_queue_processed"] = live_queue.processed_since_startup
+    else:
+        eval_status["live_queue_depth"] = 0
+        eval_status["live_queue_capacity"] = 0
+        eval_status["live_queue_drops"] = 0
+        eval_status["live_queue_processed"] = 0
+
     return {
         "status": "healthy",
         "version": settings.app_version,

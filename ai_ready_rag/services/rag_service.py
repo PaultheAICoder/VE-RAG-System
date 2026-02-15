@@ -670,6 +670,8 @@ class RAGService:
         self.enable_hallucination_check = settings.rag_enable_hallucination_check
         # Cache service (explicit or lazy-loaded for backward compat)
         self._cache_service: CacheService | None = cache_service
+        # Live evaluation queue (injected post-construction from main.py)
+        self._live_eval_queue = None
 
     # -------------------------------------------------------------------------
     # Dynamic settings from database (single source of truth)
@@ -751,6 +753,43 @@ class RAGService:
     def retrieval_top_k(self) -> int:
         """Get top-k retrieval count from database."""
         return get_rag_setting("retrieval_top_k", self.settings.rag_total_context_chunks)
+
+    def _get_live_sample_rate(self) -> float:
+        """Get live evaluation sample rate from AdminSetting."""
+        rate = get_rag_setting("eval_live_sample_rate", 0.0)
+        try:
+            return max(0.0, min(1.0, float(rate)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _maybe_queue_for_evaluation(
+        self,
+        request: RAGRequest,
+        response: RAGResponse,
+        final_chunks: list,
+    ) -> None:
+        """Probabilistically enqueue a live query for evaluation."""
+        import random
+
+        if request.is_warming:
+            return
+        if self._live_eval_queue is None:
+            return
+
+        sample_rate = self._get_live_sample_rate()
+        if sample_rate <= 0:
+            return
+        if random.random() > sample_rate:
+            return
+
+        contexts = [c.chunk_text for c in final_chunks] if final_chunks else []
+        self._live_eval_queue.enqueue(
+            query=request.query,
+            answer=response.answer,
+            contexts=contexts,
+            model_used=response.model,
+            generation_time_ms=response.generation_time_ms,
+        )
 
     @property
     def vector_service(self):
@@ -1566,6 +1605,12 @@ class RAGService:
                 await self.cache.put_embedding(request.query, query_embedding)
             except Exception as e:
                 logger.warning(f"[RAG] Failed to cache response: {e}")
+
+        # 10. Maybe sample for live evaluation
+        try:
+            self._maybe_queue_for_evaluation(request, response, final_chunks)
+        except Exception as e:
+            logger.warning(f"[RAG] Failed to queue for live evaluation: {e}")
 
         return response
 

@@ -155,3 +155,25 @@ class EvaluationSample(Base):
     processed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class LiveEvaluationScore(Base):
+    """Scores from live production query sampling."""
+
+    __tablename__ = "live_evaluation_scores"
+    __table_args__ = (
+        Index("idx_live_eval_scores_created", "created_at"),
+        Index("idx_live_eval_scores_model", "model_used"),
+    )
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    query = Column(Text, nullable=False)
+    answer = Column(Text, nullable=False)
+    retrieved_contexts = Column(Text, nullable=True)  # JSON list
+    model_used = Column(String, nullable=False)
+    faithfulness = Column(Float, nullable=True)
+    answer_relevancy = Column(Float, nullable=True)
+    generation_time_ms = Column(Float, nullable=True)
+    evaluation_time_ms = Column(Float, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
