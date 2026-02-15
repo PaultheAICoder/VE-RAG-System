@@ -5,6 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.dependencies import require_admin
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import User
@@ -13,14 +14,19 @@ from ai_ready_rag.db.repositories.evaluation import (
     DatasetSampleRepository,
     EvaluationDatasetRepository,
     EvaluationRunRepository,
+    EvaluationSampleRepository,
     recompute_dataset_sample_counts,
 )
 from ai_ready_rag.schemas.evaluation import (
+    CancelRunResponse,
     DatasetCreate,
     DatasetListResponse,
     DatasetResponse,
     DatasetSampleListResponse,
+    EvaluationSampleListResponse,
+    RunCreate,
     RunListResponse,
+    RunResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -172,7 +178,17 @@ async def recompute_counts(
     return {"updated": updated}
 
 
-# ========== Run Endpoints (Stubs -- return 501) ==========
+# ========== Run Endpoints ==========
+
+
+def _get_evaluation_service(db: Session):
+    """Construct EvaluationService for route handlers."""
+    from ai_ready_rag.services.evaluation_service import EvaluationService
+    from ai_ready_rag.services.rag_service import RAGService
+
+    settings = get_settings()
+    rag_service = RAGService(settings)
+    return EvaluationService(settings, rag_service)
 
 
 @router.get("/runs", response_model=RunListResponse)
@@ -182,61 +198,116 @@ async def list_runs(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    """List evaluation runs. Stub -- returns empty list."""
+    """List evaluation runs with optional status filter."""
     repo = EvaluationRunRepository(db)
     runs, total = repo.list_paginated(status=status_filter, limit=limit, offset=offset)
     return RunListResponse(runs=runs, total=total, limit=limit, offset=offset)
 
 
-@router.post("/runs", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-async def create_run():
-    """Trigger an evaluation run. Not yet implemented."""
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Evaluation run creation will be available in Phase 1 completion",
+@router.post("/runs", response_model=RunResponse, status_code=status.HTTP_201_CREATED)
+async def create_run(
+    request: RunCreate,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Create an evaluation run from a dataset."""
+    service = _get_evaluation_service(db)
+    run = await service.create_run(db, request, triggered_by=current_user.id)
+    return RunResponse.model_validate(run)
+
+
+@router.get("/runs/{run_id}", response_model=RunResponse)
+async def get_run(
+    run_id: str,
+    db: Session = Depends(get_db),
+):
+    """Get evaluation run details."""
+    repo = EvaluationRunRepository(db)
+    run = repo.get(run_id)
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Evaluation run not found",
+        )
+    return RunResponse.model_validate(run)
+
+
+@router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_run(
+    run_id: str,
+    db: Session = Depends(get_db),
+):
+    """Delete an evaluation run. Cannot delete active runs."""
+    repo = EvaluationRunRepository(db)
+    run = repo.get(run_id)
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Evaluation run not found",
+        )
+    if run.status in ("pending", "running"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete an active run. Cancel it first.",
+        )
+    repo.delete(run)
+    db.commit()
+    return None
+
+
+@router.post("/runs/{run_id}/cancel", response_model=CancelRunResponse)
+async def cancel_run(
+    run_id: str,
+    db: Session = Depends(get_db),
+):
+    """Request cancellation of a running evaluation."""
+    repo = EvaluationRunRepository(db)
+    run = repo.get(run_id)
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Evaluation run not found",
+        )
+    if run.status in ("completed", "completed_with_errors", "failed", "cancelled"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot cancel a run with status '{run.status}'",
+        )
+    run.is_cancel_requested = True
+    db.commit()
+    return CancelRunResponse(
+        id=run.id,
+        status=run.status,
+        is_cancel_requested=True,
     )
 
 
-@router.get("/runs/{run_id}")
-async def get_run(run_id: str):
-    """Get evaluation run details. Not yet implemented."""
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Evaluation run details will be available in Phase 1 completion",
+@router.get("/runs/{run_id}/samples", response_model=EvaluationSampleListResponse)
+async def list_run_samples(
+    run_id: str,
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """List samples for an evaluation run."""
+    run_repo = EvaluationRunRepository(db)
+    if not run_repo.get(run_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Evaluation run not found",
+        )
+    sample_repo = EvaluationSampleRepository(db)
+    samples, total = sample_repo.list_by_run(
+        run_id, status=status_filter, limit=limit, offset=offset
     )
-
-
-@router.delete("/runs/{run_id}", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-async def delete_run(run_id: str):
-    """Delete an evaluation run. Not yet implemented."""
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Evaluation run deletion will be available in Phase 1 completion",
-    )
-
-
-@router.post("/runs/{run_id}/cancel", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-async def cancel_run(run_id: str):
-    """Cancel a running evaluation. Not yet implemented."""
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Evaluation run cancellation will be available in Phase 1 completion",
-    )
+    return EvaluationSampleListResponse(samples=samples, total=total, limit=limit, offset=offset)
 
 
 @router.get("/summary", status_code=status.HTTP_501_NOT_IMPLEMENTED)
 async def get_summary():
-    """Dashboard summary. Not yet implemented."""
+    """Dashboard summary. Not yet implemented (Phase 3+)."""
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Evaluation summary will be available in Phase 1 completion",
-    )
-
-
-@router.get("/runs/{run_id}/samples", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-async def list_run_samples(run_id: str):
-    """List samples for a run. Not yet implemented."""
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Run sample listing will be available in Phase 1 completion",
+        detail="Evaluation summary will be available in a future phase",
     )

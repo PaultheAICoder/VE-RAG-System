@@ -194,32 +194,65 @@ class TestDatasetCRUD:
         assert "updated" in response.json()
 
 
-class TestRunStubs:
-    """Test that run stubs return 501."""
+class TestRunEndpoints:
+    """Test run endpoints (replaced Phase 1 stubs)."""
 
-    def test_create_run_stub(self, client, admin_headers):
+    def test_create_run_requires_body(self, client, admin_headers):
+        """POST without body returns 422."""
         response = client.post("/api/evaluations/runs", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    def test_get_run_stub(self, client, admin_headers):
+    def test_create_run_dataset_not_found(self, client, admin_headers):
+        """POST with invalid dataset_id returns 404."""
+        response = client.post(
+            "/api/evaluations/runs",
+            json={
+                "dataset_id": "nonexistent",
+                "name": "test",
+                "tag_scope": ["hr"],
+            },
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_create_run_mutually_exclusive(self, client, admin_headers):
+        """POST with both tag_scope and admin_bypass_tags returns 422."""
+        response = client.post(
+            "/api/evaluations/runs",
+            json={
+                "dataset_id": "fake",
+                "name": "test",
+                "tag_scope": ["hr"],
+                "admin_bypass_tags": True,
+            },
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_get_run_not_found(self, client, admin_headers):
+        """GET non-existent run returns 404."""
         response = client.get("/api/evaluations/runs/some-id", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_delete_run_stub(self, client, admin_headers):
+    def test_delete_run_not_found(self, client, admin_headers):
+        """DELETE non-existent run returns 404."""
         response = client.delete("/api/evaluations/runs/some-id", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_cancel_run_stub(self, client, admin_headers):
+    def test_cancel_run_not_found(self, client, admin_headers):
+        """Cancel non-existent run returns 404."""
         response = client.post("/api/evaluations/runs/some-id/cancel", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_summary_stub(self, client, admin_headers):
+        """Summary endpoint remains 501 (Phase 3+)."""
         response = client.get("/api/evaluations/summary", headers=admin_headers)
         assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
 
-    def test_run_samples_stub(self, client, admin_headers):
+    def test_run_samples_not_found(self, client, admin_headers):
+        """List samples for non-existent run returns 404."""
         response = client.get("/api/evaluations/runs/some-id/samples", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 class TestRunList:

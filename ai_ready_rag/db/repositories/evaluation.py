@@ -56,6 +56,15 @@ class EvaluationDatasetRepository(BaseRepository[EvaluationDataset]):
 class DatasetSampleRepository(BaseRepository[DatasetSample]):
     model = DatasetSample
 
+    def list_all_by_dataset(self, dataset_id: str) -> list[DatasetSample]:
+        """Return all samples for a dataset (no pagination)."""
+        stmt = (
+            select(DatasetSample)
+            .where(DatasetSample.dataset_id == dataset_id)
+            .order_by(DatasetSample.sort_order)
+        )
+        return list(self.db.scalars(stmt).all())
+
     def list_by_dataset(
         self,
         dataset_id: str,
@@ -155,6 +164,73 @@ class EvaluationSampleRepository(BaseRepository[EvaluationSample]):
         stmt = stmt.order_by(EvaluationSample.sort_order).limit(limit).offset(offset)
         samples = list(self.db.scalars(stmt).all())
         return samples, total
+
+    def bulk_create_from_dataset(
+        self,
+        run_id: str,
+        dataset_samples: list[DatasetSample],
+    ) -> list[EvaluationSample]:
+        """Create evaluation samples from dataset samples.
+
+        Copies question, ground_truth, reference_contexts, sort_order.
+        Does NOT flush/commit -- caller owns transaction.
+        """
+        eval_samples = []
+        for ds in dataset_samples:
+            sample = EvaluationSample(
+                run_id=run_id,
+                question=ds.question,
+                ground_truth=ds.ground_truth,
+                reference_contexts=ds.reference_contexts,
+                sort_order=ds.sort_order,
+                status="pending",
+            )
+            eval_samples.append(sample)
+        self.add_all(eval_samples)
+        return eval_samples
+
+    def get_aggregate_scores(self, run_id: str) -> dict[str, float | None]:
+        """Compute SQL AVG() for each metric column on completed samples."""
+        metrics = [
+            "faithfulness",
+            "answer_relevancy",
+            "llm_context_precision",
+            "llm_context_recall",
+        ]
+        result = {}
+        for metric in metrics:
+            col = getattr(EvaluationSample, metric)
+            avg = self.db.scalar(
+                select(func.avg(col))
+                .where(EvaluationSample.run_id == run_id)
+                .where(EvaluationSample.status == "completed")
+            )
+            result[metric] = float(avg) if avg is not None else None
+        return result
+
+    def count_null_metrics(self, run_id: str) -> int:
+        """Count NULL metric cells across completed samples."""
+        metrics = [
+            "faithfulness",
+            "answer_relevancy",
+            "llm_context_precision",
+            "llm_context_recall",
+        ]
+        total_nulls = 0
+        for metric in metrics:
+            col = getattr(EvaluationSample, metric)
+            count = (
+                self.db.scalar(
+                    select(func.count())
+                    .select_from(EvaluationSample)
+                    .where(EvaluationSample.run_id == run_id)
+                    .where(EvaluationSample.status == "completed")
+                    .where(col.is_(None))
+                )
+                or 0
+            )
+            total_nulls += count
+        return total_nulls
 
 
 def recompute_dataset_sample_counts(db: Session) -> int:

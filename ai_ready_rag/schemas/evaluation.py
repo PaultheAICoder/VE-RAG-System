@@ -98,7 +98,7 @@ class DatasetSampleListResponse(BaseModel):
     offset: int
 
 
-# ---------- Run Schemas (Stubs for Phase 1) ----------
+# ---------- Run Schemas ----------
 
 
 class RunCreate(BaseModel):
