@@ -45,28 +45,33 @@ class EvaluationService:
         self.settings = settings
         self.rag_service = rag_service
 
-    def _get_ragas_llm(self):
-        """Get RAGAS-compatible LLM via Ollama's OpenAI-compatible endpoint."""
-        from ragas.llms import llm_factory
+    def _get_openai_client(self):
+        """Get OpenAI client pointing at Ollama's OpenAI-compatible endpoint."""
+        from openai import OpenAI
 
-        return llm_factory(
-            model=self.settings.chat_model,
-            run_config=None,
-            default_headers=None,
+        return OpenAI(
             base_url=f"{self.settings.ollama_base_url}/v1",
             api_key="ollama",
         )
 
+    def _get_ragas_llm(self):
+        """Get RAGAS-compatible LLM via Ollama's OpenAI-compatible endpoint."""
+        from ragas.llms import llm_factory
+
+        client = self._get_openai_client()
+        return llm_factory(
+            model=self.settings.chat_model,
+            client=client,
+        )
+
     def _get_ragas_embeddings(self):
         """Get RAGAS-compatible embeddings via Ollama's OpenAI-compatible endpoint."""
-        from ragas.embeddings import embedding_factory
+        from ragas.embeddings import OpenAIEmbeddings
 
-        return embedding_factory(
+        client = self._get_openai_client()
+        return OpenAIEmbeddings(
+            client=client,
             model=self.settings.embedding_model,
-            run_config=None,
-            default_headers=None,
-            base_url=f"{self.settings.ollama_base_url}/v1",
-            api_key="ollama",
         )
 
     @staticmethod
@@ -129,7 +134,8 @@ class EvaluationService:
         gt_normalized = gt_normalized or None  # "" -> None
 
         if gt_normalized:
-            from ragas.metrics import LLMContextPrecision, LLMContextRecall
+            from ragas.metrics import _LLMContextPrecisionWithoutReference as LLMContextPrecision
+            from ragas.metrics import _LLMContextRecall as LLMContextRecall
 
             metrics.extend(
                 [
