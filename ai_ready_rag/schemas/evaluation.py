@@ -32,6 +32,31 @@ class DatasetCreate(BaseModel):
         return v
 
 
+class RAGBenchImportRequest(BaseModel):
+    """Request to import a RAGBench subset from pre-downloaded parquet files."""
+
+    subset: str
+    max_samples: int = Field(50, ge=1, le=5000)
+    name: str
+    description: str | None = None
+
+
+class SyntheticGenerateRequest(BaseModel):
+    """Request to generate a synthetic dataset from uploaded documents."""
+
+    name: str
+    document_ids: list[str]
+    num_samples: int = Field(30, ge=1, le=200)
+    description: str | None = None
+
+    @field_validator("document_ids")
+    @classmethod
+    def at_least_one_document(cls, v: list) -> list:
+        if not v:
+            raise ValueError("At least one document_id is required")
+        return v
+
+
 class DatasetSampleResponse(BaseModel):
     """Single dataset sample response."""
 
@@ -98,7 +123,7 @@ class DatasetSampleListResponse(BaseModel):
     offset: int
 
 
-# ---------- Run Schemas (Stubs for Phase 1) ----------
+# ---------- Run Schemas ----------
 
 
 class RunCreate(BaseModel):

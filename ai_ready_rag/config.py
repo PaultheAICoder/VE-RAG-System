@@ -197,6 +197,9 @@ class Settings(BaseSettings):
     eval_live_queue_size: int = 10
     eval_live_retention_days: int = 30
 
+    # Evaluation - RAGBench
+    ragbench_data_dir: str = "./data/ragbench"
+
     # Document Management
     upload_dir: str = "./data/uploads"
     max_upload_size_mb: int = 100

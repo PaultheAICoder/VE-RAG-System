@@ -171,6 +171,15 @@ class RAGResponse:
     routing_decision: Literal["RETRIEVE", "DIRECT"] | None = None  # Query routing result
 
 
+@dataclass
+class EvalRAGResult:
+    """RAG output enriched with retrieval details for evaluation."""
+
+    response: RAGResponse
+    retrieved_contexts: list[str]  # chunk_text from each SearchResult
+    retrieval_scores: list[float]  # score from each SearchResult
+
+
 # -----------------------------------------------------------------------------
 # Helper Functions
 # -----------------------------------------------------------------------------
@@ -1543,6 +1552,59 @@ class RAGService:
             # Default mode: always retrieve (routing_decision stays None)
             routing_decision = ROUTING_RETRIEVE
 
+        # Run core retrieval+generation pipeline
+        response, final_chunks = await self._run_rag_pipeline(
+            request, db, model, start_time, routing_decision
+        )
+
+        # 9. Store in cache before returning (if enabled and high enough confidence)
+        if self.cache and self.cache.enabled:
+            try:
+                # Get or compute embedding for cache storage
+                query_embedding = await self._get_or_embed_query(request.query)
+                await self.cache.put(request.query, query_embedding, response)
+                await self.cache.put_embedding(request.query, query_embedding)
+            except Exception as e:
+                logger.warning(f"[RAG] Failed to cache response: {e}")
+
+        return response
+
+    async def generate_for_eval(self, request: RAGRequest, db: Session) -> EvalRAGResult:
+        """Run RAG pipeline for evaluation, returning contexts alongside the response.
+
+        Unlike generate(), this method:
+        - Skips curated Q&A lookup
+        - Skips cache lookup/store
+        - Skips direct routing
+        - Always retrieves context
+        """
+        start_time = time.perf_counter()
+        model = request.model or self.default_model
+        await self.validate_model(model)
+        routing_decision = ROUTING_RETRIEVE
+
+        response, final_chunks = await self._run_rag_pipeline(
+            request, db, model, start_time, routing_decision
+        )
+        return EvalRAGResult(
+            response=response,
+            retrieved_contexts=[c.chunk_text for c in final_chunks],
+            retrieval_scores=[c.score for c in final_chunks],
+        )
+
+    async def _run_rag_pipeline(
+        self,
+        request: RAGRequest,
+        db: Session,
+        model: str,
+        start_time: float,
+        routing_decision: str | None,
+    ) -> tuple[RAGResponse, list[SearchResult]]:
+        """Core retrieval+generation pipeline shared by generate() and generate_for_eval().
+
+        Returns (RAGResponse, list[SearchResult]) so callers can access
+        the raw search results for evaluation or caching.
+        """
         # 2. Retrieve quality context (use DB setting if not specified in request)
         max_chunks = request.max_context_chunks or self.retrieval_top_k
         context_chunks = await self.get_quality_context(
@@ -1556,7 +1618,7 @@ class RAGService:
 
         # Early exit: no context (zero-context short-circuit)
         if not context_chunks:
-            return self._insufficient_context_response(model, elapsed_ms, routing_decision)
+            return self._insufficient_context_response(model, elapsed_ms, routing_decision), []
 
         # 3. Apply token budget
         chat_history = request.chat_history or []
@@ -1677,7 +1739,7 @@ class RAGService:
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-        response = RAGResponse(
+        rag_response = RAGResponse(
             answer=answer,
             confidence=confidence,
             citations=citations,
@@ -1691,17 +1753,7 @@ class RAGService:
             routing_decision=routing_decision,
         )
 
-        # 9. Store in cache before returning (if enabled and high enough confidence)
-        if self.cache and self.cache.enabled:
-            try:
-                # Get or compute embedding for cache storage
-                query_embedding = await self._get_or_embed_query(request.query)
-                await self.cache.put(request.query, query_embedding, response)
-                await self.cache.put_embedding(request.query, query_embedding)
-            except Exception as e:
-                logger.warning(f"[RAG] Failed to cache response: {e}")
-
-        return response
+        return rag_response, final_chunks
 
     async def health_check(self) -> dict:
         """Check Ollama connectivity and model availability.

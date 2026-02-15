@@ -1,5 +1,8 @@
 """Tests for evaluation framework API endpoints."""
 
+import hashlib
+import json
+
 import pytest
 from fastapi import status
 
@@ -194,32 +197,70 @@ class TestDatasetCRUD:
         assert "updated" in response.json()
 
 
-class TestRunStubs:
-    """Test that run stubs return 501."""
+class TestRunEndpoints:
+    """Test run endpoints (replaced Phase 1 stubs)."""
 
-    def test_create_run_stub(self, client, admin_headers):
+    def test_create_run_requires_body(self, client, admin_headers):
+        """POST without body returns 422."""
         response = client.post("/api/evaluations/runs", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    def test_get_run_stub(self, client, admin_headers):
+    def test_create_run_dataset_not_found(self, client, admin_headers):
+        """POST with invalid dataset_id returns 404."""
+        response = client.post(
+            "/api/evaluations/runs",
+            json={
+                "dataset_id": "nonexistent",
+                "name": "test",
+                "tag_scope": ["hr"],
+            },
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_create_run_mutually_exclusive(self, client, admin_headers):
+        """POST with both tag_scope and admin_bypass_tags returns 422."""
+        response = client.post(
+            "/api/evaluations/runs",
+            json={
+                "dataset_id": "fake",
+                "name": "test",
+                "tag_scope": ["hr"],
+                "admin_bypass_tags": True,
+            },
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_get_run_not_found(self, client, admin_headers):
+        """GET non-existent run returns 404."""
         response = client.get("/api/evaluations/runs/some-id", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_delete_run_stub(self, client, admin_headers):
+    def test_delete_run_not_found(self, client, admin_headers):
+        """DELETE non-existent run returns 404."""
         response = client.delete("/api/evaluations/runs/some-id", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_cancel_run_stub(self, client, admin_headers):
+    def test_cancel_run_not_found(self, client, admin_headers):
+        """Cancel non-existent run returns 404."""
         response = client.post("/api/evaluations/runs/some-id/cancel", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_summary_stub(self, client, admin_headers):
+    def test_summary_returns_data(self, client, admin_headers):
+        """Summary endpoint returns dashboard data."""
         response = client.get("/api/evaluations/summary", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert "total_runs" in data
+        assert "total_datasets" in data
+        assert "avg_scores" in data
+        assert "score_trend" in data
 
-    def test_run_samples_stub(self, client, admin_headers):
+    def test_run_samples_not_found(self, client, admin_headers):
+        """List samples for non-existent run returns 404."""
         response = client.get("/api/evaluations/runs/some-id/samples", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 class TestRunList:
@@ -232,6 +273,215 @@ class TestRunList:
         data = response.json()
         assert data["total"] == 0
         assert data["runs"] == []
+
+
+def _patch_ragbench_dir(monkeypatch, tmp_path):
+    """Patch the cached settings instance to use tmp_path as ragbench_data_dir."""
+    from ai_ready_rag.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ragbench_data_dir", str(tmp_path))
+
+
+def _make_parquet(tmp_path, subset="techqa", rows=None):
+    """Create a test parquet file and return (parquet_path, sha256)."""
+    import pandas as pd
+
+    subset_dir = tmp_path / subset
+    subset_dir.mkdir(exist_ok=True)
+    parquet_file = subset_dir / "dataset.parquet"
+
+    if rows is None:
+        rows = {
+            "question": ["What is Python?", "What is Java?", "What is Go?"],
+            "response": ["A language", "A language", "A language"],
+            "documents": [["doc1"], ["doc2"], ["doc3"]],
+        }
+    pd.DataFrame(rows).to_parquet(parquet_file, engine="pyarrow")
+
+    h = hashlib.sha256()
+    with open(parquet_file, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return parquet_file, h.hexdigest()
+
+
+def _make_manifest(tmp_path, subsets_dict):
+    """Write manifest.json to tmp_path."""
+    manifest = {"version": 1, "subsets": subsets_dict}
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+
+class TestRAGBenchImport:
+    """Test RAGBench import endpoint."""
+
+    def test_import_ragbench_requires_admin(self, client, user_headers):
+        """Non-admin users cannot import."""
+        response = client.post(
+            "/api/evaluations/datasets/import-ragbench",
+            json={"subset": "techqa", "name": "Test"},
+            headers=user_headers,
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_import_ragbench_missing_manifest(self, client, admin_headers, tmp_path, monkeypatch):
+        """400 when manifest.json not found."""
+        _patch_ragbench_dir(monkeypatch, tmp_path)
+        response = client.post(
+            "/api/evaluations/datasets/import-ragbench",
+            json={"subset": "techqa", "name": "Test Import"},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "manifest.json" in response.json()["detail"]
+
+    def test_import_ragbench_unknown_subset(self, client, admin_headers, tmp_path, monkeypatch):
+        """404 when subset not in manifest."""
+        _patch_ragbench_dir(monkeypatch, tmp_path)
+        _make_manifest(tmp_path, {"other": {"path": "other/dataset.parquet", "sha256": "abc"}})
+
+        response = client.post(
+            "/api/evaluations/datasets/import-ragbench",
+            json={"subset": "techqa", "name": "Test Import"},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert "techqa" in response.json()["detail"]
+
+    def test_import_ragbench_checksum_mismatch(self, client, admin_headers, tmp_path, monkeypatch):
+        """422 when SHA-256 doesn't match."""
+        _patch_ragbench_dir(monkeypatch, tmp_path)
+        _make_parquet(tmp_path, "techqa")
+        _make_manifest(
+            tmp_path,
+            {
+                "techqa": {
+                    "path": "techqa/dataset.parquet",
+                    "sha256": "0" * 64,
+                }
+            },
+        )
+
+        response = client.post(
+            "/api/evaluations/datasets/import-ragbench",
+            json={"subset": "techqa", "name": "Test Import"},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "checksum" in response.json()["detail"].lower()
+
+    def test_import_ragbench_success(self, client, admin_headers, tmp_path, monkeypatch):
+        """Successful import from parquet file."""
+        _patch_ragbench_dir(monkeypatch, tmp_path)
+        _, sha = _make_parquet(tmp_path, "techqa")
+        _make_manifest(tmp_path, {"techqa": {"path": "techqa/dataset.parquet", "sha256": sha}})
+
+        response = client.post(
+            "/api/evaluations/datasets/import-ragbench",
+            json={"subset": "techqa", "name": "RAGBench-TechQA", "max_samples": 2},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        data = response.json()
+        assert data["name"] == "RAGBench-TechQA"
+        assert data["source_type"] == "ragbench"
+        assert data["sample_count"] == 2  # capped at max_samples
+
+    def test_import_ragbench_duplicate_name(
+        self, client, admin_headers, tmp_path, monkeypatch, sample_dataset
+    ):
+        """409 when name already exists."""
+        _patch_ragbench_dir(monkeypatch, tmp_path)
+        _, sha = _make_parquet(tmp_path, "techqa", {"question": ["Q?"], "response": ["A"]})
+        _make_manifest(tmp_path, {"techqa": {"path": "techqa/dataset.parquet", "sha256": sha}})
+
+        response = client.post(
+            "/api/evaluations/datasets/import-ragbench",
+            json={"subset": "techqa", "name": sample_dataset.name},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_409_CONFLICT
+
+
+class TestSyntheticGeneration:
+    """Test synthetic dataset generation endpoint."""
+
+    def test_generate_synthetic_requires_admin(self, client, user_headers):
+        """Non-admin users cannot generate."""
+        response = client.post(
+            "/api/evaluations/datasets/generate-synthetic",
+            json={"name": "Syn", "document_ids": ["doc1"], "num_samples": 10},
+            headers=user_headers,
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_generate_synthetic_invalid_document_ids(self, client, admin_headers):
+        """404 when documents don't exist."""
+        response = client.post(
+            "/api/evaluations/datasets/generate-synthetic",
+            json={"name": "Syn", "document_ids": ["nonexistent-doc-id"], "num_samples": 10},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_generate_synthetic_empty_document_ids(self, client, admin_headers):
+        """422 when document_ids is empty."""
+        response = client.post(
+            "/api/evaluations/datasets/generate-synthetic",
+            json={"name": "Syn", "document_ids": [], "num_samples": 10},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_generate_synthetic_duplicate_name(self, client, admin_headers, db, sample_dataset):
+        """409 when name already exists."""
+        from ai_ready_rag.db.models import Document
+
+        doc = Document(
+            filename="test.txt",
+            original_filename="test.txt",
+            file_path="/tmp/test.txt",
+            file_type="text/plain",
+            file_size=100,
+            status="ready",
+            uploaded_by="admin",
+        )
+        db.add(doc)
+        db.flush()
+
+        response = client.post(
+            "/api/evaluations/datasets/generate-synthetic",
+            json={"name": sample_dataset.name, "document_ids": [doc.id], "num_samples": 10},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_409_CONFLICT
+
+    def test_generate_synthetic_success(self, client, admin_headers, db):
+        """202 returned with dataset created, sample_count=0."""
+        from ai_ready_rag.db.models import Document
+
+        doc = Document(
+            filename="test.txt",
+            original_filename="test.txt",
+            file_path="/tmp/test.txt",
+            file_type="text/plain",
+            file_size=100,
+            status="ready",
+            uploaded_by="admin",
+        )
+        db.add(doc)
+        db.flush()
+
+        response = client.post(
+            "/api/evaluations/datasets/generate-synthetic",
+            json={"name": "Synthetic Test", "document_ids": [doc.id], "num_samples": 10},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        data = response.json()
+        assert data["name"] == "Synthetic Test"
+        assert data["source_type"] == "synthetic"
+        assert data["sample_count"] == 0  # Will be updated by background task
 
 
 class TestAccessControl:
