@@ -24,6 +24,7 @@ from ai_ready_rag.schemas.evaluation import (
     DatasetResponse,
     DatasetSampleListResponse,
     EvaluationSampleListResponse,
+    EvaluationSummaryResponse,
     RunCreate,
     RunListResponse,
     RunResponse,
@@ -221,7 +222,7 @@ async def get_run(
     run_id: str,
     db: Session = Depends(get_db),
 ):
-    """Get evaluation run details."""
+    """Get evaluation run details with ETA for running runs."""
     repo = EvaluationRunRepository(db)
     run = repo.get(run_id)
     if not run:
@@ -229,7 +230,17 @@ async def get_run(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Evaluation run not found",
         )
-    return RunResponse.model_validate(run)
+    response = RunResponse.model_validate(run)
+
+    # Compute ETA for running runs
+    if run.status == "running" and run.completed_samples > 0:
+        sample_repo = EvaluationSampleRepository(db)
+        avg_ms = sample_repo.get_avg_sample_time(run_id)
+        if avg_ms is not None:
+            remaining = run.total_samples - run.completed_samples - run.failed_samples
+            response.eta_seconds = (remaining * avg_ms) / 1000.0
+
+    return response
 
 
 @router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -304,10 +315,22 @@ async def list_run_samples(
     return EvaluationSampleListResponse(samples=samples, total=total, limit=limit, offset=offset)
 
 
-@router.get("/summary", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-async def get_summary():
-    """Dashboard summary. Not yet implemented (Phase 3+)."""
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Evaluation summary will be available in a future phase",
+@router.get("/summary", response_model=EvaluationSummaryResponse)
+async def get_summary(
+    db: Session = Depends(get_db),
+):
+    """Dashboard summary: latest run, totals, average scores, score trends."""
+    run_repo = EvaluationRunRepository(db)
+    data = run_repo.get_summary_data()
+
+    latest_run = None
+    if data["latest_run"]:
+        latest_run = RunResponse.model_validate(data["latest_run"])
+
+    return EvaluationSummaryResponse(
+        latest_run=latest_run,
+        total_runs=data["total_runs"],
+        total_datasets=data["total_datasets"],
+        avg_scores=data["avg_scores"],
+        score_trend=data["score_trend"],
     )

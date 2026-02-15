@@ -244,10 +244,15 @@ class TestRunEndpoints:
         response = client.post("/api/evaluations/runs/some-id/cancel", headers=admin_headers)
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_summary_stub(self, client, admin_headers):
-        """Summary endpoint remains 501 (Phase 3+)."""
+    def test_summary_returns_data(self, client, admin_headers):
+        """Summary endpoint returns dashboard data."""
         response = client.get("/api/evaluations/summary", headers=admin_headers)
-        assert response.status_code == status.HTTP_501_NOT_IMPLEMENTED
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert "total_runs" in data
+        assert "total_datasets" in data
+        assert "avg_scores" in data
+        assert "score_trend" in data
 
     def test_run_samples_not_found(self, client, admin_headers):
         """List samples for non-existent run returns 404."""

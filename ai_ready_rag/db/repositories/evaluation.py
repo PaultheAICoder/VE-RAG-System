@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -137,6 +138,130 @@ class EvaluationRunRepository(BaseRepository[EvaluationRun]):
         runs = list(self.db.scalars(stmt).all())
         return runs, total
 
+    def get_next_claimable(self) -> EvaluationRun | None:
+        """Find oldest pending or stale-lease run."""
+        now = datetime.utcnow()
+        stmt = (
+            select(EvaluationRun)
+            .where(
+                (EvaluationRun.status == "pending")
+                | (
+                    (EvaluationRun.status == "running")
+                    & (EvaluationRun.worker_lease_expires_at < now)
+                )
+            )
+            .order_by(EvaluationRun.created_at.asc())
+            .limit(1)
+        )
+        return self.db.scalars(stmt).first()
+
+    def claim_run(
+        self,
+        run_id: str,
+        worker_id: str,
+        lease_duration_minutes: int,
+    ) -> bool:
+        """Atomically claim a run via UPDATE WHERE."""
+        now = datetime.utcnow()
+        lease_expiry = now + timedelta(minutes=lease_duration_minutes)
+        updated = (
+            self.db.query(EvaluationRun)
+            .filter(
+                EvaluationRun.id == run_id,
+                EvaluationRun.status.in_(["pending", "running"]),
+            )
+            .update(
+                {
+                    "status": "running",
+                    "worker_id": worker_id,
+                    "worker_lease_expires_at": lease_expiry,
+                    "started_at": now,
+                    "updated_at": now,
+                }
+            )
+        )
+        self.db.commit()
+        return updated > 0
+
+    def renew_lease(
+        self,
+        run_id: str,
+        worker_id: str,
+        lease_duration_minutes: int,
+    ) -> bool:
+        """Extend lease expiry for active run."""
+        now = datetime.utcnow()
+        new_expiry = now + timedelta(minutes=lease_duration_minutes)
+        updated = (
+            self.db.query(EvaluationRun)
+            .filter(
+                EvaluationRun.id == run_id,
+                EvaluationRun.worker_id == worker_id,
+                EvaluationRun.status == "running",
+            )
+            .update({"worker_lease_expires_at": new_expiry})
+        )
+        self.db.commit()
+        return updated > 0
+
+    def get_summary_data(self) -> dict:
+        """Get summary data for dashboard."""
+        total_runs = self.db.scalar(select(func.count()).select_from(EvaluationRun)) or 0
+        total_datasets = self.db.scalar(select(func.count()).select_from(EvaluationDataset)) or 0
+
+        # Latest completed run
+        latest_run = self.db.scalars(
+            select(EvaluationRun)
+            .where(EvaluationRun.status.in_(["completed", "completed_with_errors"]))
+            .order_by(EvaluationRun.completed_at.desc())
+            .limit(1)
+        ).first()
+
+        # Average scores across all completed runs
+        avg_scores = {}
+        for metric in [
+            "avg_faithfulness",
+            "avg_answer_relevancy",
+            "avg_llm_context_precision",
+            "avg_llm_context_recall",
+        ]:
+            col = getattr(EvaluationRun, metric)
+            avg = self.db.scalar(
+                select(func.avg(col)).where(
+                    EvaluationRun.status.in_(["completed", "completed_with_errors"])
+                )
+            )
+            key = metric.replace("avg_", "")
+            avg_scores[key] = float(avg) if avg is not None else None
+
+        # Score trend (last 10 completed runs)
+        trend_runs = list(
+            self.db.scalars(
+                select(EvaluationRun)
+                .where(EvaluationRun.status.in_(["completed", "completed_with_errors"]))
+                .order_by(EvaluationRun.completed_at.desc())
+                .limit(10)
+            ).all()
+        )
+        score_trend = [
+            {
+                "run_id": r.id,
+                "name": r.name,
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+                "avg_faithfulness": r.avg_faithfulness,
+                "avg_answer_relevancy": r.avg_answer_relevancy,
+            }
+            for r in reversed(trend_runs)
+        ]
+
+        return {
+            "latest_run": latest_run,
+            "total_runs": total_runs,
+            "total_datasets": total_datasets,
+            "avg_scores": avg_scores,
+            "score_trend": score_trend,
+        }
+
 
 class EvaluationSampleRepository(BaseRepository[EvaluationSample]):
     model = EvaluationSample
@@ -231,6 +356,54 @@ class EvaluationSampleRepository(BaseRepository[EvaluationSample]):
             )
             total_nulls += count
         return total_nulls
+
+    def claim_sample(self, sample_id: str) -> bool:
+        """Atomically claim a sample via UPDATE WHERE status='pending'."""
+        updated = (
+            self.db.query(EvaluationSample)
+            .filter(
+                EvaluationSample.id == sample_id,
+                EvaluationSample.status == "pending",
+            )
+            .update({"status": "processing"})
+        )
+        self.db.commit()
+        return updated > 0
+
+    def skip_remaining(self, run_id: str) -> int:
+        """Bulk update pending samples to skipped for a run."""
+        now = datetime.utcnow()
+        count = (
+            self.db.query(EvaluationSample)
+            .filter(
+                EvaluationSample.run_id == run_id,
+                EvaluationSample.status == "pending",
+            )
+            .update({"status": "skipped", "processed_at": now})
+        )
+        self.db.commit()
+        return count
+
+    def get_pending_samples(self, run_id: str) -> list[EvaluationSample]:
+        """Get all pending samples for a run, ordered by sort_order."""
+        stmt = (
+            select(EvaluationSample)
+            .where(
+                EvaluationSample.run_id == run_id,
+                EvaluationSample.status == "pending",
+            )
+            .order_by(EvaluationSample.sort_order)
+        )
+        return list(self.db.scalars(stmt).all())
+
+    def get_avg_sample_time(self, run_id: str) -> float | None:
+        """Get average generation_time_ms for completed samples in a run."""
+        avg = self.db.scalar(
+            select(func.avg(EvaluationSample.generation_time_ms))
+            .where(EvaluationSample.run_id == run_id)
+            .where(EvaluationSample.status == "completed")
+        )
+        return float(avg) if avg is not None else None
 
 
 def recompute_dataset_sample_counts(db: Session) -> int:

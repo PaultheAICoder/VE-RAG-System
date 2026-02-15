@@ -205,6 +205,27 @@ async def lifespan(app: FastAPI):
 
     logger.info("WarmingWorker started")
 
+    # Initialize and start EvaluationWorker (if eval enabled)
+    eval_worker = None
+    if settings.eval_enabled:
+        from ai_ready_rag.services.evaluation_service import EvaluationService
+        from ai_ready_rag.workers.evaluation_worker import (
+            EvaluationWorker,
+            recover_stale_evaluation_runs,
+        )
+
+        eval_service = EvaluationService(settings, rag_service)
+        eval_worker = EvaluationWorker(eval_service, settings)
+        await eval_worker.start()
+
+        eval_recovered = await recover_stale_evaluation_runs()
+        if eval_recovered:
+            logger.info(f"Recovered {eval_recovered} stale evaluation runs")
+
+        logger.info("EvaluationWorker started")
+
+    app.state.eval_worker = eval_worker
+
     # Initialize and start WarmingCleanupService
     warming_cleanup = WarmingCleanupService(settings)
     await warming_cleanup.start()
@@ -215,6 +236,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     await warming_cleanup.stop()
     logger.info("WarmingCleanupService stopped")
+
+    if eval_worker:
+        await eval_worker.stop()
+        logger.info("EvaluationWorker stopped")
 
     await warming_worker.stop()
     logger.info("WarmingWorker stopped")
