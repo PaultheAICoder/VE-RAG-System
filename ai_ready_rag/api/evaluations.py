@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
@@ -25,9 +25,11 @@ from ai_ready_rag.schemas.evaluation import (
     DatasetSampleListResponse,
     EvaluationSampleListResponse,
     EvaluationSummaryResponse,
+    RAGBenchImportRequest,
     RunCreate,
     RunListResponse,
     RunResponse,
+    SyntheticGenerateRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -177,6 +179,48 @@ async def recompute_counts(
     updated = recompute_dataset_sample_counts(db)
     db.commit()
     return {"updated": updated}
+
+
+@router.post(
+    "/datasets/import-ragbench",
+    response_model=DatasetResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def import_ragbench(
+    request: RAGBenchImportRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Import a RAGBench subset from pre-downloaded parquet files."""
+    service = _get_evaluation_service(db)
+    dataset = await service.import_ragbench(db, request, current_user.id)
+    return DatasetResponse.model_validate(dataset)
+
+
+@router.post(
+    "/datasets/generate-synthetic",
+    response_model=DatasetResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_synthetic(
+    request: SyntheticGenerateRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Generate a synthetic dataset from uploaded documents.
+
+    Returns 202 Accepted immediately. Generation runs in background.
+    """
+    service = _get_evaluation_service(db)
+    dataset = await service.generate_synthetic(db, request, current_user.id)
+    background_tasks.add_task(
+        service.run_synthetic_generation,
+        dataset.id,
+        request.document_ids,
+        request.num_samples,
+    )
+    return DatasetResponse.model_validate(dataset)
 
 
 # ========== Run Endpoints ==========
