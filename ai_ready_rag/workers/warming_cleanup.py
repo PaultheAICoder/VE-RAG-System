@@ -102,12 +102,19 @@ class WarmingCleanupService:
             # 3. Prune SSE event buffer
             pruned_events = prune_old_events(db)
 
+            # 4. Purge old live evaluation scores
+            live_purged = self._purge_old_live_scores(
+                db,
+                cutoff=now - timedelta(days=self.settings.eval_live_retention_days),
+            )
+
             total_completed = completed_count + completed_errors_count
-            if total_completed or failed_count or pruned_events:
+            if total_completed or failed_count or pruned_events or live_purged:
                 logger.info(
                     f"Cleanup: deleted {total_completed} completed, "
                     f"{failed_count} failed/cancelled batches, "
-                    f"pruned {pruned_events} SSE events"
+                    f"pruned {pruned_events} SSE events, "
+                    f"purged {live_purged} live eval scores"
                 )
         finally:
             db.close()
@@ -141,5 +148,17 @@ class WarmingCleanupService:
             query = query.filter(WarmingBatch.status.in_(status_list))
 
         count = query.delete(synchronize_session="fetch")
+        db.commit()
+        return count
+
+    def _purge_old_live_scores(self, db, cutoff: datetime) -> int:
+        """Delete live evaluation scores older than cutoff."""
+        from ai_ready_rag.db.models.evaluation import LiveEvaluationScore
+
+        count = (
+            db.query(LiveEvaluationScore)
+            .filter(LiveEvaluationScore.created_at < cutoff)
+            .delete(synchronize_session="fetch")
+        )
         db.commit()
         return count
