@@ -706,3 +706,190 @@ export interface CuratedQAListParams {
   enabled?: boolean | null;
   search?: string | null;
 }
+
+// ========== Evaluation Framework ==========
+
+export type EvaluationRunStatus = 'pending' | 'running' | 'completed' | 'completed_with_errors' | 'failed' | 'cancelled';
+export type DatasetSourceType = 'manual' | 'ragbench' | 'synthetic' | 'live_sample';
+
+export interface EvaluationDataset {
+  id: string;
+  name: string;
+  description: string | null;
+  source_type: DatasetSourceType;
+  sample_count: number;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  warning?: string | null;
+}
+
+export interface DatasetListResponse {
+  datasets: EvaluationDataset[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface DatasetSampleCreate {
+  question: string;
+  ground_truth?: string | null;
+  reference_contexts?: string[] | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface DatasetCreate {
+  name: string;
+  description?: string | null;
+  samples: DatasetSampleCreate[];
+}
+
+export interface RAGBenchImportRequest {
+  subset: string;
+  max_samples: number;
+  name: string;
+  description?: string | null;
+}
+
+export interface SyntheticGenerateRequest {
+  name: string;
+  document_ids: string[];
+  num_samples: number;
+  description?: string | null;
+}
+
+export interface EvaluationRun {
+  id: string;
+  name: string;
+  description: string | null;
+  dataset_id: string;
+  status: EvaluationRunStatus;
+  total_samples: number;
+  completed_samples: number;
+  failed_samples: number;
+  tag_scope: string[] | null;
+  admin_bypass_tags: boolean;
+  avg_faithfulness: number | null;
+  avg_answer_relevancy: number | null;
+  avg_llm_context_precision: number | null;
+  avg_llm_context_recall: number | null;
+  invalid_score_count: number;
+  model_used: string;
+  embedding_model_used: string;
+  config_snapshot: Record<string, unknown>;
+  is_cancel_requested: boolean;
+  error_message: string | null;
+  triggered_by: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  eta_seconds: number | null;
+}
+
+export interface RunListResponse {
+  runs: EvaluationRun[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RunCreate {
+  dataset_id: string;
+  name: string;
+  description?: string | null;
+  tag_scope?: string[] | null;
+  admin_bypass_tags?: boolean;
+}
+
+export interface EvaluationSample {
+  id: string;
+  sort_order: number;
+  status: string;
+  question: string;
+  ground_truth: string | null;
+  generated_answer: string | null;
+  faithfulness: number | null;
+  answer_relevancy: number | null;
+  llm_context_precision: number | null;
+  llm_context_recall: number | null;
+  generation_time_ms: number | null;
+  retry_count: number;
+  error_message: string | null;
+  error_type: string | null;
+  processed_at: string | null;
+}
+
+export interface EvaluationSampleListResponse {
+  samples: EvaluationSample[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CancelRunResponse {
+  id: string;
+  status: string;
+  is_cancel_requested: boolean;
+}
+
+export interface EvaluationAvgScores {
+  faithfulness: number | null;
+  answer_relevancy: number | null;
+  llm_context_precision: number | null;
+  llm_context_recall: number | null;
+}
+
+export interface ScoreTrendPoint {
+  run_id: string;
+  name: string;
+  completed_at: string | null;
+  avg_faithfulness: number | null;
+  avg_answer_relevancy: number | null;
+}
+
+export interface EvaluationSummary {
+  latest_run: EvaluationRun | null;
+  total_runs: number;
+  total_datasets: number;
+  avg_scores: EvaluationAvgScores;
+  score_trend: ScoreTrendPoint[];
+}
+
+export interface LiveScore {
+  id: string;
+  query: string;
+  answer: string;
+  model_used: string;
+  faithfulness: number | null;
+  answer_relevancy: number | null;
+  generation_time_ms: number | null;
+  evaluation_time_ms: number | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface LiveScoreListResponse {
+  scores: LiveScore[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface LiveStatsHourly {
+  hour: string;
+  count: number;
+  avg_faithfulness: number | null;
+  avg_answer_relevancy: number | null;
+}
+
+export interface LiveStats {
+  total_scores: number;
+  scores_last_24h: number;
+  avg_faithfulness: number | null;
+  avg_answer_relevancy: number | null;
+  hourly_breakdown: LiveStatsHourly[];
+  queue_depth: number;
+  queue_capacity: number;
+  drops_since_startup: number;
+}

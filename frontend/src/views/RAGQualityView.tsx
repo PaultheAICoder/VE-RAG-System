@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { SynonymManager, QAManager } from '../components/features/admin';
+import { SynonymManager, QAManager, EvaluationManager } from '../components/features/admin';
 
-type TabType = 'synonyms' | 'qa';
+type TabType = 'synonyms' | 'qa' | 'evaluations';
 
 interface Tab {
   id: TabType;
@@ -11,6 +11,7 @@ interface Tab {
 const tabs: Tab[] = [
   { id: 'synonyms', label: 'Synonyms' },
   { id: 'qa', label: 'Curated Q&A' },
+  { id: 'evaluations', label: 'Evaluations' },
 ];
 
 export function RAGQualityView() {
@@ -24,7 +25,7 @@ export function RAGQualityView() {
           RAG Quality
         </h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">
-          Improve RAG performance with synonyms and curated Q&A
+          Improve RAG performance with synonyms, curated Q&A, and evaluations
         </p>
       </div>
 
@@ -53,6 +54,7 @@ export function RAGQualityView() {
       {/* Tab Content */}
       {activeTab === 'synonyms' && <SynonymManager />}
       {activeTab === 'qa' && <QAManager />}
+      {activeTab === 'evaluations' && <EvaluationManager />}
     </div>
   );
 }
