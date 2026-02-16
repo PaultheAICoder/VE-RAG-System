@@ -123,6 +123,32 @@ class ProcessingService:
             if not file_path.exists():
                 raise FileNotFoundError(f"File not found: {file_path}")
 
+            # Route PDF files to ingestkit-forms if enabled
+            if file_path.suffix.lower() == ".pdf" and self._should_use_ingestkit_forms():
+                result, should_fallback = await self._process_with_ingestkit_forms(document, db)
+                if not should_fallback and result is not None:
+                    # ingestkit-forms handled it (success or failure)
+                    processing_time_ms = int((time.perf_counter() - start_time) * 1000)
+                    if result.success:
+                        document.status = "ready"
+                        document.chunk_count = result.chunk_count
+                        document.processing_time_ms = processing_time_ms
+                    else:
+                        document.status = "failed"
+                        document.error_message = result.error_message
+                        document.processing_time_ms = processing_time_ms
+                    db.commit()
+                    return ProcessingResult(
+                        success=result.success,
+                        chunk_count=result.chunk_count,
+                        page_count=result.page_count,
+                        word_count=result.word_count,
+                        processing_time_ms=processing_time_ms,
+                        error_message=result.error_message,
+                    )
+                # else: fallback to standard chunker pipeline below
+                logger.info("forms.routing.fallback", extra={"document_id": document.id})
+
             # Route Excel files to ingestkit if enabled
             if file_path.suffix.lower() == ".xlsx" and self._should_use_ingestkit():
                 result, should_fallback = await self._process_with_ingestkit(document, db)
@@ -318,3 +344,33 @@ class ProcessingService:
 
         excel_service = ExcelProcessingService(self.settings)
         return await excel_service.process_excel(document, db)
+
+    def _should_use_ingestkit_forms(self) -> bool:
+        """Check if ingestkit-forms integration is enabled and available."""
+        if not self.settings.use_ingestkit_forms:
+            return False
+        try:
+            import ingestkit_forms  # noqa: F401
+
+            return True
+        except ImportError:
+            logger.warning("use_ingestkit_forms=True but ingestkit_forms not importable")
+            return False
+
+    async def _process_with_ingestkit_forms(
+        self,
+        document: Document,
+        db: Session,
+    ) -> tuple[ProcessingResult | None, bool]:
+        """Delegate PDF forms processing to ingestkit-forms.
+
+        Returns:
+            Tuple of (result, should_fallback). If should_fallback is True,
+            caller should continue with the standard chunker pipeline.
+        """
+        from ai_ready_rag.services.forms_processing_service import (
+            FormsProcessingService,
+        )
+
+        forms_service = FormsProcessingService(self.settings)
+        return await forms_service.process_form(document, db)

@@ -138,6 +138,41 @@ async def lifespan(app: FastAPI):
             raise RuntimeError(msg)
         logger.info("Evaluation schema verified: all tables present")
 
+    # Validate ingestkit-forms config (fail-fast if misconfigured)
+    if settings.use_ingestkit_forms:
+        import os
+
+        try:
+            import ingestkit_forms  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "use_ingestkit_forms=True but ingestkit-forms is not installed. "
+                "Install with: pip install ingestkit-forms"
+            ) from exc
+
+        # Validate forms_db_path is under data/
+        db_path = Path(settings.forms_db_path).resolve()
+        data_dir = Path("./data").resolve()
+        if not str(db_path).startswith(str(data_dir)):
+            raise RuntimeError(f"forms_db_path must be under data/: {settings.forms_db_path}")
+        if not db_path.parent.exists():
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not os.access(db_path.parent, os.W_OK):
+            raise RuntimeError(f"forms_db_path parent not writable: {db_path.parent}")
+
+        # Validate template storage path
+        tmpl_path = Path(settings.forms_template_storage_path).resolve()
+        if not tmpl_path.exists():
+            tmpl_path.mkdir(parents=True, exist_ok=True)
+        if not os.access(tmpl_path, os.W_OK):
+            raise RuntimeError(f"forms_template_storage_path not writable: {tmpl_path}")
+
+        logger.info(
+            "ingestkit-forms validated: db=%s, templates=%s",
+            settings.forms_db_path,
+            settings.forms_template_storage_path,
+        )
+
     # Initialize VectorService once (expensive — singleton for app lifetime)
     vector_service = get_vector_service(settings)
     await vector_service.initialize()
