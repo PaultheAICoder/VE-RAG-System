@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import Settings
 from ai_ready_rag.db.models import Document
+from ai_ready_rag.services.forms_metrics import metrics as forms_metrics
 from ai_ready_rag.services.processing_service import ProcessingResult
 
 logger = logging.getLogger(__name__)
@@ -171,10 +172,21 @@ class FormsProcessingService:
             )
         except Exception as e:
             logger.warning("forms.match.error", extra={"document_id": document.id, "error": str(e)})
+            forms_metrics.inc_fallback("error")
             return (None, True)  # Fallback on match failure
 
         if match is None:
             return (None, True)  # No match, fallback to standard chunker
+
+        logger.info(
+            "forms.match.success",
+            extra={
+                "document_id": document.id,
+                "template_id": match.template_id,
+                "confidence": match.confidence,
+            },
+        )
+        forms_metrics.inc_match_confidence(match.template_id, match.confidence)
 
         # 5. Extract + dual-write
         # IMPORTANT: Do NOT pass template_id from the auto-match result here.
@@ -189,6 +201,7 @@ class FormsProcessingService:
             result = await asyncio.to_thread(router.extract_form, request)
         except Exception as e:
             logger.error("forms.extract.error", extra={"document_id": document.id, "error": str(e)})
+            forms_metrics.inc_documents_processed("failed")
             return (
                 ProcessingResult(
                     success=False,
@@ -209,6 +222,8 @@ class FormsProcessingService:
             if err.code.value in _FALLBACK_ERROR_CODES:
                 # Compensate: clean up any partial writes
                 await self._compensate(result, form_db, vector_store)
+                forms_metrics.inc_documents_processed("fallback")
+                forms_metrics.inc_fallback("unsupported")
                 return (None, True)
 
         # 7. Check for hard errors (non-fallback)
@@ -228,7 +243,24 @@ class FormsProcessingService:
                 False,
             )
 
-        # 8. Success — log warnings if any
+        # 8. Success — log and record metrics
+        er = result.extraction_result
+        processing_time_ms = int(result.processing_time_seconds * 1000)
+
+        logger.info(
+            "forms.extract.success",
+            extra={
+                "document_id": document.id,
+                "template_id": er.template_id,
+                "extraction_method": er.extraction_method,
+                "processing_time_ms": processing_time_ms,
+            },
+        )
+        forms_metrics.inc_documents_processed("success")
+        forms_metrics.observe_extraction_duration(
+            er.extraction_method, result.processing_time_seconds
+        )
+
         if result.warnings:
             logger.info(
                 "ingestkit-forms completed with warnings for %s: %s",
@@ -237,7 +269,6 @@ class FormsProcessingService:
             )
 
         # 9. Update document columns (last step — after all writes succeeded)
-        er = result.extraction_result
         document.forms_template_id = er.template_id
         document.forms_template_name = er.template_name
         document.forms_template_version = er.template_version
@@ -247,8 +278,6 @@ class FormsProcessingService:
         document.forms_ingest_key = result.ingest_key
         if result.tables:
             document.forms_db_table_names = json.dumps(result.tables)
-
-        processing_time_ms = int(result.processing_time_seconds * 1000)
 
         return (
             ProcessingResult(
@@ -278,6 +307,7 @@ class FormsProcessingService:
                 )
             except Exception as e:
                 logger.warning("forms.compensate.vectors_failed", extra={"error": str(e)})
+                forms_metrics.inc_compensation("vectors", "failed")
 
         # Drop created tables
         for table_name in result.tables:
@@ -289,3 +319,4 @@ class FormsProcessingService:
                     "forms.compensate.table_failed",
                     extra={"table": table_name, "error": str(e)},
                 )
+                forms_metrics.inc_compensation("tables", "failed")

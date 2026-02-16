@@ -354,6 +354,10 @@ class DocumentService:
         if document.excel_db_table_names:
             self._cleanup_excel_tables(document.excel_db_table_names)
 
+        # Clean up ingestkit-forms tables if present
+        if document.forms_db_table_names:
+            self._cleanup_forms_tables(document.forms_db_table_names)
+
         # Delete file from storage
         doc_dir = self.storage_path / document_id
         if doc_dir.exists():
@@ -389,6 +393,38 @@ class DocumentService:
                     logger.warning("Failed to drop Excel table '%s': %s", table_name, e)
         except ImportError:
             logger.warning("ingestkit not available for Excel table cleanup")
+
+    def _cleanup_forms_tables(self, table_names_json: str) -> None:
+        """Drop ingestkit-forms tables from the forms data DB."""
+        try:
+            table_names = json.loads(table_names_json)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("forms.cleanup.invalid_json: %s", table_names_json)
+            return
+
+        if not isinstance(table_names, list):
+            logger.warning("forms.cleanup.not_list: %s", table_names_json)
+            return
+
+        db_path = self.settings.forms_db_path
+        if not Path(db_path).exists():
+            return
+
+        try:
+            from ai_ready_rag.services.ingestkit_adapters import VERagFormDBAdapter
+
+            form_db = VERagFormDBAdapter(db_path=db_path)
+            for table_name in table_names:
+                try:
+                    form_db.check_table_name(table_name)
+                    form_db.execute_sql(f"DROP TABLE IF EXISTS [{table_name}]")
+                    logger.info("Dropped forms table '%s' from %s", table_name, db_path)
+                except ValueError:
+                    logger.error("forms.cleanup.unsafe_identifier rejected: %s", table_name)
+                except Exception as e:
+                    logger.warning("Failed to drop forms table '%s': %s", table_name, e)
+        except ImportError:
+            logger.warning("ingestkit-forms not available for forms table cleanup")
 
     def recover_stuck_documents(self, max_age_hours: int = 2) -> int:
         """Reset stuck processing documents to pending.

@@ -343,6 +343,16 @@ app.include_router(jobs.router, prefix="/api/jobs", tags=["Jobs"])
 app.include_router(experimental.router, prefix="/api", tags=["Experimental"])
 app.include_router(evaluations.router, prefix="/api/evaluations", tags=["Evaluations"])
 
+# Form template management (optional -- requires ingestkit-forms)
+if settings.use_ingestkit_forms:
+    try:
+        from ai_ready_rag.api.forms_templates import router as forms_router
+
+        app.include_router(forms_router, prefix="/api/forms", tags=["Form Templates"])
+        logger.info("forms.router.mounted")
+    except ImportError:
+        logger.warning("forms.router.import_failed")
+
 # Serve React frontend static files if dist exists
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 if FRONTEND_DIR.exists():

@@ -301,6 +301,7 @@ class VERagFormDBAdapter:
 
         error = validate_table_name(name)
         if error is not None:
+            logger.error("forms.cleanup.unsafe_identifier", extra={"table": name})
             raise ValueError(f"Unsafe table identifier rejected: {name!r} — {error}")
 
     def execute_sql(self, sql: str, params: tuple | None = None) -> None:
