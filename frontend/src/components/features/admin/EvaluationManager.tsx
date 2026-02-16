@@ -65,6 +65,7 @@ export function EvaluationManager() {
   const [createRunName, setCreateRunName] = useState('');
   const [createRunDesc, setCreateRunDesc] = useState('');
   const [createRunDatasetId, setCreateRunDatasetId] = useState('');
+  const [createRunBypassTags, setCreateRunBypassTags] = useState(true);
   const [datasetOptions, setDatasetOptions] = useState<EvaluationDataset[]>([]);
 
   // Delete run
@@ -170,6 +171,7 @@ export function EvaluationManager() {
     setCreateRunName('');
     setCreateRunDesc('');
     setCreateRunDatasetId('');
+    setCreateRunBypassTags(true);
     setShowCreateRun(true);
   };
 
@@ -181,6 +183,7 @@ export function EvaluationManager() {
         dataset_id: createRunDatasetId,
         name: createRunName.trim(),
         description: createRunDesc.trim() || null,
+        admin_bypass_tags: createRunBypassTags,
       };
       await createRun(data);
       setSuccess('Evaluation run started');
@@ -391,6 +394,16 @@ export function EvaluationManager() {
               ))}
             </select>
           </div>
+
+          <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={createRunBypassTags}
+              onChange={(e) => setCreateRunBypassTags(e.target.checked)}
+              className="rounded border-gray-300 dark:border-gray-600"
+            />
+            Bypass tag restrictions (evaluate all documents)
+          </label>
 
           <div className="flex justify-end gap-3 pt-4 border-t border-gray-200 dark:border-gray-700">
             <Button variant="secondary" onClick={() => setShowCreateRun(false)}>

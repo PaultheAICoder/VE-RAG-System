@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from ai_ready_rag.db.database import Base
@@ -33,13 +33,16 @@ class Document(Base):
     processing_time_ms = Column(Integer, nullable=True)
     content_hash = Column(String, nullable=True, index=True)
 
-    # ingestkit-excel metadata (nullable - only set for Excel files processed via ingestkit)
-    excel_file_type = Column(String, nullable=True)  # tabular_data | formatted_document | hybrid
-    excel_ingest_key = Column(String, nullable=True)  # SHA-256 idempotency key
-    excel_tables_created = Column(Integer, nullable=True)  # DB tables created (Path A)
-    excel_classification_tier = Column(
+    # ingestkit-forms fields (all nullable — only populated on forms extraction)
+    forms_template_id = Column(String, nullable=True)
+    forms_template_name = Column(String, nullable=True)
+    forms_template_version = Column(Integer, nullable=True)
+    forms_overall_confidence = Column(Float, nullable=True)
+    forms_extraction_method = Column(
         String, nullable=True
-    )  # rule_based | llm_basic | llm_reasoning
-    excel_db_table_names = Column(Text, nullable=True)  # JSON list of table names for cleanup
+    )  # native_fields|ocr_overlay|cell_mapping
+    forms_match_method = Column(String, nullable=True)  # auto_detect|manual_override
+    forms_ingest_key = Column(String, nullable=True, index=True)
+    forms_db_table_names = Column(Text, nullable=True)  # JSON array of table names
 
     tags = relationship("Tag", secondary=document_tags, back_populates="documents")
