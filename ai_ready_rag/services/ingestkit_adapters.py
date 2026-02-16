@@ -361,21 +361,32 @@ class VERagLayoutFingerprinter:
 
     Wraps compute_layout_fingerprint_from_file() to satisfy the protocol's
     compute_fingerprint(file_path) -> list[bytes] method.
+
+    A renderer callable is required for non-image formats (PDF, XLSX).
+    The renderer signature is: (file_path: str, dpi: int) -> list[PIL.Image.Image]
     """
 
-    def __init__(self, config) -> None:
+    def __init__(self, config, renderer=None) -> None:
         self._config = config
+        self._renderer = renderer
 
     def compute_fingerprint(self, file_path: str) -> list[bytes]:
         """Compute per-page layout fingerprints for a document."""
         from ingestkit_forms import compute_layout_fingerprint_from_file
 
-        result = compute_layout_fingerprint_from_file(file_path, self._config)
-        # compute_layout_fingerprint_from_file returns bytes (concatenated pages).
-        # The protocol expects list[bytes] (one per page). If the library already
-        # returns list[bytes], pass through; otherwise wrap single bytes.
+        result = compute_layout_fingerprint_from_file(
+            file_path,
+            self._config,
+            renderer=self._renderer,
+        )
+        # compute_layout_fingerprint_from_file returns concatenated bytes for all
+        # pages. The protocol expects list[bytes] with one element per page.
         if isinstance(result, list):
             return result
+        # Split concatenated bytes into per-page chunks
+        page_size = self._config.fingerprint_grid_rows * self._config.fingerprint_grid_cols
+        if page_size > 0 and len(result) > page_size:
+            return [result[i : i + page_size] for i in range(0, len(result), page_size)]
         return [result]
 
 

@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 
 from sqlalchemy.orm import Session
 
@@ -27,10 +26,29 @@ _FALLBACK_ERROR_CODES = {"E_FORM_NO_MATCH", "E_FORM_UNSUPPORTED_FORMAT"}
 
 # High-risk PII patterns for redaction (SSN, EIN, account numbers)
 _HIGH_RISK_PATTERNS = [
-    re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),  # SSN
-    re.compile(r"\b\d{2}-\d{7}\b"),  # EIN
-    re.compile(r"\b\d{9,17}\b"),  # Account numbers
+    r"\b\d{3}-\d{2}-\d{4}\b",  # SSN
+    r"\b\d{2}-\d{7}\b",  # EIN
+    r"\b\d{9,17}\b",  # Account numbers
 ]
+
+
+def _pymupdf_renderer(file_path: str, dpi: int) -> list:
+    """Render PDF pages to PIL Images using PyMuPDF.
+
+    Required by compute_layout_fingerprint_from_file for non-image formats.
+    """
+    import io
+
+    import fitz
+    from PIL import Image
+
+    doc = fitz.open(file_path)
+    images = []
+    for page in doc:
+        pix = page.get_pixmap(dpi=dpi)
+        images.append(Image.open(io.BytesIO(pix.tobytes("png"))))
+    doc.close()
+    return images
 
 
 class FormsProcessingService:
@@ -76,18 +94,23 @@ class FormsProcessingService:
         file_path = document.file_path
 
         # 1. Build config FIRST (config before adapters)
-        config = FormProcessorConfig(
-            form_match_confidence_threshold=settings.forms_match_confidence_threshold,
-            form_ocr_engine=settings.forms_ocr_engine,
-            form_vlm_enabled=settings.forms_vlm_enabled,
-            form_vlm_model=settings.forms_vlm_model,
-            embedding_model=settings.embedding_model or "nomic-embed-text",
-            embedding_dimension=settings.embedding_dimension,
-            default_collection=settings.qdrant_collection,
-            tenant_id=settings.default_tenant_id,
-            form_template_storage_path=settings.forms_template_storage_path,
-            redact_patterns=_HIGH_RISK_PATTERNS if settings.forms_redact_high_risk_fields else [],
-        )
+        config_kwargs: dict = {
+            "form_match_confidence_threshold": settings.forms_match_confidence_threshold,
+            "form_ocr_engine": settings.forms_ocr_engine,
+            "form_vlm_enabled": settings.forms_vlm_enabled,
+            "embedding_model": settings.embedding_model or "nomic-embed-text",
+            "embedding_dimension": settings.embedding_dimension,
+            "default_collection": settings.qdrant_collection,
+            "tenant_id": settings.default_tenant_id,
+            "form_template_storage_path": settings.forms_template_storage_path,
+            "redact_patterns": _HIGH_RISK_PATTERNS
+            if settings.forms_redact_high_risk_fields
+            else [],
+        }
+        # Only pass form_vlm_model if set (field has a non-None default)
+        if settings.forms_vlm_model is not None:
+            config_kwargs["form_vlm_model"] = settings.forms_vlm_model
+        config = FormProcessorConfig(**config_kwargs)
 
         # 2. Create adapters
         vector_store = VERagVectorStoreAdapter(
@@ -109,7 +132,10 @@ class FormsProcessingService:
         template_store = FileSystemTemplateStore(
             base_path=settings.forms_template_storage_path,
         )
-        fingerprinter = VERagLayoutFingerprinter(config)
+        fingerprinter = VERagLayoutFingerprinter(
+            config,
+            renderer=_pymupdf_renderer,
+        )
 
         # OCR backend (required for scanned/flattened PDFs)
         ocr_backend = VERagOCRAdapter(engine=settings.forms_ocr_engine)
