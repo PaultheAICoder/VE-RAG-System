@@ -148,6 +148,10 @@ class ProcessingService:
                     )
                 # else: fallback to standard chunker pipeline below
                 logger.info("forms.routing.fallback", extra={"document_id": document.id})
+                from ai_ready_rag.services.forms_metrics import metrics as forms_metrics
+
+                forms_metrics.inc_fallback("no_match")
+                forms_metrics.inc_documents_processed("fallback")
 
             # Route Excel files to ingestkit if enabled
             if file_path.suffix.lower() == ".xlsx" and self._should_use_ingestkit():
@@ -354,7 +358,7 @@ class ProcessingService:
 
             return True
         except ImportError:
-            logger.warning("use_ingestkit_forms=True but ingestkit_forms not importable")
+            logger.warning("forms.dependency.missing")
             return False
 
     async def _process_with_ingestkit_forms(
