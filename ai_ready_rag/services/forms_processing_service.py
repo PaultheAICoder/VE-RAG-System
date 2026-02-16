@@ -29,7 +29,7 @@ _FALLBACK_ERROR_CODES = {"E_FORM_NO_MATCH", "E_FORM_UNSUPPORTED_FORMAT"}
 _HIGH_RISK_PATTERNS = [
     r"\b\d{3}-\d{2}-\d{4}\b",  # SSN
     r"\b\d{2}-\d{7}\b",  # EIN
-    r"\b\d{9,17}\b",  # Account numbers
+    r"\b\d{9,18}\b",  # Account numbers
 ]
 
 
@@ -107,6 +107,7 @@ class FormsProcessingService:
             "redact_patterns": _HIGH_RISK_PATTERNS
             if settings.forms_redact_high_risk_fields
             else [],
+            "redact_target": "chunks_only" if settings.forms_redact_high_risk_fields else "both",
         }
         # Only pass form_vlm_model if set (field has a non-None default)
         if settings.forms_vlm_model is not None:
