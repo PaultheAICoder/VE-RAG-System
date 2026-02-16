@@ -284,11 +284,19 @@ class VERagFormDBAdapter:
         return str(resolved)
 
     def _ensure_db(self) -> None:
-        """Create the DB file and parent directories if they don't exist."""
+        """Create the DB file and parent directories if they don't exist.
+
+        Sets 0600 permissions (owner-only read/write) for security.
+        """
+        import os
+
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self._db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.close()
+
+        # Set owner-only permissions (0600) for security
+        os.chmod(self._db_path, 0o600)
 
     @staticmethod
     def check_table_name(name: str) -> None:

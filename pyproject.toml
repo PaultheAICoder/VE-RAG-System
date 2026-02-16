@@ -4,6 +4,10 @@ version = "0.5.0"
 description = "Enterprise RAG system with authentication and access control"
 requires-python = ">=3.10"
 
+[project.optional-dependencies]
+ingestkit-excel = ["ingestkit-excel>=0.1"]
+ingestkit-forms = ["ingestkit-forms>=0.1"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
