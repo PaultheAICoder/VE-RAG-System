@@ -3,15 +3,19 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import bleach
 import httpx
+import yaml
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -35,6 +39,7 @@ from ai_ready_rag.core.dependencies import (
 from ai_ready_rag.core.redis import get_redis_pool, is_redis_available
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import (
+    AuditLog,
     CuratedQA,
     CuratedQAKeyword,
     Document,
@@ -44,6 +49,7 @@ from ai_ready_rag.db.models import (
     WarmingQuery,
 )
 from ai_ready_rag.schemas.admin import (
+    ActiveStrategyResponse,
     AdvancedSettingsRequest,
     AdvancedSettingsResponse,
     ArchitectureInfoResponse,
@@ -104,6 +110,12 @@ from ai_ready_rag.schemas.admin import (
     SettingsAuditResponse,
     SingleQueryRetryResponse,
     StartReindexRequest,
+    StrategyCreateRequest,
+    StrategyDetailResponse,
+    StrategyListItem,
+    StrategyListResponse,
+    StrategyUpdateRequest,
+    SwitchActiveStrategyRequest,
     SynonymCreate,
     SynonymListResponse,
     SynonymResponse,
@@ -430,6 +442,109 @@ def _get_setting_value(service: SettingsService, key: str, default: any) -> any:
     """Get setting value with fallback to default if None."""
     value = service.get(key)
     return value if value is not None else default
+
+
+# --- Auto-Tagging Strategy Management Helpers ---
+
+BUILT_IN_STRATEGIES = frozenset({"generic", "insurance_agency", "law_firm", "construction"})
+
+
+def _get_strategies_dir() -> Path:
+    """Get the strategies directory path from settings."""
+    settings = get_settings()
+    return Path(settings.auto_tagging_strategies_dir)
+
+
+def _load_strategy_detail(strategy_id: str) -> StrategyDetailResponse:
+    """Load a strategy YAML and return its detail response.
+
+    Raises HTTPException 404 if not found, 422 if invalid YAML.
+    """
+    from ai_ready_rag.services.auto_tagging.strategy import AutoTagStrategy
+
+    strategies_dir = _get_strategies_dir()
+    filepath = strategies_dir / f"{strategy_id}.yaml"
+
+    if not filepath.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Strategy '{strategy_id}' not found",
+        )
+
+    try:
+        strategy = AutoTagStrategy.load(str(filepath))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid strategy file: {e}",
+        ) from e
+
+    return StrategyDetailResponse(
+        id=strategy.id,
+        name=strategy.name,
+        description=strategy.description,
+        version=strategy.version,
+        is_builtin=strategy.id in BUILT_IN_STRATEGIES,
+        namespaces={
+            k: v.model_dump() if hasattr(v, "model_dump") else v
+            for k, v in strategy.namespaces.items()
+        },
+        document_types={
+            k: v.model_dump() if hasattr(v, "model_dump") else v
+            for k, v in strategy.document_types.items()
+        },
+        path_rules=[
+            r.to_dict()
+            if hasattr(r, "to_dict")
+            else {
+                "namespace": r.namespace,
+                "level": r.level,
+                "pattern": r.pattern,
+                "capture_group": r.capture_group,
+                "transform": r.transform,
+                "mapping": r.mapping,
+                "parent_match": r.parent_match,
+            }
+            for r in strategy.path_rules
+        ],
+        entity_extraction=(
+            strategy.entity_extraction.model_dump()
+            if strategy.entity_extraction and hasattr(strategy.entity_extraction, "model_dump")
+            else strategy.entity_extraction
+        ),
+        topic_extraction=(
+            strategy.topic_extraction.model_dump()
+            if strategy.topic_extraction and hasattr(strategy.topic_extraction, "model_dump")
+            else strategy.topic_extraction
+        ),
+        llm_prompt=strategy.llm_prompt_template,
+        email_patterns=[
+            p.model_dump() if hasattr(p, "model_dump") else p
+            for p in (strategy.email_patterns or [])
+        ],
+    )
+
+
+def _write_strategy_audit(
+    db: Session,
+    user: User,
+    action: str,
+    strategy_id: str,
+    details: str,
+) -> None:
+    """Write an AuditLog entry for strategy management operations."""
+    audit = AuditLog(
+        level="essential",
+        event_type="strategy_management",
+        user_id=user.id,
+        user_email=user.email,
+        action=action,
+        resource_type="strategy",
+        resource_id=strategy_id,
+        success=True,
+        details=details,
+    )
+    db.add(audit)
 
 
 @router.get("/processing-options", response_model=ProcessingOptionsResponse)
@@ -3985,3 +4100,385 @@ async def invalidate_curated_qa_cache(
 
     invalidate_qa_cache()
     return {"success": True, "message": "Curated Q&A cache invalidated"}
+
+
+# --- Auto-Tagging Strategy Management Endpoints ---
+
+
+@router.get("/auto-tagging/strategies", response_model=StrategyListResponse)
+async def list_strategies(
+    current_user: User = Depends(require_admin),
+):
+    """List all available auto-tagging strategies.
+
+    Returns summary info for each strategy YAML file in the strategies directory,
+    along with the currently active strategy ID.
+    """
+    from ai_ready_rag.services.auto_tagging.strategy import AutoTagStrategy
+
+    strategies_dir = _get_strategies_dir()
+    items: list[StrategyListItem] = []
+
+    if strategies_dir.exists():
+        for filepath in sorted(strategies_dir.glob("*.yaml")):
+            try:
+                strategy = AutoTagStrategy.load(str(filepath))
+                items.append(
+                    StrategyListItem(
+                        id=strategy.id,
+                        name=strategy.name,
+                        description=strategy.description,
+                        version=strategy.version,
+                        is_builtin=strategy.id in BUILT_IN_STRATEGIES,
+                        namespace_count=len(strategy.namespaces),
+                        document_type_count=len(strategy.document_types),
+                        path_rule_count=len(strategy.path_rules),
+                    )
+                )
+            except (ValueError, FileNotFoundError):
+                logger.warning("Skipping invalid strategy file: %s", filepath.name)
+
+    settings = get_settings()
+    return StrategyListResponse(
+        strategies=items,
+        active_strategy_id=settings.auto_tagging_strategy,
+    )
+
+
+@router.get("/auto-tagging/strategies/{strategy_id}", response_model=StrategyDetailResponse)
+async def get_strategy(
+    strategy_id: str,
+    current_user: User = Depends(require_admin),
+):
+    """Get full detail for a single auto-tagging strategy."""
+    return _load_strategy_detail(strategy_id)
+
+
+@router.post(
+    "/auto-tagging/strategies",
+    response_model=StrategyDetailResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_strategy(
+    request: StrategyCreateRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Create a new auto-tagging strategy from raw YAML content.
+
+    Validates the YAML against the StrategyYAML schema, checks for ID conflicts,
+    and writes the file. Returns the full strategy detail.
+    """
+    from pydantic import ValidationError as PydanticValidationError
+
+    from ai_ready_rag.services.auto_tagging.models import StrategyYAML
+
+    # Parse YAML
+    try:
+        raw = yaml.safe_load(request.yaml_content)
+    except yaml.YAMLError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid YAML syntax: {e}",
+        ) from e
+
+    if not isinstance(raw, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="YAML content must be a mapping",
+        )
+
+    # Validate with StrategyYAML schema
+    try:
+        validated = StrategyYAML(**raw)
+    except PydanticValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Strategy validation failed: {e}",
+        ) from e
+
+    strategy_id = validated.strategy.id
+    strategies_dir = _get_strategies_dir()
+    filepath = strategies_dir / f"{strategy_id}.yaml"
+
+    # Check for conflicts
+    if filepath.exists():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Strategy '{strategy_id}' already exists",
+        )
+
+    # Ensure directory exists
+    strategies_dir.mkdir(parents=True, exist_ok=True)
+
+    # Atomic write: write to temp file then rename
+    fd, tmp_path = tempfile.mkstemp(dir=str(strategies_dir), suffix=".yaml.tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(request.yaml_content)
+        os.replace(tmp_path, str(filepath))
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+    # Audit log
+    _write_strategy_audit(
+        db,
+        current_user,
+        "create",
+        strategy_id,
+        json.dumps({"strategy_id": strategy_id, "version": validated.strategy.version}),
+    )
+    db.commit()
+
+    return _load_strategy_detail(strategy_id)
+
+
+@router.put("/auto-tagging/strategies/{strategy_id}", response_model=StrategyDetailResponse)
+async def update_strategy(
+    strategy_id: str,
+    request: StrategyUpdateRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Update an existing auto-tagging strategy.
+
+    Built-in strategies cannot be updated. The strategy ID in the YAML must
+    match the URL path parameter.
+    """
+    from pydantic import ValidationError as PydanticValidationError
+
+    from ai_ready_rag.services.auto_tagging.models import StrategyYAML
+
+    strategies_dir = _get_strategies_dir()
+    filepath = strategies_dir / f"{strategy_id}.yaml"
+
+    # Check file exists
+    if not filepath.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Strategy '{strategy_id}' not found",
+        )
+
+    # Protect built-in strategies
+    if strategy_id in BUILT_IN_STRATEGIES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Cannot update built-in strategy '{strategy_id}'",
+        )
+
+    # Parse YAML
+    try:
+        raw = yaml.safe_load(request.yaml_content)
+    except yaml.YAMLError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid YAML syntax: {e}",
+        ) from e
+
+    if not isinstance(raw, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="YAML content must be a mapping",
+        )
+
+    # Validate with StrategyYAML schema
+    try:
+        validated = StrategyYAML(**raw)
+    except PydanticValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Strategy validation failed: {e}",
+        ) from e
+
+    # Ensure strategy ID matches URL
+    if validated.strategy.id != strategy_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Strategy ID in YAML '{validated.strategy.id}' does not match URL '{strategy_id}'",
+        )
+
+    # Read old file for audit
+    old_content = filepath.read_text()
+
+    # Atomic write
+    fd, tmp_path = tempfile.mkstemp(dir=str(strategies_dir), suffix=".yaml.tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(request.yaml_content)
+        os.replace(tmp_path, str(filepath))
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+    # Audit log
+    _write_strategy_audit(
+        db,
+        current_user,
+        "update",
+        strategy_id,
+        json.dumps(
+            {
+                "strategy_id": strategy_id,
+                "version": validated.strategy.version,
+                "before_length": len(old_content),
+                "after_length": len(request.yaml_content),
+            }
+        ),
+    )
+    db.commit()
+
+    return _load_strategy_detail(strategy_id)
+
+
+@router.delete("/auto-tagging/strategies/{strategy_id}")
+async def delete_strategy(
+    strategy_id: str,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete a custom auto-tagging strategy.
+
+    Built-in strategies and the currently active strategy cannot be deleted.
+    """
+    strategies_dir = _get_strategies_dir()
+    filepath = strategies_dir / f"{strategy_id}.yaml"
+
+    # Check file exists
+    if not filepath.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Strategy '{strategy_id}' not found",
+        )
+
+    # Protect built-in strategies
+    if strategy_id in BUILT_IN_STRATEGIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot delete built-in strategy '{strategy_id}'",
+        )
+
+    # Cannot delete active strategy
+    settings = get_settings()
+    if settings.auto_tagging_strategy == strategy_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot delete active strategy '{strategy_id}'. Switch to another strategy first.",
+        )
+
+    # Delete file
+    filepath.unlink()
+
+    # Audit log
+    _write_strategy_audit(
+        db,
+        current_user,
+        "delete",
+        strategy_id,
+        json.dumps({"strategy_id": strategy_id}),
+    )
+    db.commit()
+
+    return {"success": True, "message": f"Strategy '{strategy_id}' deleted"}
+
+
+@router.get("/auto-tagging/active", response_model=ActiveStrategyResponse)
+async def get_active_strategy(
+    current_user: User = Depends(require_admin),
+):
+    """Get info about the currently active auto-tagging strategy."""
+    from ai_ready_rag.services.auto_tagging.strategy import AutoTagStrategy
+
+    settings = get_settings()
+    strategy_id = settings.auto_tagging_strategy
+    strategies_dir = _get_strategies_dir()
+    filepath = strategies_dir / f"{strategy_id}.yaml"
+
+    if not filepath.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Active strategy file '{strategy_id}.yaml' not found",
+        )
+
+    try:
+        strategy = AutoTagStrategy.load(str(filepath))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Active strategy file is invalid: {e}",
+        ) from e
+
+    return ActiveStrategyResponse(
+        strategy_id=strategy.id,
+        strategy_name=strategy.name,
+        strategy_version=strategy.version,
+    )
+
+
+@router.put("/auto-tagging/active", response_model=ActiveStrategyResponse)
+async def switch_active_strategy(
+    request: SwitchActiveStrategyRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Switch the active auto-tagging strategy.
+
+    Validates that the target strategy exists and loads successfully,
+    then updates the setting via SettingsService with audit trail.
+    """
+    from ai_ready_rag.services.auto_tagging.strategy import AutoTagStrategy
+
+    strategies_dir = _get_strategies_dir()
+    filepath = strategies_dir / f"{request.strategy_id}.yaml"
+
+    if not filepath.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Strategy '{request.strategy_id}' not found",
+        )
+
+    # Validate the target strategy loads correctly
+    try:
+        strategy = AutoTagStrategy.load(str(filepath))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Target strategy is invalid: {e}",
+        ) from e
+
+    # Get old active strategy for audit
+    settings = get_settings()
+    old_strategy_id = settings.auto_tagging_strategy
+
+    # Update setting with audit trail
+    settings_service = SettingsService(db)
+    settings_service.set_with_audit(
+        "auto_tagging_strategy",
+        request.strategy_id,
+        changed_by=current_user.id,
+        reason=f"Active strategy switched from '{old_strategy_id}' to '{request.strategy_id}'",
+    )
+
+    # Additional audit log entry
+    _write_strategy_audit(
+        db,
+        current_user,
+        "switch",
+        request.strategy_id,
+        json.dumps(
+            {
+                "old_strategy_id": old_strategy_id,
+                "new_strategy_id": request.strategy_id,
+                "new_version": strategy.version,
+            }
+        ),
+    )
+    db.commit()
+
+    return ActiveStrategyResponse(
+        strategy_id=strategy.id,
+        strategy_name=strategy.name,
+        strategy_version=strategy.version,
+    )
