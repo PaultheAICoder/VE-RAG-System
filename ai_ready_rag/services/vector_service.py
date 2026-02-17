@@ -23,6 +23,7 @@ except ImportError:
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.exceptions import ResponseHandlingException
+from qdrant_client.http.models import Fusion, FusionQuery, Prefetch
 
 from ai_ready_rag.core.exceptions import EmbeddingError, IndexingError, SearchError
 from ai_ready_rag.services.vector_utils import generate_chunk_id
@@ -177,6 +178,13 @@ class VectorService:
         if self.hybrid_enabled and self._collection_has_sparse:
             return float(get_rag_setting("retrieval_min_score_hybrid", 0.05))
         return float(get_rag_setting("retrieval_min_score_dense", 0.3))
+
+    @property
+    def prefetch_multiplier(self) -> int:
+        """Multiplier for prefetch limit in hybrid search."""
+        from ai_ready_rag.services.settings_service import get_rag_setting
+
+        return int(get_rag_setting("retrieval_prefetch_multiplier", 3))
 
     def _get_sparse_model(self) -> SparseTextEmbedding | None:
         """Thread-safe lazy-load of sparse embedding model.
@@ -731,6 +739,11 @@ class VectorService:
     ) -> list[SearchResult]:
         """Semantic search with access control filtering.
 
+        Supports three execution paths:
+        - Hybrid: Prefetch dense + sparse, fuse with RRF, normalize scores
+        - Degraded: Sparse embed fails, fall back to dense-only with named vector
+        - Dense-only: Hybrid disabled or collection lacks sparse vectors
+
         Args:
             query: Natural language query.
             user_tags: Tags the user has access to. None = no tag filtering
@@ -747,19 +760,20 @@ class VectorService:
 
         Note:
             Access control filter is applied BEFORE vector search (pre-retrieval).
+            In hybrid mode, the SAME filter is applied to BOTH prefetch queries.
             - user_tags=None: No tag filtering (admin or tag_access_enabled=False users)
             - user_tags=[]: Only documents with "public" tag
             - user_tags=["hr"]: Public + hr documents
         """
         tenant = tenant_id or self.tenant_id
 
-        # Generate query embedding
+        # 1. Dense embedding (always needed)
         try:
             query_embedding = await self.embed(query)
         except EmbeddingError as e:
             raise SearchError(f"Failed to embed query: {e}") from e
 
-        # Build access control filter
+        # 2. Access filter (unchanged)
         if user_tags is None:
             # System admin: no tag filtering, tenant only
             access_filter = models.Filter(
@@ -773,22 +787,88 @@ class VectorService:
         else:
             access_filter = self._build_access_filter(user_tags, tenant)
 
-        # Search Qdrant using query_points (newer API)
+        # 3. Execute search
+        degraded = False
+        use_hybrid = self.hybrid_enabled and self._collection_has_sparse
+
         try:
-            response = await self._qdrant.query_points(
-                collection_name=self.collection_name,
-                query=query_embedding,
-                query_filter=access_filter,
-                limit=limit,
-                score_threshold=score_threshold,
-                with_payload=True,
-            )
+            if use_hybrid:
+                # Try sparse embedding
+                query_sparse = None
+                try:
+                    query_sparse = self.sparse_embed(query)
+                except Exception as e:
+                    logger.warning(f"Sparse embed failed, falling back to dense-only: {e}")
+                    degraded = True
+
+                if query_sparse is None and not degraded:
+                    # sparse_embed returned None (model unavailable)
+                    logger.warning("Sparse model unavailable, falling back to dense-only")
+                    degraded = True
+
+                if query_sparse is not None:
+                    # HYBRID PATH (Path A)
+                    prefetch_limit = max(20, min(100, limit * self.prefetch_multiplier))
+                    response = await self._qdrant.query_points(
+                        collection_name=self.collection_name,
+                        prefetch=[
+                            Prefetch(
+                                query=query_embedding,
+                                using="dense",
+                                limit=prefetch_limit,
+                                filter=access_filter,
+                            ),
+                            Prefetch(
+                                query=query_sparse,
+                                using="sparse",
+                                limit=prefetch_limit,
+                                filter=access_filter,
+                            ),
+                        ],
+                        query=FusionQuery(fusion=Fusion.RRF),
+                        limit=limit,
+                        with_payload=True,
+                        # NOTE: No score_threshold - RRF scores are raw, apply post-normalization
+                        # NOTE: No query_filter - filters are on Prefetch, not top-level
+                    )
+                    points = self._normalize_scores(response.points)
+                    if score_threshold > 0:
+                        points = [p for p in points if p.score >= score_threshold]
+                else:
+                    # DEGRADED PATH (Path B): dense-only with named vector
+                    response = await self._qdrant.query_points(
+                        collection_name=self.collection_name,
+                        query=query_embedding,
+                        using="dense",
+                        query_filter=access_filter,
+                        limit=limit,
+                        score_threshold=score_threshold if score_threshold > 0 else None,
+                        with_payload=True,
+                    )
+                    points = response.points
+            else:
+                # DENSE-ONLY PATH (Path C): hybrid disabled or no sparse in collection
+                query_kwargs: dict = {
+                    "collection_name": self.collection_name,
+                    "query": query_embedding,
+                    "query_filter": access_filter,
+                    "limit": limit,
+                    "score_threshold": score_threshold if score_threshold > 0 else None,
+                    "with_payload": True,
+                }
+                if self._collection_has_sparse:
+                    # Collection has named vectors but hybrid is disabled
+                    query_kwargs["using"] = "dense"
+                response = await self._qdrant.query_points(**query_kwargs)
+                points = response.points
         except Exception as e:
+            if isinstance(e, SearchError):
+                raise
             raise SearchError(f"Qdrant search failed: {e}") from e
 
-        # Convert to SearchResult objects
+        # 4. Convert to SearchResult (unchanged)
         search_results = []
-        for point in response.points:
+        for point in points:
             payload = point.payload or {}
             search_results.append(
                 SearchResult(
@@ -801,6 +881,11 @@ class VectorService:
                     page_number=payload.get("page_number"),
                     section=payload.get("section"),
                 )
+            )
+
+        if degraded:
+            logger.info(
+                f"Search completed in degraded mode (dense-only): {len(search_results)} results"
             )
 
         return search_results
@@ -842,6 +927,33 @@ class VectorService:
                 models.Filter(should=tag_conditions),
             ],
         )
+
+    def _normalize_scores(self, points: list) -> list:
+        """Min-max normalize RRF fusion scores to 0.0-1.0 range.
+
+        RRF scores are rank-based (typically 0.008-0.033) and not cosine-calibrated.
+        Normalization preserves relative ordering while producing values compatible
+        with existing confidence scoring and score_threshold filtering.
+
+        Applied only in hybrid mode. Dense-only returns native cosine scores.
+        """
+        if not points:
+            return points
+
+        scores = [p.score for p in points]
+        min_score = min(scores)
+        max_score = max(scores)
+
+        if max_score == min_score:
+            # All same rank - assign 1.0 (best possible)
+            for p in points:
+                p.score = 1.0
+            return points
+
+        for p in points:
+            p.score = (p.score - min_score) / (max_score - min_score)
+
+        return points
 
     async def _count_document_chunks(self, document_id: str) -> int:
         """Count chunks for a document."""

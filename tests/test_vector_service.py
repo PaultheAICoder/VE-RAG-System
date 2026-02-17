@@ -1067,16 +1067,22 @@ class TestSparseEmbedding:
                 )
 
 
+def _make_service(hybrid=True, has_sparse=True, prefetch_multiplier=3):
+    """Create VectorService with mocked internals for testing."""
+    vs = VectorService()
+    type(vs).hybrid_enabled = unittest.mock.PropertyMock(return_value=hybrid)
+    type(vs).prefetch_multiplier = unittest.mock.PropertyMock(return_value=prefetch_multiplier)
+    vs._collection_has_sparse = has_sparse
+    vs._detect_collection_capabilities = unittest.mock.AsyncMock()
+    return vs
+
+
 class TestHybridIndexing:
     """Tests for hybrid search indexing (Issue #284)."""
 
     def _make_service(self, hybrid=True, has_sparse=True):
         """Create VectorService with mocked internals."""
-        vs = VectorService()
-        type(vs).hybrid_enabled = unittest.mock.PropertyMock(return_value=hybrid)
-        vs._collection_has_sparse = has_sparse
-        vs._detect_collection_capabilities = unittest.mock.AsyncMock()
-        return vs
+        return _make_service(hybrid=hybrid, has_sparse=has_sparse)
 
     def test_index_result_includes_sparse_indexed(self):
         """IndexResult accepts sparse_indexed field, defaults to True."""
@@ -1305,3 +1311,309 @@ class TestHybridIndexing:
 
         assert count == 0
         vs._qdrant.scroll.assert_not_called()
+
+
+class TestNormalizeScores:
+    """Unit tests for _normalize_scores() (Issue #285)."""
+
+    def setup_method(self):
+        self.service = VectorService()
+
+    def _make_point(self, score):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(score=score)
+
+    def test_normalize_empty_list(self):
+        """Empty input returns empty list."""
+        assert self.service._normalize_scores([]) == []
+
+    def test_normalize_single_result(self):
+        """Single point gets score 1.0."""
+        points = [self._make_point(0.015)]
+        result = self.service._normalize_scores(points)
+        assert result[0].score == 1.0
+
+    def test_normalize_preserves_ordering(self):
+        """Relative ordering is preserved; highest=1.0, lowest=0.0."""
+        points = [self._make_point(0.033), self._make_point(0.020), self._make_point(0.008)]
+        result = self.service._normalize_scores(points)
+        assert result[0].score > result[1].score > result[2].score
+        assert result[0].score == 1.0
+        assert result[2].score == 0.0
+
+    def test_normalize_range_0_to_1(self):
+        """All normalized scores are in [0.0, 1.0]."""
+        points = [self._make_point(s) for s in [0.033, 0.025, 0.020, 0.015, 0.008]]
+        result = self.service._normalize_scores(points)
+        for p in result:
+            assert 0.0 <= p.score <= 1.0
+
+    def test_normalize_equal_scores(self):
+        """All identical scores become 1.0."""
+        points = [self._make_point(0.020), self._make_point(0.020), self._make_point(0.020)]
+        result = self.service._normalize_scores(points)
+        for p in result:
+            assert p.score == 1.0
+
+
+class TestHybridSearch:
+    """Tests for hybrid search execution paths (Issue #285)."""
+
+    def _make_mock_response(self, scores):
+        """Create a mock query_points response with given scores."""
+        from types import SimpleNamespace
+
+        points = []
+        for i, score in enumerate(scores):
+            points.append(
+                SimpleNamespace(
+                    id=f"point-{i}",
+                    score=score,
+                    payload={
+                        "chunk_id": f"chunk-{i}",
+                        "document_id": f"doc-{i}",
+                        "document_name": f"file-{i}.pdf",
+                        "chunk_text": f"text {i}",
+                        "chunk_index": i,
+                        "page_number": None,
+                        "section": None,
+                    },
+                )
+            )
+        return SimpleNamespace(points=points)
+
+    @pytest.mark.asyncio
+    async def test_search_hybrid_uses_prefetch_and_fusion(self):
+        """Hybrid path uses Prefetch + FusionQuery(Fusion.RRF)."""
+        from qdrant_client.http.models import Fusion, FusionQuery
+
+        vs = _make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs.sparse_embed = unittest.mock.MagicMock(
+            return_value=models.SparseVector(indices=[1, 2], values=[0.5, 0.3])
+        )
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.033, 0.020])
+
+        await vs.search("test query", user_tags=["hr"])
+
+        call_kwargs = vs._qdrant.query_points.call_args.kwargs
+        assert "prefetch" in call_kwargs
+        assert len(call_kwargs["prefetch"]) == 2
+        assert isinstance(call_kwargs["query"], FusionQuery)
+        assert call_kwargs["query"].fusion == Fusion.RRF
+        # score_threshold must NOT be in kwargs for hybrid
+        assert "score_threshold" not in call_kwargs or call_kwargs.get("score_threshold") is None
+
+    @pytest.mark.asyncio
+    async def test_search_hybrid_scores_normalized(self):
+        """Hybrid results have scores in [0.0, 1.0]."""
+        vs = _make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs.sparse_embed = unittest.mock.MagicMock(
+            return_value=models.SparseVector(indices=[1, 2], values=[0.5, 0.3])
+        )
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.033, 0.020, 0.008])
+
+        results = await vs.search("test query", user_tags=["hr"])
+
+        for r in results:
+            assert 0.0 <= r.score <= 1.0
+        # Highest score should be 1.0
+        assert results[0].score == 1.0
+
+    @pytest.mark.asyncio
+    async def test_search_hybrid_filter_parity(self):
+        """Both Prefetch queries have the SAME filter object."""
+        vs = _make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs.sparse_embed = unittest.mock.MagicMock(
+            return_value=models.SparseVector(indices=[1, 2], values=[0.5, 0.3])
+        )
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.033])
+
+        await vs.search("test query", user_tags=["hr", "finance"])
+
+        call_kwargs = vs._qdrant.query_points.call_args.kwargs
+        prefetches = call_kwargs["prefetch"]
+        # Both prefetches must use the same filter object (identity check)
+        assert prefetches[0].filter is prefetches[1].filter
+
+    @pytest.mark.asyncio
+    async def test_search_sparse_failure_falls_back(self):
+        """Sparse embed exception triggers degraded dense-only path."""
+        vs = _make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs.sparse_embed = unittest.mock.MagicMock(side_effect=RuntimeError("Sparse failed"))
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.85])
+
+        results = await vs.search("test query", user_tags=["hr"])
+
+        assert len(results) == 1
+        call_kwargs = vs._qdrant.query_points.call_args.kwargs
+        # Should NOT use prefetch
+        assert "prefetch" not in call_kwargs or call_kwargs.get("prefetch") is None
+        # Should use named vector
+        assert call_kwargs.get("using") == "dense"
+
+    @pytest.mark.asyncio
+    async def test_search_sparse_returns_none_falls_back(self):
+        """sparse_embed returning None triggers degraded path."""
+        vs = _make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs.sparse_embed = unittest.mock.MagicMock(return_value=None)
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.85])
+
+        results = await vs.search("test query", user_tags=["hr"])
+
+        assert len(results) == 1
+        call_kwargs = vs._qdrant.query_points.call_args.kwargs
+        assert "prefetch" not in call_kwargs or call_kwargs.get("prefetch") is None
+        assert call_kwargs.get("using") == "dense"
+
+    @pytest.mark.asyncio
+    async def test_search_dense_only_hybrid_disabled(self):
+        """Hybrid disabled: no prefetch, no using (legacy collection)."""
+        vs = _make_service(hybrid=False, has_sparse=False)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.85])
+
+        results = await vs.search("test query", user_tags=["hr"])
+
+        assert len(results) == 1
+        call_kwargs = vs._qdrant.query_points.call_args.kwargs
+        assert "prefetch" not in call_kwargs or call_kwargs.get("prefetch") is None
+        assert "using" not in call_kwargs or call_kwargs.get("using") is None
+
+    @pytest.mark.asyncio
+    async def test_search_dense_only_no_sparse_collection(self):
+        """Hybrid enabled but no sparse in collection: no prefetch."""
+        vs = _make_service(hybrid=True, has_sparse=False)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.85])
+
+        results = await vs.search("test query", user_tags=["hr"])
+
+        assert len(results) == 1
+        call_kwargs = vs._qdrant.query_points.call_args.kwargs
+        assert "prefetch" not in call_kwargs or call_kwargs.get("prefetch") is None
+
+    @pytest.mark.asyncio
+    async def test_search_dense_with_named_vectors(self):
+        """Hybrid disabled but collection has named vectors: uses using='dense'."""
+        vs = _make_service(hybrid=False, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.85])
+
+        await vs.search("test query", user_tags=["hr"])
+
+        call_kwargs = vs._qdrant.query_points.call_args.kwargs
+        assert call_kwargs.get("using") == "dense"
+
+    @pytest.mark.asyncio
+    async def test_prefetch_limit_calculation(self):
+        """Prefetch limit follows max(20, min(100, limit * multiplier))."""
+        vs = _make_service(hybrid=True, has_sparse=True, prefetch_multiplier=3)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs.sparse_embed = unittest.mock.MagicMock(
+            return_value=models.SparseVector(indices=[1], values=[0.5])
+        )
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.033])
+
+        # limit=5 -> 5*3=15 -> max(20,15)=20
+        await vs.search("test", user_tags=["hr"], limit=5)
+        prefetches = vs._qdrant.query_points.call_args.kwargs["prefetch"]
+        assert prefetches[0].limit == 20
+
+        # limit=10 -> 10*3=30 -> max(20,30)=30
+        vs._qdrant.query_points.reset_mock()
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.033])
+        await vs.search("test", user_tags=["hr"], limit=10)
+        prefetches = vs._qdrant.query_points.call_args.kwargs["prefetch"]
+        assert prefetches[0].limit == 30
+
+        # limit=50 -> 50*3=150 -> min(100,150)=100
+        vs._qdrant.query_points.reset_mock()
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.033])
+        await vs.search("test", user_tags=["hr"], limit=50)
+        prefetches = vs._qdrant.query_points.call_args.kwargs["prefetch"]
+        assert prefetches[0].limit == 100
+
+    @pytest.mark.asyncio
+    async def test_score_threshold_applied_after_normalization(self):
+        """In hybrid mode, score_threshold filters AFTER normalization."""
+        vs = _make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs.sparse_embed = unittest.mock.MagicMock(
+            return_value=models.SparseVector(indices=[1], values=[0.5])
+        )
+        # 3 results: normalized will be 1.0, 0.5, 0.0
+        vs._qdrant.query_points.return_value = self._make_mock_response([0.033, 0.020, 0.008])
+
+        results = await vs.search("test", user_tags=["hr"], score_threshold=0.5)
+
+        # 0.0 should be filtered out, leaving 2 results (1.0 and ~0.48 rounds)
+        # Actually: (0.033-0.008)/(0.033-0.008)=1.0, (0.020-0.008)/0.025=0.48, 0.0
+        # With threshold 0.5: only score=1.0 passes
+        assert len(results) == 1
+        assert results[0].score == 1.0
+
+
+class TestHybridAccessFilterParity:
+    """Tests for access filter parity on both prefetch queries (Issue #285)."""
+
+    @pytest.mark.asyncio
+    async def test_filter_same_object_in_both_prefetches(self):
+        """Multi-tag user: both prefetch queries share the same filter object."""
+        from types import SimpleNamespace
+
+        vs = _make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs.sparse_embed = unittest.mock.MagicMock(
+            return_value=models.SparseVector(indices=[1], values=[0.5])
+        )
+        vs._qdrant.query_points.return_value = SimpleNamespace(points=[])
+
+        await vs.search("test", user_tags=["hr", "finance", "legal"])
+
+        call_kwargs = vs._qdrant.query_points.call_args.kwargs
+        prefetches = call_kwargs["prefetch"]
+        assert prefetches[0].filter is prefetches[1].filter
+        # Verify the filter has the expected structure
+        f = prefetches[0].filter
+        assert isinstance(f, models.Filter)
+        assert len(f.must) == 2  # tenant_id + nested should
+
+    @pytest.mark.asyncio
+    async def test_admin_filter_in_both_prefetches(self):
+        """Admin (user_tags=None): both prefetch queries have tenant-only filter."""
+        from types import SimpleNamespace
+
+        vs = _make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs.embed = unittest.mock.AsyncMock(return_value=[0.1] * 768)
+        vs.sparse_embed = unittest.mock.MagicMock(
+            return_value=models.SparseVector(indices=[1], values=[0.5])
+        )
+        vs._qdrant.query_points.return_value = SimpleNamespace(points=[])
+
+        await vs.search("test", user_tags=None)
+
+        call_kwargs = vs._qdrant.query_points.call_args.kwargs
+        prefetches = call_kwargs["prefetch"]
+        assert prefetches[0].filter is prefetches[1].filter
+        # Admin filter: only tenant_id condition
+        f = prefetches[0].filter
+        assert isinstance(f, models.Filter)
+        assert len(f.must) == 1  # tenant_id only
