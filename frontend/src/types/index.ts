@@ -934,3 +934,55 @@ export interface ApprovalResponse {
   processed_count: number;
   failed_count: number;
 }
+
+// =============================================================================
+// Auto-Tagging Strategy Types
+// =============================================================================
+
+export interface StrategyListItem {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  is_builtin: boolean;
+  namespace_count: number;
+  document_type_count: number;
+  path_rule_count: number;
+}
+
+export interface StrategyListResponse {
+  strategies: StrategyListItem[];
+  active_strategy_id: string;
+}
+
+export interface StrategyDetailResponse {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  is_builtin: boolean;
+  namespaces: Record<string, { display: string; color: string }>;
+  document_types: Record<string, { display: string; keywords: string[] }>;
+  path_rules: Array<{
+    namespace: string;
+    level?: number;
+    pattern?: string;
+    capture_group?: number;
+    transform?: string;
+    mapping?: Record<string, string>;
+    parent_match?: string;
+  }>;
+  entity_extraction: Record<string, unknown> | null;
+  topic_extraction: Record<string, unknown> | null;
+  llm_prompt: string;
+  email_patterns: Array<{
+    pattern: string;
+    tags: Array<{ namespace: string; value: string }>;
+  }>;
+}
+
+export interface ActiveStrategyResponse {
+  strategy_id: string;
+  strategy_name: string;
+  strategy_version: string;
+}

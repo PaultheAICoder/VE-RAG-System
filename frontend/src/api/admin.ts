@@ -13,6 +13,9 @@ import type {
   ReindexEstimate,
   ResumeAction,
   ReindexFailuresResponse,
+  StrategyListResponse,
+  StrategyDetailResponse,
+  ActiveStrategyResponse,
 } from '../types';
 
 /**
@@ -290,4 +293,42 @@ export async function retryReindexDocument(
     ? `/api/admin/reindex/retry/${documentId}?job_id=${jobId}`
     : `/api/admin/reindex/retry/${documentId}`;
   return apiClient.post<ReindexJob>(url, {});
+}
+
+// =============================================================================
+// Auto-Tagging Strategy Management
+// =============================================================================
+
+/**
+ * Get all available auto-tagging strategies (system admin only).
+ */
+export async function getAutoTagStrategies(): Promise<StrategyListResponse> {
+  return apiClient.get<StrategyListResponse>('/api/admin/auto-tagging/strategies');
+}
+
+/**
+ * Get detailed info for a specific strategy (system admin only).
+ */
+export async function getAutoTagStrategy(strategyId: string): Promise<StrategyDetailResponse> {
+  return apiClient.get<StrategyDetailResponse>(
+    `/api/admin/auto-tagging/strategies/${strategyId}`
+  );
+}
+
+/**
+ * Get the currently active auto-tagging strategy (system admin only).
+ */
+export async function getActiveAutoTagStrategy(): Promise<ActiveStrategyResponse> {
+  return apiClient.get<ActiveStrategyResponse>('/api/admin/auto-tagging/active');
+}
+
+/**
+ * Switch the active auto-tagging strategy (system admin only).
+ */
+export async function switchActiveAutoTagStrategy(
+  strategyId: string
+): Promise<ActiveStrategyResponse> {
+  return apiClient.put<ActiveStrategyResponse>('/api/admin/auto-tagging/active', {
+    strategy_id: strategyId,
+  });
 }

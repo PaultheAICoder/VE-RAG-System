@@ -24,3 +24,4 @@ export { EvaluationSampleTable } from './EvaluationSampleTable';
 export { DatasetManager } from './DatasetManager';
 export { LiveQualityChart } from './LiveQualityChart';
 export { MetricScoreCard } from './MetricScoreCard';
+export { AutoTagStrategyCard } from './AutoTagStrategyCard';
