@@ -1,0 +1,216 @@
+strategy:
+  id: "insurance_agency"
+  name: "Insurance Agency"
+  description: "For insurance brokerages managing customer policy folders"
+  version: "1.0"
+
+namespaces:
+  client:
+    display: "Client"
+    color: "#6366f1"
+    description: "Customer or insured name"
+  year:
+    display: "Policy Year"
+    color: "#f59e0b"
+    description: "Policy effective period"
+  doctype:
+    display: "Document Type"
+    color: "#10b981"
+    description: "Classification of document"
+  stage:
+    display: "Workflow Stage"
+    color: "#64748b"
+    description: "Where in the workflow this document belongs"
+  entity:
+    display: "Carrier"
+    color: "#0ea5e9"
+    description: "Insurance carrier or underwriter"
+  topic:
+    display: "Coverage Line"
+    color: "#f43f5e"
+    description: "Type of insurance coverage"
+
+path_rules:
+  - namespace: "client"
+    level: 0
+    pattern: "^(.+?)(?:\\s*\\(.*\\))?$"
+    capture_group: 1
+    transform: "slugify"
+
+  - namespace: "year"
+    level: 1
+    pattern: "^(\\d{2})\\s+(?:NB|Renewal)$"
+    capture_group: 1
+    transform: "year_range"
+
+  - namespace: "stage"
+    level: 2
+    mapping:
+      "Bind": "bind"
+      "Quote": "quote"
+      "Sub": "submission"
+      "Policy": "policy"
+      "Misc": "miscellaneous"
+      "Docs": "governing-docs"
+      "Pics": "photos"
+
+  - namespace: "entity"
+    level: 3
+    parent_match: "^(Quote|Sub)$"
+    transform: "slugify"
+
+document_types:
+  policy:
+    display: "Policy"
+    description: "Active insurance policy with terms and conditions"
+    keywords: ["policy", "declarations", "dec page", "coverage form"]
+  certificate:
+    display: "Certificate"
+    description: "ACORD 25/28 certificate of insurance"
+    keywords: ["certificate of liability", "acord 25", "acord 28", "evidence of"]
+  quote:
+    display: "Quote"
+    description: "Carrier proposal with pricing"
+    keywords: ["quote", "proposal", "indication", "premium"]
+  application:
+    display: "Application"
+    description: "Completed insurance application"
+    keywords: ["application", "supplemental", "acord 125", "acord 126"]
+  loss_run:
+    display: "Loss Run"
+    description: "Claims history report from carrier"
+    keywords: ["loss run", "loss history", "claims experience", "loss ratio"]
+  financial:
+    display: "Financial Statement"
+    description: "Balance sheet, budget, P&L, or financial report"
+    keywords: ["balance sheet", "budget", "financial", "p&l", "income statement"]
+  reserve_study:
+    display: "Reserve Study"
+    description: "Capital reserve study or maintenance plan"
+    keywords: ["reserve study", "reserve fund", "capital plan", "component list"]
+  coverage_summary:
+    display: "Coverage Summary"
+    description: "Side-by-side carrier or year-over-year comparison"
+    keywords: ["coverage summary", "comparison", "expiring vs", "side by side"]
+  bor_letter:
+    display: "BOR Letter"
+    description: "Broker of record change letter"
+    keywords: ["broker of record", "bor", "agent of record"]
+  endorsement:
+    display: "Endorsement"
+    description: "Policy amendment, rider, or endorsement"
+    keywords: ["endorsement", "amendment", "rider", "schedule change"]
+  governing_docs:
+    display: "Governing Documents"
+    description: "CC&Rs, bylaws, articles of incorporation, plat maps"
+    keywords: ["cc&r", "bylaws", "covenants", "plat", "declaration"]
+  correspondence:
+    display: "Correspondence"
+    description: "Emails, memos, and general communications"
+    keywords: ["re:", "fwd:", "dear", "please find"]
+  invoice:
+    display: "Invoice"
+    description: "Premium invoice or billing statement"
+    keywords: ["invoice", "premium due", "billing", "payment"]
+  sov:
+    display: "Schedule of Values"
+    description: "Property schedule with building values"
+    keywords: ["schedule of values", "sov", "building schedule", "tiv"]
+  unknown:
+    display: "Unknown"
+    description: "Could not classify"
+    keywords: []
+
+entity_extraction:
+  namespace: "entity"
+  prompt_label: "carrier"
+  prompt_instruction: "Identify the insurance carrier or underwriting company. Use the carrier's legal name, not the MGA or broker name. Return null if not carrier-specific."
+  aliases:
+    "Continental Casualty Company": "cna"
+    "Continental Casualty": "cna"
+    "CNA": "cna"
+    "LIO Insurance Company": "lio"
+    "LIO Insurance": "lio"
+    "USLI": "usli"
+    "United States Liability Insurance": "usli"
+    "Philadelphia Indemnity": "phly"
+    "PHLY": "phly"
+    "Chubb": "chubb"
+    "ACE American Insurance": "chubb"
+
+topic_extraction:
+  namespace: "topic"
+  prompt_label: "coverage lines"
+  prompt_instruction: "List the insurance coverage lines discussed in this document."
+  values:
+    - id: "gl"
+      display: "General Liability"
+      keywords: ["general liability", "cgl", "bodily injury", "property damage"]
+    - id: "property"
+      display: "Property"
+      keywords: ["property coverage", "building", "blanket", "bpp"]
+    - id: "do"
+      display: "D&O"
+      keywords: ["directors and officers", "d&o", "management liability"]
+    - id: "crime"
+      display: "Crime"
+      keywords: ["crime", "fidelity", "employee theft", "dishonesty"]
+    - id: "auto"
+      display: "Auto"
+      keywords: ["auto", "automobile", "hired and non-owned"]
+    - id: "wc"
+      display: "Workers Comp"
+      keywords: ["workers comp", "workers' compensation", "wc"]
+    - id: "umbrella"
+      display: "Umbrella/Excess"
+      keywords: ["umbrella", "excess liability"]
+    - id: "epli"
+      display: "EPLI"
+      keywords: ["employment practices", "epli", "wrongful termination"]
+    - id: "cyber"
+      display: "Cyber"
+      keywords: ["cyber", "data breach", "network security"]
+    - id: "earthquake"
+      display: "Earthquake"
+      keywords: ["earthquake", "seismic"]
+
+llm_prompt: |
+  Classify this document from an insurance agency file system. Return JSON only.
+
+  Document filename: {filename}
+  Source path: {source_path}
+  First 2000 characters of content:
+  {content_preview}
+
+  Return this exact JSON structure:
+  {{
+    "document_type": "<one of: {document_type_ids}>",
+    "entity": "<{entity_extraction.prompt_label} or null>",
+    "topics": [<list of: {topic_ids}>],
+    "year_start": "<YYYY or null>",
+    "year_end": "<YYYY or null>",
+    "confidence": <0.0 to 1.0>
+  }}
+
+  Classification rules:
+  {document_type_rules}
+
+  Entity rules:
+  {entity_extraction.prompt_instruction}
+
+  Topic rules:
+  {topic_extraction.prompt_instruction}
+
+email_patterns:
+  - pattern: "(?i)bind|bound"
+    tags: [{namespace: "stage", value: "bind"}]
+  - pattern: "(?i)quote|proposal|indication"
+    tags: [{namespace: "stage", value: "quote"}]
+  - pattern: "(?i)submit|submission"
+    tags: [{namespace: "stage", value: "submission"}]
+  - pattern: "(?i)policy|certificate"
+    tags: [{namespace: "stage", value: "policy"}]
+  - pattern: "(?i)loss.?run|claims"
+    tags: [{namespace: "doctype", value: "loss-run"}]
+  - pattern: "(?i)endorse|change"
+    tags: [{namespace: "doctype", value: "endorsement"}]

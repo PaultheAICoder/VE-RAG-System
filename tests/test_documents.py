@@ -1,6 +1,7 @@
 """Tests for document management API endpoints."""
 
 import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -116,8 +117,9 @@ class TestDocumentUpload:
                     headers=admin_headers,
                 )
 
-        # FastAPI returns 422 for form data validation errors
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        # With auto-tagging disabled (default), empty tags returns 400
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "tag" in response.json()["detail"].lower()
 
     def test_upload_validates_file_type(self, client, admin_headers, test_tag):
         """Test that upload rejects invalid file types."""
@@ -854,3 +856,343 @@ class TestEnhanced409Response:
             doc_dir = upload_dir / doc1_id
             if doc_dir.exists():
                 shutil.rmtree(doc_dir)
+
+
+class TestAutoTaggingUpload:
+    """Tests for auto-tagging at upload time."""
+
+    def _enable_auto_tagging(self, monkeypatch):
+        """Override settings to enable auto-tagging for tests."""
+        from ai_ready_rag.config import Settings
+
+        strategies_dir = str(Path(__file__).parent.parent / "data" / "auto_tag_strategies")
+        test_settings = Settings(
+            auto_tagging_enabled=True,
+            auto_tagging_path_enabled=True,
+            auto_tagging_create_missing_tags=True,
+            auto_tagging_strategies_dir=strategies_dir,
+            auto_tagging_strategy="generic",
+        )
+        monkeypatch.setattr("ai_ready_rag.api.documents.get_settings", lambda: test_settings)
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_upload_with_source_path_creates_auto_tags(
+        self, mock_task, client, admin_headers, test_tag, tmp_path, monkeypatch, db
+    ):
+        """Upload with source_path and auto-tagging enabled creates path-based tags."""
+        self._enable_auto_tagging(monkeypatch)
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("Test content for auto-tag")
+
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("test.txt", f, "text/plain")},
+                data={
+                    "tag_ids": [test_tag.id],
+                    "source_path": "Acme Corp/Policies/test.txt",
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        data = response.json()
+        assert data["auto_tag_status"] == "pending"
+        assert data["auto_tag_strategy"] == "generic"
+        assert data["auto_tag_version"] == "1.0"
+        assert data["source_path"] == "Acme Corp/Policies/test.txt"
+        # Should have the manual tag + auto-created client tag
+        tag_names = [t["name"] for t in data["tags"]]
+        assert "test_docs" in tag_names
+        assert "client:acme-corp" in tag_names
+
+        # Cleanup
+        doc_dir = upload_dir / data["id"]
+        if doc_dir.exists():
+            import shutil
+
+            shutil.rmtree(doc_dir)
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_upload_without_tags_succeeds_when_auto_tagging_active(
+        self, mock_task, client, admin_headers, tmp_path, monkeypatch, db
+    ):
+        """Upload with no manual tags but auto-tagging active succeeds."""
+        self._enable_auto_tagging(monkeypatch)
+
+        test_file = tmp_path / "no_manual_tags.txt"
+        test_file.write_text("Content without manual tags")
+
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("no_manual_tags.txt", f, "text/plain")},
+                data={
+                    "tag_ids": [],
+                    "source_path": "BigClient/Reports/no_manual_tags.txt",
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        data = response.json()
+        tag_names = [t["name"] for t in data["tags"]]
+        assert "client:bigclient" in tag_names
+
+        # Cleanup
+        doc_dir = upload_dir / data["id"]
+        if doc_dir.exists():
+            import shutil
+
+            shutil.rmtree(doc_dir)
+
+    def test_upload_without_tags_fails_when_auto_tagging_disabled(
+        self, client, admin_headers, tmp_path
+    ):
+        """Upload with no tags and auto-tagging disabled still requires tags."""
+        test_file = tmp_path / "no_tags.txt"
+        test_file.write_text("Content without tags")
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("no_tags.txt", f, "text/plain")},
+                data={"tag_ids": []},
+                headers=admin_headers,
+            )
+
+        # With auto-tagging disabled (default), empty tags returns 400
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "tag" in response.json()["detail"].lower()
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_upload_with_source_path_and_manual_tags_merges(
+        self, mock_task, client, admin_headers, test_tag, tmp_path, monkeypatch, db
+    ):
+        """Upload with both manual tags and source_path merges tags."""
+        self._enable_auto_tagging(monkeypatch)
+
+        test_file = tmp_path / "merged.txt"
+        test_file.write_text("Content for merge test")
+
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("merged.txt", f, "text/plain")},
+                data={
+                    "tag_ids": [test_tag.id],
+                    "source_path": "TestClient/merged.txt",
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        data = response.json()
+        tag_names = [t["name"] for t in data["tags"]]
+        assert "test_docs" in tag_names
+        assert "client:testclient" in tag_names
+        assert len(data["tags"]) >= 2
+
+        # Cleanup
+        doc_dir = upload_dir / data["id"]
+        if doc_dir.exists():
+            import shutil
+
+            shutil.rmtree(doc_dir)
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_auto_tag_strategy_pinning(
+        self, mock_task, client, admin_headers, test_tag, tmp_path, monkeypatch, db
+    ):
+        """Verify strategy_id and strategy_version are recorded on document."""
+        self._enable_auto_tagging(monkeypatch)
+
+        test_file = tmp_path / "pinned.txt"
+        test_file.write_text("Content for strategy pinning test")
+
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("pinned.txt", f, "text/plain")},
+                data={
+                    "tag_ids": [test_tag.id],
+                    "source_path": "ClientA/pinned.txt",
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        data = response.json()
+        assert data["auto_tag_strategy"] == "generic"
+        assert data["auto_tag_version"] == "1.0"
+        assert data["auto_tag_status"] == "pending"
+
+        # Cleanup
+        doc_dir = upload_dir / data["id"]
+        if doc_dir.exists():
+            import shutil
+
+            shutil.rmtree(doc_dir)
+
+    def test_ensure_tag_exists_creates_new_tag(self, db, admin_user, monkeypatch):
+        """ensure_tag_exists creates tag when it doesn't exist."""
+        from ai_ready_rag.config import Settings
+        from ai_ready_rag.services.auto_tagging import AutoTagStrategy
+        from ai_ready_rag.services.document_service import DocumentService
+
+        strategies_dir = str(Path(__file__).parent.parent / "data" / "auto_tag_strategies")
+        settings = Settings(
+            auto_tagging_enabled=True,
+            auto_tagging_create_missing_tags=True,
+            auto_tagging_strategies_dir=strategies_dir,
+        )
+        service = DocumentService(db, settings)
+        strategy = AutoTagStrategy.load(str(Path(strategies_dir) / "generic.yaml"))
+
+        tag = service.ensure_tag_exists(
+            tag_name="client:new-client",
+            display_name="New Client",
+            namespace="client",
+            strategy=strategy,
+            created_by=admin_user.id,
+        )
+
+        assert tag is not None
+        assert tag.name == "client:new-client"
+        assert tag.display_name == "New Client"
+        assert tag.color == "#6366f1"
+        assert tag.description == "Auto-created by Generic strategy"
+
+    def test_ensure_tag_exists_returns_existing(self, db, admin_user, test_tag):
+        """ensure_tag_exists returns existing tag without creating duplicate."""
+        from ai_ready_rag.config import Settings
+        from ai_ready_rag.services.auto_tagging import AutoTagStrategy
+        from ai_ready_rag.services.document_service import DocumentService
+
+        strategies_dir = str(Path(__file__).parent.parent / "data" / "auto_tag_strategies")
+        settings = Settings(
+            auto_tagging_enabled=True,
+            auto_tagging_create_missing_tags=True,
+            auto_tagging_strategies_dir=strategies_dir,
+        )
+        service = DocumentService(db, settings)
+        strategy = AutoTagStrategy.load(str(Path(strategies_dir) / "generic.yaml"))
+
+        result = service.ensure_tag_exists(
+            tag_name=test_tag.name,
+            display_name=test_tag.display_name,
+            namespace="test",
+            strategy=strategy,
+            created_by=admin_user.id,
+        )
+
+        assert result is not None
+        assert result.id == test_tag.id
+
+    def test_tag_name_length_guardrail(self, db, admin_user):
+        """Tags exceeding max_tag_name_length are skipped."""
+        from ai_ready_rag.config import Settings
+        from ai_ready_rag.services.auto_tagging import AutoTagStrategy
+        from ai_ready_rag.services.document_service import DocumentService
+
+        strategies_dir = str(Path(__file__).parent.parent / "data" / "auto_tag_strategies")
+        settings = Settings(
+            auto_tagging_enabled=True,
+            auto_tagging_create_missing_tags=True,
+            auto_tagging_max_tag_name_length=10,
+            auto_tagging_strategies_dir=strategies_dir,
+        )
+        service = DocumentService(db, settings)
+        strategy = AutoTagStrategy.load(str(Path(strategies_dir) / "generic.yaml"))
+
+        result = service.ensure_tag_exists(
+            tag_name="client:this-is-a-very-long-tag-name",
+            display_name="Long Tag",
+            namespace="client",
+            strategy=strategy,
+            created_by=admin_user.id,
+        )
+
+        assert result is None
+
+    def test_namespace_cardinality_guardrail(self, db, admin_user):
+        """Tags rejected when namespace hits cardinality limit."""
+        from ai_ready_rag.config import Settings
+        from ai_ready_rag.services.auto_tagging import AutoTagStrategy
+        from ai_ready_rag.services.document_service import DocumentService
+
+        strategies_dir = str(Path(__file__).parent.parent / "data" / "auto_tag_strategies")
+        settings = Settings(
+            auto_tagging_enabled=True,
+            auto_tagging_create_missing_tags=True,
+            auto_tagging_max_client_tags=2,
+            auto_tagging_strategies_dir=strategies_dir,
+        )
+        service = DocumentService(db, settings)
+        strategy = AutoTagStrategy.load(str(Path(strategies_dir) / "generic.yaml"))
+
+        # Create 2 client tags to hit the limit
+        for i in range(2):
+            t = Tag(
+                name=f"client:existing-{i}",
+                display_name=f"Existing {i}",
+                created_by=admin_user.id,
+            )
+            db.add(t)
+        db.flush()
+
+        result = service.ensure_tag_exists(
+            tag_name="client:over-limit",
+            display_name="Over Limit",
+            namespace="client",
+            strategy=strategy,
+            created_by=admin_user.id,
+        )
+
+        assert result is None
+
+    @patch("ai_ready_rag.api.documents.process_document_task")
+    def test_source_path_persisted_on_document(
+        self, mock_task, client, admin_headers, test_tag, tmp_path, monkeypatch, db
+    ):
+        """source_path is persisted on the Document record even without auto-tagging."""
+        test_file = tmp_path / "with_path.txt"
+        test_file.write_text("Content with source path")
+
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload",
+                files={"file": ("with_path.txt", f, "text/plain")},
+                data={
+                    "tag_ids": [test_tag.id],
+                    "source_path": "SomeFolder/with_path.txt",
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        data = response.json()
+        assert data["source_path"] == "SomeFolder/with_path.txt"
+
+        # Cleanup
+        doc_dir = upload_dir / data["id"]
+        if doc_dir.exists():
+            import shutil
+
+            shutil.rmtree(doc_dir)

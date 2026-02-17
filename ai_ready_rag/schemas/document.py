@@ -37,6 +37,11 @@ class DocumentResponse(BaseModel):
     page_count: int | None
     word_count: int | None
     processing_time_ms: int | None
+    auto_tag_status: str | None = None
+    auto_tag_strategy: str | None = None
+    auto_tag_version: str | None = None
+    auto_tag_source: str | None = None
+    source_path: str | None = None
     error_message: str | None
     tags: list[TagInfo]
     uploaded_by: str

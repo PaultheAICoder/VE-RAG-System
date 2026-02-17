@@ -1,0 +1,77 @@
+strategy:
+  id: "generic"
+  name: "Generic"
+  description: "Universal strategy — extracts client from top folder, basic doc classification"
+  version: "1.0"
+
+namespaces:
+  client:
+    display: "Client"
+    color: "#6366f1"
+  year:
+    display: "Year"
+    color: "#f59e0b"
+  doctype:
+    display: "Document Type"
+    color: "#10b981"
+
+path_rules:
+  - namespace: "client"
+    level: 0
+    pattern: "^(.+)$"
+    capture_group: 1
+    transform: "slugify"
+
+document_types:
+  contract:
+    display: "Contract"
+    keywords: ["contract", "agreement", "terms and conditions", "msa"]
+  report:
+    display: "Report"
+    keywords: ["report", "summary", "analysis", "findings"]
+  financial:
+    display: "Financial"
+    keywords: ["invoice", "budget", "p&l", "balance sheet", "financial"]
+  correspondence:
+    display: "Correspondence"
+    keywords: ["dear", "re:", "fwd:", "please find", "attached"]
+  proposal:
+    display: "Proposal"
+    keywords: ["proposal", "quote", "estimate", "bid"]
+  form:
+    display: "Form"
+    keywords: ["application", "form", "questionnaire", "survey"]
+  legal:
+    display: "Legal Document"
+    keywords: ["amendment", "addendum", "exhibit", "declaration", "resolution"]
+  reference:
+    display: "Reference Material"
+    keywords: ["manual", "guide", "handbook", "specification", "standard"]
+  photo:
+    display: "Photo/Image"
+    keywords: []
+  unknown:
+    display: "Unknown"
+    keywords: []
+
+entity_extraction: null
+topic_extraction: null
+
+llm_prompt: |
+  Classify this document. Return JSON only.
+
+  Document filename: {filename}
+  First 2000 characters of content:
+  {content_preview}
+
+  Return this exact JSON structure:
+  {{
+    "document_type": "<one of: {document_type_ids}>",
+    "year_start": "<YYYY or null>",
+    "year_end": "<YYYY or null>",
+    "confidence": <0.0 to 1.0>
+  }}
+
+email_patterns:
+  - pattern: "(?i)invoice|payment"
+    tags: [{namespace: "doctype", value: "financial"}]

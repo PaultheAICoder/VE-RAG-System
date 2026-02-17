@@ -106,17 +106,17 @@ def init_db():
     except Exception:
         pass  # Column already exists
 
-    # Tracked forms migrations (replaces ad-hoc ALTER TABLE ... except pass)
-    apply_forms_migrations(engine)
+    # Tracked migrations (replaces ad-hoc ALTER TABLE ... except pass)
+    apply_tracked_migrations(engine)
 
     logger.info("database_initialized", extra={"database_url": settings.database_url})
 
 
 # ---------------------------------------------------------------------------
-# Tracked migration system for ingestkit-forms columns
+# Tracked migration system for schema changes
 # ---------------------------------------------------------------------------
 
-_FORMS_MIGRATIONS = [
+_TRACKED_MIGRATIONS = [
     (
         "forms_v1_columns",
         [
@@ -131,11 +131,20 @@ _FORMS_MIGRATIONS = [
             "CREATE INDEX IF NOT EXISTS ix_documents_forms_ingest_key ON documents(forms_ingest_key)",
         ],
     ),
+    (
+        "auto_tag_v1_columns",
+        [
+            "ALTER TABLE documents ADD COLUMN auto_tag_status VARCHAR",
+            "ALTER TABLE documents ADD COLUMN auto_tag_strategy VARCHAR",
+            "ALTER TABLE documents ADD COLUMN auto_tag_version VARCHAR",
+            "ALTER TABLE documents ADD COLUMN auto_tag_source TEXT",
+        ],
+    ),
 ]
 
 
-def apply_forms_migrations(eng) -> None:
-    """Apply forms migrations that haven't been applied yet. Fail-fast on error."""
+def apply_tracked_migrations(eng) -> None:
+    """Apply tracked migrations that haven't been applied yet. Fail-fast on error."""
     with eng.connect() as conn:
         conn.execute(
             text(
@@ -145,7 +154,7 @@ def apply_forms_migrations(eng) -> None:
         )
         conn.commit()
 
-        for name, statements in _FORMS_MIGRATIONS:
+        for name, statements in _TRACKED_MIGRATIONS:
             row = conn.execute(
                 text("SELECT 1 FROM schema_migrations WHERE name = :name"),
                 {"name": name},
@@ -160,7 +169,7 @@ def apply_forms_migrations(eng) -> None:
                 {"name": name},
             )
             conn.commit()
-            logger.info("forms.migration.applied", extra={"migration": name})
+            logger.info("tracked.migration.applied", extra={"migration": name})
 
 
 def get_db() -> Generator[Session, None, None]:
