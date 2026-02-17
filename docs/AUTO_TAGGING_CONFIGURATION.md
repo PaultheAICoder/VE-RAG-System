@@ -343,9 +343,20 @@ python -m ai_ready_rag.cli.bulk_upload \
 
 When `AUTO_TAGGING_CREATE_MISSING_TAGS=true` (default), the system creates tags as needed. For example, uploading a new client folder "Cedar Ridge" auto-creates the `client:cedar-ridge` tag.
 
+**Important:** Auto-created tags are **metadata-only**. They appear on documents but do **not** grant any user access until an admin explicitly assigns them.
+
+### Per-user tag-based access
+
+Each user has a **"Enable tag-based access"** toggle in the Users admin view:
+
+- **Enabled** (default): User can only see documents with tags matching their assigned tags
+- **Disabled**: User can see all documents regardless of tags
+
+Admin users always see all documents.
+
 ### Assign auto-tags to users
 
-Users only see documents with tags assigned to their profile. After auto-tagging creates `client:` tags, assign them to the appropriate users:
+After auto-tagging creates `client:` tags, assign them to the appropriate users:
 
 ```bash
 # List all client tags
