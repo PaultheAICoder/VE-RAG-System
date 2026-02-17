@@ -808,6 +808,9 @@ class VectorService:
 
                 if query_sparse is not None:
                     # HYBRID PATH (Path A)
+                    logger.info(
+                        f"Hybrid search: dense+sparse prefetch with RRF fusion (limit={limit})"
+                    )
                     prefetch_limit = max(20, min(100, limit * self.prefetch_multiplier))
                     response = await self._qdrant.query_points(
                         collection_name=self.collection_name,
@@ -836,6 +839,9 @@ class VectorService:
                         points = [p for p in points if p.score >= score_threshold]
                 else:
                     # DEGRADED PATH (Path B): dense-only with named vector
+                    logger.info(
+                        "Degraded search: sparse unavailable, using dense-only with named vector"
+                    )
                     response = await self._qdrant.query_points(
                         collection_name=self.collection_name,
                         query=query_embedding,
@@ -848,6 +854,7 @@ class VectorService:
                     points = response.points
             else:
                 # DENSE-ONLY PATH (Path C): hybrid disabled or no sparse in collection
+                logger.info("Dense-only search: hybrid disabled or collection lacks sparse vectors")
                 query_kwargs: dict = {
                     "collection_name": self.collection_name,
                     "query": query_embedding,
