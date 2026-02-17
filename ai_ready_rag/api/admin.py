@@ -4108,6 +4108,7 @@ async def invalidate_curated_qa_cache(
 @router.get("/auto-tagging/strategies", response_model=StrategyListResponse)
 async def list_strategies(
     current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
 ):
     """List all available auto-tagging strategies.
 
@@ -4138,10 +4139,12 @@ async def list_strategies(
             except (ValueError, FileNotFoundError):
                 logger.warning("Skipping invalid strategy file: %s", filepath.name)
 
-    settings = get_settings()
+    active_id = SettingsService(db).get_with_env_fallback(
+        "auto_tagging_strategy", "AUTO_TAGGING_STRATEGY", "generic"
+    )
     return StrategyListResponse(
         strategies=items,
-        active_strategy_id=settings.auto_tagging_strategy,
+        active_strategy_id=active_id,
     )
 
 
@@ -4387,12 +4390,14 @@ async def delete_strategy(
 @router.get("/auto-tagging/active", response_model=ActiveStrategyResponse)
 async def get_active_strategy(
     current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
 ):
     """Get info about the currently active auto-tagging strategy."""
     from ai_ready_rag.services.auto_tagging.strategy import AutoTagStrategy
 
-    settings = get_settings()
-    strategy_id = settings.auto_tagging_strategy
+    strategy_id = SettingsService(db).get_with_env_fallback(
+        "auto_tagging_strategy", "AUTO_TAGGING_STRATEGY", "generic"
+    )
     strategies_dir = _get_strategies_dir()
     filepath = strategies_dir / f"{strategy_id}.yaml"
 
@@ -4449,11 +4454,12 @@ async def switch_active_strategy(
         ) from e
 
     # Get old active strategy for audit
-    settings = get_settings()
-    old_strategy_id = settings.auto_tagging_strategy
+    settings_service = SettingsService(db)
+    old_strategy_id = settings_service.get_with_env_fallback(
+        "auto_tagging_strategy", "AUTO_TAGGING_STRATEGY", "generic"
+    )
 
     # Update setting with audit trail
-    settings_service = SettingsService(db)
     settings_service.set_with_audit(
         "auto_tagging_strategy",
         request.strategy_id,
