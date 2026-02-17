@@ -23,6 +23,8 @@ Thumbs.db
 # Temp files
 *.tmp
 *.bak
+*.pptx
+~$*
 
 # Claude Code (session-specific, auto-generated)
 .agents/
