@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from ai_ready_rag.core.dependencies import get_current_user, require_admin
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import Tag, User
-from ai_ready_rag.schemas.tag import TagCreate, TagResponse, TagUpdate
+from ai_ready_rag.schemas.tag import TagCreate, TagFacetItem, TagResponse, TagUpdate
 
 router = APIRouter()
 
@@ -38,6 +38,20 @@ async def create_tag(
     db.commit()
     db.refresh(tag)
     return tag
+
+
+@router.get("/facets", response_model=dict[str, list[TagFacetItem]])
+async def get_tag_facets(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get tag facets grouped by namespace with document counts."""
+    from ai_ready_rag.config import get_settings
+    from ai_ready_rag.services.document_service import DocumentService
+
+    settings = get_settings()
+    service = DocumentService(db, settings)
+    return service.get_tag_facets()
 
 
 @router.get("/{tag_id}", response_model=TagResponse)
