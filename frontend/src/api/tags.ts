@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import type { Tag } from '../types';
+import type { Tag, TagFacetItem } from '../types';
 
 export interface TagCreate {
   name: string;
@@ -49,4 +49,11 @@ export async function updateTag(id: string, data: TagUpdate): Promise<Tag> {
  */
 export async function deleteTag(id: string): Promise<{ message: string }> {
   return apiClient.delete<{ message: string }>(`/api/tags/${id}`);
+}
+
+/**
+ * Get tag facets grouped by namespace.
+ */
+export async function getTagFacets(): Promise<Record<string, TagFacetItem[]>> {
+  return apiClient.get<Record<string, TagFacetItem[]>>('/api/tags/facets');
 }

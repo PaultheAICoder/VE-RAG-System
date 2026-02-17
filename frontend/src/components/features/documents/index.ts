@@ -12,3 +12,4 @@ export { TagEditModal } from './TagEditModal';
 export { ConfirmModal } from './ConfirmModal';
 export { SuggestionBadge } from './SuggestionBadge';
 export { TagSuggestionsModal } from './TagSuggestionsModal';
+export { NamespaceFilters } from './NamespaceFilters';

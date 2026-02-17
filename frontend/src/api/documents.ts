@@ -32,6 +32,8 @@ export async function listDocuments(
   if (params.search) searchParams.set('search', params.search);
   if (params.sort_by) searchParams.set('sort_by', params.sort_by);
   if (params.sort_order) searchParams.set('sort_order', params.sort_order);
+  if (params.tag_namespace) searchParams.set('tag_namespace', params.tag_namespace);
+  if (params.tag_value) searchParams.set('tag_value', params.tag_value);
 
   const response = await fetch(`/api/documents?${searchParams}`, {
     headers: getAuthHeaders(),
