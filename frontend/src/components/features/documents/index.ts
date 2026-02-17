@@ -10,3 +10,5 @@ export { UploadResultsModal } from './UploadResultsModal';
 export { UploadErrorMessage, getErrorMessage } from './UploadErrorMessage';
 export { TagEditModal } from './TagEditModal';
 export { ConfirmModal } from './ConfirmModal';
+export { SuggestionBadge } from './SuggestionBadge';
+export { TagSuggestionsModal } from './TagSuggestionsModal';

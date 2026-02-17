@@ -133,3 +133,26 @@ class BulkReprocessResponse(BaseModel):
     queued: int
     skipped: int
     skipped_ids: list[str]
+
+
+class BatchFileResult(BaseModel):
+    """Result for a single file in a batch upload."""
+
+    filename: str
+    source_path: str | None = None
+    status: str  # "uploaded" | "duplicate" | "failed"
+    error_code: str | None = None
+    error_message: str | None = None
+    document_id: str | None = None
+    auto_tags: list[str] = []
+
+
+class BatchUploadResponse(BaseModel):
+    """Response for batch upload operation."""
+
+    total: int
+    uploaded: int
+    duplicates: int
+    failed: int
+    auto_tags_applied: int
+    results: list[BatchFileResult]

@@ -8,6 +8,7 @@ import {
   UploadModal,
   TagEditModal,
   ConfirmModal,
+  TagSuggestionsModal,
 } from '../components/features/documents';
 import {
   listDocuments,
@@ -15,6 +16,7 @@ import {
   updateDocumentTags,
   bulkReprocessDocuments,
 } from '../api/documents';
+import { listTagSuggestions } from '../api/suggestions';
 import { listTags } from '../api/tags';
 import { useAuthStore } from '../stores/authStore';
 import { useDocumentsStore } from '../stores/documentsStore';
@@ -58,6 +60,9 @@ export function DocumentsView() {
   const [showUpload, setShowUpload] = useState(false);
   const [showTagEdit, setShowTagEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedDocForSuggestions, setSelectedDocForSuggestions] = useState<Document | null>(null);
+  const [suggestionCounts, setSuggestionCounts] = useState<Map<string, number>>(new Map());
   const [actionLoading, setActionLoading] = useState(false);
 
   // Fetch tags on mount
@@ -106,6 +111,29 @@ export function DocumentsView() {
     }
   }, [page, search, selectedTagId, status, sortBy, sortOrder]);
 
+  // Fetch suggestion counts for visible documents (admin only)
+  const fetchSuggestionCounts = useCallback(async (docs: Document[]) => {
+    if (!isAdmin || docs.length === 0) {
+      setSuggestionCounts(new Map());
+      return;
+    }
+    try {
+      const results = await Promise.all(
+        docs.map(async (doc) => {
+          try {
+            const data = await listTagSuggestions(doc.id, 'pending');
+            return [doc.id, data.total] as [string, number];
+          } catch {
+            return [doc.id, 0] as [string, number];
+          }
+        })
+      );
+      setSuggestionCounts(new Map(results));
+    } catch {
+      setSuggestionCounts(new Map());
+    }
+  }, [isAdmin]);
+
   // Fetch documents when dependencies change
   useEffect(() => {
     fetchDocuments();
@@ -117,6 +145,13 @@ export function DocumentsView() {
       clampPage(total);
     }
   }, [total, clampPage]);
+
+  // Fetch suggestion counts when documents change
+  useEffect(() => {
+    if (documents.length > 0) {
+      fetchSuggestionCounts(documents);
+    }
+  }, [documents, fetchSuggestionCounts]);
 
   // Clear selection only when the set of document IDs changes (not just status updates)
   const documentIds = documents.map((d) => d.id).join(',');
@@ -179,6 +214,17 @@ export function DocumentsView() {
   // Handle tag click in table
   const handleTagClick = (tag: Tag) => {
     setTagFilter(tag.id);
+  };
+
+  // Handle suggestion badge click
+  const handleSuggestionClick = (doc: Document) => {
+    setSelectedDocForSuggestions(doc);
+    setShowSuggestions(true);
+  };
+
+  // Handle suggestion action complete (refresh documents and counts)
+  const handleSuggestionActionComplete = () => {
+    fetchDocuments();
   };
 
   // Handle bulk delete
@@ -294,6 +340,8 @@ export function DocumentsView() {
         onSort={handleSort}
         onTagClick={handleTagClick}
         loading={loading}
+        suggestionCounts={isAdmin ? suggestionCounts : undefined}
+        onSuggestionClick={isAdmin ? handleSuggestionClick : undefined}
       />
 
       {/* Pagination */}
@@ -334,6 +382,18 @@ export function DocumentsView() {
         confirmLabel="Delete"
         isLoading={actionLoading}
         variant="danger"
+      />
+
+      {/* Tag Suggestions Modal */}
+      <TagSuggestionsModal
+        isOpen={showSuggestions}
+        onClose={() => {
+          setShowSuggestions(false);
+          setSelectedDocForSuggestions(null);
+        }}
+        documentId={selectedDocForSuggestions?.id ?? null}
+        documentName={selectedDocForSuggestions?.original_filename ?? ''}
+        onActionComplete={handleSuggestionActionComplete}
       />
     </div>
   );

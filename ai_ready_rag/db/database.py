@@ -146,6 +146,33 @@ _TRACKED_MIGRATIONS = [
             "ALTER TABLE users ADD COLUMN tag_access_enabled BOOLEAN DEFAULT 1 NOT NULL",
         ],
     ),
+    (
+        "tag_suggestions_v1",
+        [
+            """CREATE TABLE IF NOT EXISTS tag_suggestions (
+                id VARCHAR PRIMARY KEY,
+                document_id VARCHAR NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                tag_name VARCHAR NOT NULL,
+                display_name VARCHAR NOT NULL,
+                namespace VARCHAR NOT NULL,
+                source VARCHAR NOT NULL,
+                confidence REAL DEFAULT 1.0,
+                strategy_id VARCHAR NOT NULL,
+                status VARCHAR DEFAULT 'pending',
+                reviewed_by VARCHAR,
+                reviewed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_tag_suggestions_document_id ON tag_suggestions(document_id)",
+            "CREATE INDEX IF NOT EXISTS ix_tag_suggestions_status ON tag_suggestions(status)",
+        ],
+    ),
+    (
+        "batch_upload_v1_columns",
+        [
+            "ALTER TABLE documents ADD COLUMN source_path VARCHAR",
+        ],
+    ),
 ]
 
 

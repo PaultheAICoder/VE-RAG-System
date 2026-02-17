@@ -20,6 +20,7 @@ from ai_ready_rag.api import (
     health,
     jobs,
     setup,
+    suggestions,
     tags,
     users,
 )
@@ -338,6 +339,7 @@ app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(tags.router, prefix="/api/tags", tags=["Tags"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
+app.include_router(suggestions.router, prefix="/api/documents", tags=["Tag Suggestions"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["Jobs"])
 app.include_router(experimental.router, prefix="/api", tags=["Experimental"])

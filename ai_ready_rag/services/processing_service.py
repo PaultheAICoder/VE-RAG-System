@@ -507,6 +507,23 @@ class ProcessingService:
                 discarded_names.append(f"{conflict['namespace']}:{conflict['llm_value']}")
         suggested_names = [at.tag_name for at in result.suggested]
 
+        # Persist suggestions as TagSuggestion rows for approval workflow
+        if result.suggested:
+            from ai_ready_rag.db.models.suggestion import TagSuggestion
+
+            for at in result.suggested:
+                suggestion = TagSuggestion(
+                    document_id=document.id,
+                    tag_name=at.tag_name,
+                    display_name=at.display_name,
+                    namespace=at.namespace,
+                    source=at.source,
+                    confidence=at.confidence,
+                    strategy_id=strategy.id,
+                    status="pending",
+                )
+                db.add(suggestion)
+
         provenance = build_provenance(
             strategy_id=strategy.id,
             strategy_version=strategy.version,
