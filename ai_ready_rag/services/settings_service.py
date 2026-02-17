@@ -18,6 +18,11 @@ RAG_SETTINGS_DEFAULTS = {
     "llm_temperature": 0.1,
     "llm_max_response_tokens": 2048,
     "llm_confidence_threshold": 40,
+    # Hybrid search settings
+    "retrieval_hybrid_enabled": False,
+    "retrieval_prefetch_multiplier": 3,
+    "retrieval_min_score_dense": 0.3,
+    "retrieval_min_score_hybrid": 0.05,
 }
 
 # Default values for security settings

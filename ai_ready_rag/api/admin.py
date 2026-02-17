@@ -1186,6 +1186,10 @@ RETRIEVAL_DEFAULTS = {
     "retrieval_top_k": 5,  # Number of chunks to retrieve
     "retrieval_min_score": 0.3,  # Minimum similarity score (0.0-1.0)
     "retrieval_enable_expansion": True,  # Enable query expansion
+    "retrieval_hybrid_enabled": False,
+    "retrieval_prefetch_multiplier": 3,
+    "retrieval_min_score_dense": 0.3,
+    "retrieval_min_score_hybrid": 0.05,
 }
 
 LLM_DEFAULTS = {
@@ -1222,6 +1226,26 @@ async def get_retrieval_settings(
             "retrieval_enable_expansion",
             "RAG_ENABLE_EXPANSION",
             RETRIEVAL_DEFAULTS["retrieval_enable_expansion"],
+        ),
+        retrieval_hybrid_enabled=service.get_with_env_fallback(
+            "retrieval_hybrid_enabled",
+            "HYBRID_SEARCH_ENABLED",
+            RETRIEVAL_DEFAULTS["retrieval_hybrid_enabled"],
+        ),
+        retrieval_prefetch_multiplier=service.get_with_env_fallback(
+            "retrieval_prefetch_multiplier",
+            "HYBRID_SEARCH_PREFETCH_MULTIPLIER",
+            RETRIEVAL_DEFAULTS["retrieval_prefetch_multiplier"],
+        ),
+        retrieval_min_score_dense=service.get_with_env_fallback(
+            "retrieval_min_score_dense",
+            "RETRIEVAL_MIN_SCORE_DENSE",
+            RETRIEVAL_DEFAULTS["retrieval_min_score_dense"],
+        ),
+        retrieval_min_score_hybrid=service.get_with_env_fallback(
+            "retrieval_min_score_hybrid",
+            "RETRIEVAL_MIN_SCORE_HYBRID",
+            RETRIEVAL_DEFAULTS["retrieval_min_score_hybrid"],
         ),
     )
 
@@ -1275,6 +1299,53 @@ async def update_retrieval_settings(
             reason="Updated via admin settings",
         )
 
+    if request.retrieval_hybrid_enabled is not None:
+        service.set_with_audit(
+            "retrieval_hybrid_enabled",
+            request.retrieval_hybrid_enabled,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    if request.retrieval_prefetch_multiplier is not None:
+        if not (1 <= request.retrieval_prefetch_multiplier <= 10):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="retrieval_prefetch_multiplier must be between 1 and 10",
+            )
+        service.set_with_audit(
+            "retrieval_prefetch_multiplier",
+            request.retrieval_prefetch_multiplier,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    if request.retrieval_min_score_dense is not None:
+        if not (0.05 <= request.retrieval_min_score_dense <= 0.95):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="retrieval_min_score_dense must be between 0.05 and 0.95",
+            )
+        service.set_with_audit(
+            "retrieval_min_score_dense",
+            request.retrieval_min_score_dense,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
+    if request.retrieval_min_score_hybrid is not None:
+        if not (0.01 <= request.retrieval_min_score_hybrid <= 0.5):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="retrieval_min_score_hybrid must be between 0.01 and 0.5",
+            )
+        service.set_with_audit(
+            "retrieval_min_score_hybrid",
+            request.retrieval_min_score_hybrid,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
     logger.info(
         f"Admin {current_user.email} updated retrieval settings: "
         f"{request.model_dump(exclude_none=True)}"
@@ -1297,7 +1368,46 @@ async def update_retrieval_settings(
             "RAG_ENABLE_EXPANSION",
             RETRIEVAL_DEFAULTS["retrieval_enable_expansion"],
         ),
+        retrieval_hybrid_enabled=service.get_with_env_fallback(
+            "retrieval_hybrid_enabled",
+            "HYBRID_SEARCH_ENABLED",
+            RETRIEVAL_DEFAULTS["retrieval_hybrid_enabled"],
+        ),
+        retrieval_prefetch_multiplier=service.get_with_env_fallback(
+            "retrieval_prefetch_multiplier",
+            "HYBRID_SEARCH_PREFETCH_MULTIPLIER",
+            RETRIEVAL_DEFAULTS["retrieval_prefetch_multiplier"],
+        ),
+        retrieval_min_score_dense=service.get_with_env_fallback(
+            "retrieval_min_score_dense",
+            "RETRIEVAL_MIN_SCORE_DENSE",
+            RETRIEVAL_DEFAULTS["retrieval_min_score_dense"],
+        ),
+        retrieval_min_score_hybrid=service.get_with_env_fallback(
+            "retrieval_min_score_hybrid",
+            "RETRIEVAL_MIN_SCORE_HYBRID",
+            RETRIEVAL_DEFAULTS["retrieval_min_score_hybrid"],
+        ),
     )
+
+
+@router.post("/refresh-capabilities")
+async def refresh_capabilities(
+    request: Request,
+    current_user: User = Depends(require_system_admin),
+):
+    """Re-detect vector collection capabilities (e.g., after migration).
+
+    Admin only. Triggers capability re-scan on the singleton vector service.
+    """
+    vector_service = request.app.state.vector_service
+    if vector_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Vector service not initialized",
+        )
+    result = await vector_service.refresh_capabilities()
+    return result
 
 
 @router.get("/settings/llm", response_model=LLMSettingsResponse)

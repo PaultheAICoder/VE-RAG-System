@@ -134,6 +134,40 @@ def _build_auto_tagging_status(app_settings, db: Session) -> dict:
     return result
 
 
+def _build_hybrid_search_status(request: Request) -> dict:
+    """Build the hybrid_search section of the health response."""
+    from ai_ready_rag.services.settings_service import get_rag_setting
+
+    enabled = bool(get_rag_setting("retrieval_hybrid_enabled", False))
+
+    vector_service = getattr(request.app.state, "vector_service", None)
+    if vector_service is None:
+        return {
+            "enabled": enabled,
+            "collection_has_sparse": False,
+            "capabilities_checked_at": None,
+            "sparse_model": None,
+            "active_mode": "dense_only",
+            "active_threshold": float(get_rag_setting("retrieval_min_score_dense", 0.3)),
+        }
+
+    collection_has_sparse = getattr(vector_service, "_collection_has_sparse", False)
+    checked_at = getattr(vector_service, "_capabilities_checked_at", None)
+    sparse_available = getattr(vector_service, "_sparse_available", False)
+
+    active_mode = "hybrid" if (enabled and collection_has_sparse) else "dense_only"
+    active_threshold = vector_service.min_similarity_score
+
+    return {
+        "enabled": enabled,
+        "collection_has_sparse": collection_has_sparse,
+        "capabilities_checked_at": checked_at.isoformat() if checked_at else None,
+        "sparse_model": "Qdrant/bm25" if sparse_available else None,
+        "active_mode": active_mode,
+        "active_threshold": active_threshold,
+    }
+
+
 @router.get("/health")
 async def health_check(request: Request, db: Session = Depends(get_db)):
     """Health check endpoint."""
@@ -185,6 +219,7 @@ async def health_check(request: Request, db: Session = Depends(get_db)):
         "evaluation": eval_status,
         "forms": forms_status,
         "auto_tagging": _build_auto_tagging_status(settings, db),
+        "hybrid_search": _build_hybrid_search_status(request),
     }
 
 

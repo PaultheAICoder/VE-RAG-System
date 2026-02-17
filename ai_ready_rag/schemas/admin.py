@@ -315,6 +315,10 @@ class RetrievalSettingsRequest(BaseModel):
     retrieval_top_k: int | None = None
     retrieval_min_score: float | None = None
     retrieval_enable_expansion: bool | None = None
+    retrieval_hybrid_enabled: bool | None = None
+    retrieval_prefetch_multiplier: int | None = None
+    retrieval_min_score_dense: float | None = None
+    retrieval_min_score_hybrid: float | None = None
 
 
 class RetrievalSettingsResponse(BaseModel):
@@ -323,6 +327,10 @@ class RetrievalSettingsResponse(BaseModel):
     retrieval_top_k: int
     retrieval_min_score: float
     retrieval_enable_expansion: bool
+    retrieval_hybrid_enabled: bool
+    retrieval_prefetch_multiplier: int
+    retrieval_min_score_dense: float
+    retrieval_min_score_hybrid: float
 
 
 class LLMSettingsRequest(BaseModel):

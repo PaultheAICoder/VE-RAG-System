@@ -145,6 +145,38 @@ class VectorService:
         self._sparse_available: bool = FASTEMBED_AVAILABLE
         self._sparse_lock = threading.Lock()
 
+        # Hybrid search capability detection
+        self._collection_has_sparse: bool = False
+        self._capabilities_checked_at: datetime | None = None
+
+    async def _detect_collection_capabilities(self) -> None:
+        """Check collection for sparse vector support (named vector 'sparse')."""
+        try:
+            info = await self._qdrant.get_collection(self.collection_name)
+            sparse_vectors = getattr(info.config.params, "sparse_vectors", None)
+            self._collection_has_sparse = sparse_vectors is not None and "sparse" in sparse_vectors
+            self._capabilities_checked_at = datetime.now(UTC)
+            logger.info(f"Collection capabilities detected: sparse={self._collection_has_sparse}")
+        except Exception as e:
+            logger.warning(f"Failed to detect collection capabilities: {e}")
+            self._collection_has_sparse = False
+
+    @property
+    def hybrid_enabled(self) -> bool:
+        """Whether hybrid search is enabled via admin settings."""
+        from ai_ready_rag.services.settings_service import get_rag_setting
+
+        return bool(get_rag_setting("retrieval_hybrid_enabled", False))
+
+    @property
+    def min_similarity_score(self) -> float:
+        """Get the appropriate score threshold based on active search mode."""
+        from ai_ready_rag.services.settings_service import get_rag_setting
+
+        if self.hybrid_enabled and self._collection_has_sparse:
+            return float(get_rag_setting("retrieval_min_score_hybrid", 0.05))
+        return float(get_rag_setting("retrieval_min_score_dense", 0.3))
+
     def _get_sparse_model(self) -> SparseTextEmbedding | None:
         """Thread-safe lazy-load of sparse embedding model.
 
@@ -250,6 +282,19 @@ class VectorService:
             logger.info(f"Collection {self.collection_name} created with indexes")
         else:
             logger.debug(f"Collection {self.collection_name} already exists")
+
+        # Detect collection capabilities (sparse vector support)
+        await self._detect_collection_capabilities()
+
+    async def refresh_capabilities(self) -> dict:
+        """Re-detect collection capabilities. Called on config change or migration."""
+        await self._detect_collection_capabilities()
+        return {
+            "collection_has_sparse": self._collection_has_sparse,
+            "capabilities_checked_at": (
+                self._capabilities_checked_at.isoformat() if self._capabilities_checked_at else None
+            ),
+        }
 
     async def health_check(self) -> HealthStatus:
         """Check connectivity to Qdrant and Ollama.
