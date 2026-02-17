@@ -370,6 +370,9 @@ async def list_documents(
     status: str | None = Query(None, description="Filter by status"),
     tag_id: str | None = Query(None, description="Filter by tag ID"),
     search: str | None = Query(None, description="Search in filename/title"),
+    tag_namespace: str | None = Query(None, description="Filter by tag namespace"),
+    tag_value: str | None = Query(None, description="Filter by tag value (use with tag_namespace)"),
+    tag_prefix: str | None = Query(None, description="Filter by tag name prefix (e.g., 'client:')"),
     sort_by: str = Query("uploaded_at", description="Sort field"),
     sort_order: str = Query("desc", description="Sort order: asc or desc"),
     current_user: User = Depends(get_current_user),
@@ -398,6 +401,9 @@ async def list_documents(
         search=search,
         sort_by=sort_by,
         sort_order=sort_order,
+        tag_namespace=tag_namespace,
+        tag_value=tag_value,
+        tag_prefix=tag_prefix,
     )
 
     return DocumentListResponse(

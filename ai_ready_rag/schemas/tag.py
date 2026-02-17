@@ -18,6 +18,14 @@ class TagUpdate(BaseModel):
     owner_id: str | None = None
 
 
+class TagFacetItem(BaseModel):
+    """A single tag within a facet namespace."""
+
+    name: str
+    display: str
+    count: int
+
+
 class TagResponse(BaseModel):
     id: str
     name: str

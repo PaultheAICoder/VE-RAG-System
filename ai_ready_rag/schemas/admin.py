@@ -813,3 +813,69 @@ class CuratedQAListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+# --- Auto-Tagging Strategy Schemas ---
+
+
+class StrategyListItem(BaseModel):
+    """Summary info for one strategy."""
+
+    id: str
+    name: str
+    description: str
+    version: str
+    is_builtin: bool
+    namespace_count: int
+    document_type_count: int
+    path_rule_count: int
+
+
+class StrategyListResponse(BaseModel):
+    """Response for listing all strategies."""
+
+    strategies: list[StrategyListItem]
+    active_strategy_id: str
+
+
+class StrategyDetailResponse(BaseModel):
+    """Full detail for a single strategy."""
+
+    id: str
+    name: str
+    description: str
+    version: str
+    is_builtin: bool
+    namespaces: dict
+    document_types: dict
+    path_rules: list[dict]
+    entity_extraction: dict | None
+    topic_extraction: dict | None
+    llm_prompt: str
+    email_patterns: list[dict]
+
+
+class StrategyCreateRequest(BaseModel):
+    """Request to create a new strategy from raw YAML."""
+
+    yaml_content: str
+
+
+class StrategyUpdateRequest(BaseModel):
+    """Request to update an existing strategy."""
+
+    yaml_content: str
+
+
+class ActiveStrategyResponse(BaseModel):
+    """Response for active strategy info."""
+
+    strategy_id: str
+    strategy_name: str
+    strategy_version: str
+
+
+class SwitchActiveStrategyRequest(BaseModel):
+    """Request to switch the active strategy."""
+
+    strategy_id: str

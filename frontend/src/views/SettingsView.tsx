@@ -9,6 +9,7 @@ import {
   CacheTopQueriesCard,
   CacheWarmingCard,
   ClearCacheModal,
+  AutoTagStrategyCard,
 } from '../components/features/admin';
 import {
   getProcessingOptions,
@@ -700,6 +701,9 @@ export function SettingsView() {
           )}
         </div>
       </Card>
+
+      {/* Auto-Tagging Strategy Section */}
+      <AutoTagStrategyCard />
 
       {/* Cache Settings Section */}
       {formCacheSettings && (

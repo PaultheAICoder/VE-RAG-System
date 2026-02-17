@@ -667,6 +667,9 @@ class DocumentService:
         search: str | None = None,
         sort_by: str = "uploaded_at",
         sort_order: str = "desc",
+        tag_namespace: str | None = None,
+        tag_value: str | None = None,
+        tag_prefix: str | None = None,
     ) -> tuple[list[Document], int]:
         """List documents with filtering.
 
@@ -701,6 +704,13 @@ class DocumentService:
         if tag_id:
             query = query.join(Document.tags).filter(Tag.id == tag_id)
 
+        # Namespace filtering (uses subquery to avoid double-join with access control)
+        if tag_namespace and tag_value:
+            full_tag_name = f"{tag_namespace}:{tag_value}"
+            query = query.filter(Document.tags.any(Tag.name == full_tag_name))
+        elif tag_prefix:
+            query = query.filter(Document.tags.any(Tag.name.like(f"{tag_prefix}%")))
+
         # Search filter
         if search:
             search_term = f"%{search.lower()}%"
@@ -725,6 +735,36 @@ class DocumentService:
         documents = query.offset(offset).limit(limit).all()
 
         return documents, total
+
+    def get_tag_facets(self) -> dict[str, list[dict]]:
+        """Get tag facets grouped by namespace with document counts."""
+        from sqlalchemy import func
+
+        from ai_ready_rag.db.models.base import document_tags
+
+        results = (
+            self.db.query(Tag.name, Tag.display_name, func.count(document_tags.c.document_id))
+            .join(document_tags, Tag.id == document_tags.c.tag_id)
+            .group_by(Tag.id)
+            .all()
+        )
+
+        facets: dict[str, list[dict]] = {}
+        for tag_name, display_name, count in results:
+            namespace = tag_name.split(":", 1)[0] if ":" in tag_name else "other"
+
+            if namespace not in facets:
+                facets[namespace] = []
+
+            facets[namespace].append(
+                {
+                    "name": tag_name,
+                    "display": display_name,
+                    "count": count,
+                }
+            )
+
+        return facets
 
     async def delete_document(self, document_id: str) -> bool:
         """Delete document, file, and vectors.
