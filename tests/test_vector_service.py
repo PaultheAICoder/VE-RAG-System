@@ -1065,3 +1065,243 @@ class TestSparseEmbedding:
                     model_name="Qdrant/bm25",
                     cache_dir="/tmp/test_cache",
                 )
+
+
+class TestHybridIndexing:
+    """Tests for hybrid search indexing (Issue #284)."""
+
+    def _make_service(self, hybrid=True, has_sparse=True):
+        """Create VectorService with mocked internals."""
+        vs = VectorService()
+        type(vs).hybrid_enabled = unittest.mock.PropertyMock(return_value=hybrid)
+        vs._collection_has_sparse = has_sparse
+        vs._detect_collection_capabilities = unittest.mock.AsyncMock()
+        return vs
+
+    def test_index_result_includes_sparse_indexed(self):
+        """IndexResult accepts sparse_indexed field, defaults to True."""
+        result = IndexResult(
+            document_id="doc-1",
+            chunks_indexed=3,
+            replaced_existing=False,
+            embedding_time_ms=10.0,
+            indexing_time_ms=5.0,
+        )
+        assert result.sparse_indexed is True
+
+        result2 = IndexResult(
+            document_id="doc-2",
+            chunks_indexed=1,
+            replaced_existing=False,
+            embedding_time_ms=10.0,
+            indexing_time_ms=5.0,
+            sparse_indexed=False,
+        )
+        assert result2.sparse_indexed is False
+
+    @pytest.mark.asyncio
+    async def test_initialize_creates_named_vectors_when_hybrid_enabled(self):
+        """create_collection called with named vectors when hybrid enabled."""
+        vs = self._make_service(hybrid=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        # No existing collections
+        vs._qdrant.get_collections.return_value = unittest.mock.MagicMock(collections=[])
+
+        await vs.initialize()
+
+        call_kwargs = vs._qdrant.create_collection.call_args
+        vectors_config = call_kwargs.kwargs.get("vectors_config") or call_kwargs[1].get(
+            "vectors_config"
+        )
+        sparse_config = call_kwargs.kwargs.get("sparse_vectors_config") or call_kwargs[1].get(
+            "sparse_vectors_config"
+        )
+        # vectors_config should be a dict with "dense" key
+        assert isinstance(vectors_config, dict)
+        assert "dense" in vectors_config
+        # sparse_vectors_config should have "sparse" key
+        assert isinstance(sparse_config, dict)
+        assert "sparse" in sparse_config
+
+    @pytest.mark.asyncio
+    async def test_initialize_creates_unnamed_vector_when_hybrid_disabled(self):
+        """create_collection called with VectorParams (not dict) when hybrid disabled."""
+        vs = self._make_service(hybrid=False)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs._qdrant.get_collections.return_value = unittest.mock.MagicMock(collections=[])
+
+        await vs.initialize()
+
+        call_kwargs = vs._qdrant.create_collection.call_args
+        vectors_config = call_kwargs.kwargs.get("vectors_config") or call_kwargs[1].get(
+            "vectors_config"
+        )
+        # Should be VectorParams, not a dict
+        assert isinstance(vectors_config, models.VectorParams)
+
+    @pytest.mark.asyncio
+    async def test_initialize_creates_sparse_indexed_payload_index(self):
+        """create_payload_index called for sparse_indexed with BOOL type."""
+        vs = self._make_service(hybrid=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs._qdrant.get_collections.return_value = unittest.mock.MagicMock(collections=[])
+
+        await vs.initialize()
+
+        # Check all create_payload_index calls for sparse_indexed
+        calls = vs._qdrant.create_payload_index.call_args_list
+        sparse_indexed_calls = [
+            c
+            for c in calls
+            if (c.kwargs.get("field_name") or (c.args[1] if len(c.args) > 1 else None))
+            == "sparse_indexed"
+        ]
+        assert len(sparse_indexed_calls) == 1
+        call = sparse_indexed_calls[0]
+        schema = call.kwargs.get("field_schema")
+        assert schema == models.PayloadSchemaType.BOOL
+
+    @pytest.mark.asyncio
+    async def test_initialize_calls_detect_capabilities(self):
+        """_detect_collection_capabilities() called after collection create and in else branch."""
+        # Test: new collection
+        vs = self._make_service(hybrid=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs._qdrant.get_collections.return_value = unittest.mock.MagicMock(collections=[])
+        await vs.initialize()
+        vs._detect_collection_capabilities.assert_called_once()
+
+        # Test: existing collection
+        vs2 = self._make_service(hybrid=True)
+        vs2._qdrant = unittest.mock.AsyncMock()
+        existing = unittest.mock.MagicMock()
+        existing.name = "documents"
+        vs2._qdrant.get_collections.return_value = unittest.mock.MagicMock(collections=[existing])
+        await vs2.initialize()
+        vs2._detect_collection_capabilities.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_add_document_dual_vectors_when_hybrid(self):
+        """PointStruct has vector={'dense': ..., 'sparse': ...} and sparse_indexed=True."""
+        vs = self._make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs._qdrant.count.return_value = unittest.mock.MagicMock(count=0)
+
+        fake_embedding = [0.1] * 768
+        vs.embed_batch = unittest.mock.AsyncMock(return_value=[fake_embedding])
+        fake_sparse = models.SparseVector(indices=[0, 1], values=[0.5, 0.3])
+        vs.sparse_embed_batch = unittest.mock.MagicMock(return_value=[fake_sparse])
+
+        result = await vs.add_document(
+            document_id="doc-hybrid",
+            document_name="test.pdf",
+            chunks=["chunk text"],
+            tags=["public"],
+            uploaded_by="user-1",
+        )
+
+        # Check the upsert call
+        upsert_call = vs._qdrant.upsert.call_args
+        points = upsert_call.kwargs.get("points") or upsert_call[1].get("points")
+        assert len(points) == 1
+        point = points[0]
+        assert isinstance(point.vector, dict)
+        assert "dense" in point.vector
+        assert "sparse" in point.vector
+        assert point.payload["sparse_indexed"] is True
+        assert result.sparse_indexed is True
+
+    @pytest.mark.asyncio
+    async def test_add_document_dense_only_when_sparse_fails(self):
+        """On sparse_embed_batch exception: dense-only, sparse_indexed=False."""
+        vs = self._make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs._qdrant.count.return_value = unittest.mock.MagicMock(count=0)
+
+        fake_embedding = [0.1] * 768
+        vs.embed_batch = unittest.mock.AsyncMock(return_value=[fake_embedding])
+        vs.sparse_embed_batch = unittest.mock.MagicMock(
+            side_effect=RuntimeError("Sparse model failed")
+        )
+
+        result = await vs.add_document(
+            document_id="doc-degraded",
+            document_name="test.pdf",
+            chunks=["chunk text"],
+            tags=["public"],
+            uploaded_by="user-1",
+        )
+
+        upsert_call = vs._qdrant.upsert.call_args
+        points = upsert_call.kwargs.get("points") or upsert_call[1].get("points")
+        point = points[0]
+        # Should still use named vector dict (collection has sparse support)
+        assert isinstance(point.vector, dict)
+        assert "dense" in point.vector
+        assert "sparse" not in point.vector
+        assert point.payload["sparse_indexed"] is False
+        assert result.sparse_indexed is False
+
+    @pytest.mark.asyncio
+    async def test_add_document_unnamed_vector_legacy_collection(self):
+        """When _collection_has_sparse=False: vector=embedding (list, not dict)."""
+        vs = self._make_service(hybrid=False, has_sparse=False)
+        vs._qdrant = unittest.mock.AsyncMock()
+        vs._qdrant.count.return_value = unittest.mock.MagicMock(count=0)
+
+        fake_embedding = [0.1] * 768
+        vs.embed_batch = unittest.mock.AsyncMock(return_value=[fake_embedding])
+
+        result = await vs.add_document(
+            document_id="doc-legacy",
+            document_name="test.pdf",
+            chunks=["chunk text"],
+            tags=["public"],
+            uploaded_by="user-1",
+        )
+
+        upsert_call = vs._qdrant.upsert.call_args
+        points = upsert_call.kwargs.get("points") or upsert_call[1].get("points")
+        point = points[0]
+        # Should be a list (unnamed vector), not a dict
+        assert isinstance(point.vector, list)
+        assert point.payload["sparse_indexed"] is True  # Legacy default
+        assert result.sparse_indexed is True
+
+    @pytest.mark.asyncio
+    async def test_backfill_sparse_vectors(self):
+        """Scroll returns points, update_vectors and set_payload called, returns count."""
+        vs = self._make_service(hybrid=True, has_sparse=True)
+        vs._qdrant = unittest.mock.AsyncMock()
+
+        # Mock scroll to return 2 points, then empty
+        mock_point1 = unittest.mock.MagicMock()
+        mock_point1.id = "point-1"
+        mock_point1.payload = {"chunk_text": "text one", "sparse_indexed": False}
+        mock_point2 = unittest.mock.MagicMock()
+        mock_point2.id = "point-2"
+        mock_point2.payload = {"chunk_text": "text two", "sparse_indexed": False}
+
+        vs._qdrant.scroll.side_effect = [
+            ([mock_point1, mock_point2], None),  # First batch, no more offset
+        ]
+
+        fake_sparse = models.SparseVector(indices=[0, 1], values=[0.5, 0.3])
+        vs.sparse_embed_batch = unittest.mock.MagicMock(return_value=[fake_sparse, fake_sparse])
+
+        count = await vs.backfill_sparse_vectors(batch_size=10)
+
+        assert count == 2
+        assert vs._qdrant.update_vectors.call_count == 2
+        assert vs._qdrant.set_payload.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_backfill_skips_when_no_sparse_support(self):
+        """_collection_has_sparse=False returns 0 immediately."""
+        vs = self._make_service(hybrid=True, has_sparse=False)
+        vs._qdrant = unittest.mock.AsyncMock()
+
+        count = await vs.backfill_sparse_vectors()
+
+        assert count == 0
+        vs._qdrant.scroll.assert_not_called()

@@ -67,6 +67,7 @@ class IndexResult:
     replaced_existing: bool
     embedding_time_ms: float
     indexing_time_ms: float
+    sparse_indexed: bool = True  # Default True for backward compat
 
 
 @dataclass
@@ -255,13 +256,31 @@ class VectorService:
 
         if self.collection_name not in collection_names:
             logger.info(f"Creating collection: {self.collection_name}")
-            await self._qdrant.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=self.embedding_dimension,
-                    distance=models.Distance.COSINE,
-                ),
-            )
+            if self.hybrid_enabled:
+                # Named vectors: dense + sparse
+                await self._qdrant.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config={
+                        "dense": models.VectorParams(
+                            size=self.embedding_dimension,
+                            distance=models.Distance.COSINE,
+                        ),
+                    },
+                    sparse_vectors_config={
+                        "sparse": models.SparseVectorParams(
+                            modifier=models.Modifier.IDF,
+                        ),
+                    },
+                )
+            else:
+                # Legacy: unnamed dense vector only
+                await self._qdrant.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=models.VectorParams(
+                        size=self.embedding_dimension,
+                        distance=models.Distance.COSINE,
+                    ),
+                )
 
             # Create payload indexes for efficient filtering
             await self._qdrant.create_payload_index(
@@ -278,6 +297,11 @@ class VectorService:
                 collection_name=self.collection_name,
                 field_name="tenant_id",
                 field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+            await self._qdrant.create_payload_index(
+                collection_name=self.collection_name,
+                field_name="sparse_indexed",
+                field_schema=models.PayloadSchemaType.BOOL,
             )
             logger.info(f"Collection {self.collection_name} created with indexes")
         else:
@@ -538,6 +562,23 @@ class VectorService:
             raise IndexingError(f"Failed to generate embeddings: {e}") from e
         embedding_time_ms = (time.perf_counter() - embed_start) * 1000
 
+        # Generate sparse vectors (hybrid mode)
+        sparse_vectors: list[models.SparseVector | None] = []
+        sparse_indexed = False
+        if self.hybrid_enabled and self._collection_has_sparse:
+            try:
+                sparse_vectors = self.sparse_embed_batch(chunks)
+                sparse_indexed = all(sv is not None for sv in sparse_vectors)
+                if not sparse_indexed:
+                    logger.warning(
+                        f"Some sparse vectors failed for {document_id}, "
+                        f"indexing dense-only for affected chunks"
+                    )
+            except Exception as e:
+                logger.error(f"Sparse embedding failed for {document_id}, indexing dense-only: {e}")
+                sparse_vectors = [None] * len(chunks)
+                sparse_indexed = False
+
         # Build points for Qdrant
         points = []
         for i, (chunk_text, embedding) in enumerate(zip(chunks, embeddings, strict=True)):
@@ -558,6 +599,11 @@ class VectorService:
                 "uploaded_at": uploaded_at,
                 "page_number": meta.get("page_number"),
                 "section": meta.get("section"),
+                "sparse_indexed": (
+                    sparse_indexed
+                    if (self.hybrid_enabled and self._collection_has_sparse)
+                    else True  # Legacy collections: not applicable, default True
+                ),
             }
 
             # Pass through extra metadata keys (e.g., is_summary, document_type)
@@ -565,13 +611,27 @@ class VectorService:
                 if key not in payload and value is not None:
                     payload[key] = value
 
-            points.append(
-                models.PointStruct(
-                    id=chunk_id,
-                    vector=embedding,
-                    payload=payload,
+            # Build vector: named vectors if collection supports it, unnamed otherwise
+            if self._collection_has_sparse:
+                vector: dict | list = {"dense": embedding}
+                if sparse_vectors and i < len(sparse_vectors) and sparse_vectors[i] is not None:
+                    vector["sparse"] = sparse_vectors[i]
+                points.append(
+                    models.PointStruct(
+                        id=chunk_id,
+                        vector=vector,
+                        payload=payload,
+                    )
                 )
-            )
+            else:
+                # Legacy unnamed vector (pre-migration collection)
+                points.append(
+                    models.PointStruct(
+                        id=chunk_id,
+                        vector=embedding,
+                        payload=payload,
+                    )
+                )
 
         # Upsert to Qdrant
         index_start = time.perf_counter()
@@ -599,6 +659,9 @@ class VectorService:
             replaced_existing=replaced_existing,
             embedding_time_ms=embedding_time_ms,
             indexing_time_ms=indexing_time_ms,
+            sparse_indexed=sparse_indexed
+            if (self.hybrid_enabled and self._collection_has_sparse)
+            else True,
         )
 
     async def delete_document(self, document_id: str) -> bool:
@@ -1015,3 +1078,94 @@ class VectorService:
         except Exception as e:
             logger.error(f"Failed to clear collection: {e}")
             return False
+
+    async def backfill_sparse_vectors(self, batch_size: int = 100) -> int:
+        """Scan for points with sparse_indexed=false and add sparse vectors.
+
+        Called manually via CLI or scheduled job. Idempotent.
+
+        Args:
+            batch_size: Number of points to process per batch.
+
+        Returns:
+            Count of points backfilled.
+        """
+        if not self._collection_has_sparse:
+            logger.warning("Collection does not support sparse vectors, skipping backfill")
+            return 0
+
+        total_backfilled = 0
+        offset = None
+
+        while True:
+            # Scroll points where sparse_indexed == false
+            results, offset = await self._qdrant.scroll(
+                collection_name=self.collection_name,
+                limit=batch_size,
+                offset=offset,
+                with_payload=["chunk_text", "sparse_indexed"],
+                with_vectors=False,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="sparse_indexed",
+                            match=models.MatchValue(value=False),
+                        ),
+                    ]
+                ),
+            )
+
+            if not results:
+                break
+
+            # Extract texts for batch embedding
+            texts = []
+            point_ids = []
+            for point in results:
+                chunk_text = point.payload.get("chunk_text", "") if point.payload else ""
+                if chunk_text:
+                    texts.append(chunk_text)
+                    point_ids.append(point.id)
+
+            if not texts:
+                if offset is None:
+                    break
+                continue
+
+            # Generate sparse vectors
+            try:
+                sparse_vectors = self.sparse_embed_batch(texts)
+            except Exception as e:
+                logger.error(f"Sparse embedding failed during backfill: {e}")
+                break
+
+            # Update points with sparse vectors
+            for pid, sv in zip(point_ids, sparse_vectors, strict=True):
+                if sv is None:
+                    continue
+                try:
+                    await self._qdrant.update_vectors(
+                        collection_name=self.collection_name,
+                        points=[
+                            models.PointVectors(
+                                id=pid,
+                                vector={"sparse": sv},
+                            )
+                        ],
+                    )
+                    await self._qdrant.set_payload(
+                        collection_name=self.collection_name,
+                        payload={"sparse_indexed": True},
+                        points=[pid],
+                    )
+                    total_backfilled += 1
+                except Exception as e:
+                    logger.error(f"Failed to backfill point {pid}: {e}")
+
+            logger.info(f"Backfilled {total_backfilled} points so far")
+
+            if offset is None:
+                break
+
+        logger.info(f"Backfill complete: {total_backfilled} points updated")
+        return total_backfilled
