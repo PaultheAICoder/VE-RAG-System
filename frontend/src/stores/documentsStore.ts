@@ -4,11 +4,17 @@ import type { DocumentStatus } from '../types';
 
 const DEFAULT_PAGE_SIZE = 20;
 
+interface NamespaceFilter {
+  namespace: string;
+  value: string;
+}
+
 interface DocumentsState {
   // Persisted filter state
   search: string;
   selectedTagId: string | null;
   status: DocumentStatus | null;
+  namespaceFilter: NamespaceFilter | null;
 
   // Persisted sort state
   sortBy: string;
@@ -22,6 +28,8 @@ interface DocumentsState {
   setSearch: (search: string) => void;
   setTagFilter: (tagId: string | null) => void;
   setStatusFilter: (status: DocumentStatus | null) => void;
+  setNamespaceFilter: (namespace: string | null, value: string | null) => void;
+  clearNamespaceFilter: () => void;
   setSort: (sortBy: string, sortOrder: 'asc' | 'desc') => void;
   setPage: (page: number) => void;
   resetFilters: () => void;
@@ -36,6 +44,7 @@ export const useDocumentsStore = create<DocumentsState>()(
       search: '',
       selectedTagId: null,
       status: null,
+      namespaceFilter: null,
       sortBy: 'uploaded_at',
       sortOrder: 'desc',
       page: 1,
@@ -54,6 +63,18 @@ export const useDocumentsStore = create<DocumentsState>()(
         set({ status, page: 1 });
       },
 
+      setNamespaceFilter: (namespace: string | null, value: string | null) => {
+        if (namespace && value) {
+          set({ namespaceFilter: { namespace, value }, page: 1 });
+        } else {
+          set({ namespaceFilter: null, page: 1 });
+        }
+      },
+
+      clearNamespaceFilter: () => {
+        set({ namespaceFilter: null, page: 1 });
+      },
+
       setSort: (sortBy: string, sortOrder: 'asc' | 'desc') => {
         set({ sortBy, sortOrder });
       },
@@ -67,6 +88,7 @@ export const useDocumentsStore = create<DocumentsState>()(
           search: '',
           selectedTagId: null,
           status: null,
+          namespaceFilter: null,
           sortBy: 'uploaded_at',
           sortOrder: 'desc',
           page: 1,
@@ -95,6 +117,7 @@ export const useDocumentsStore = create<DocumentsState>()(
         search: state.search,
         selectedTagId: state.selectedTagId,
         status: state.status,
+        namespaceFilter: state.namespaceFilter,
         sortBy: state.sortBy,
         sortOrder: state.sortOrder,
         page: state.page,

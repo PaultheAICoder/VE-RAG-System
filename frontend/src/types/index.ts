@@ -63,6 +63,14 @@ export interface DocumentListParams {
   search?: string | null;
   sort_by?: string;
   sort_order?: 'asc' | 'desc';
+  tag_namespace?: string | null;
+  tag_value?: string | null;
+}
+
+export interface TagFacetItem {
+  name: string;
+  display: string;
+  count: number;
 }
 
 export interface BulkDeleteResult {

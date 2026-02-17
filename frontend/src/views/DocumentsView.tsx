@@ -9,6 +9,7 @@ import {
   TagEditModal,
   ConfirmModal,
   TagSuggestionsModal,
+  NamespaceFilters,
 } from '../components/features/documents';
 import {
   listDocuments,
@@ -17,10 +18,10 @@ import {
   bulkReprocessDocuments,
 } from '../api/documents';
 import { listTagSuggestions } from '../api/suggestions';
-import { listTags } from '../api/tags';
+import { listTags, getTagFacets } from '../api/tags';
 import { useAuthStore } from '../stores/authStore';
 import { useDocumentsStore } from '../stores/documentsStore';
-import type { Document, Tag } from '../types';
+import type { Document, Tag, TagFacetItem } from '../types';
 
 const ITEMS_PER_PAGE = 20;
 const AUTO_REFRESH_INTERVAL_ACTIVE = 3000; // 3 seconds when processing
@@ -37,6 +38,8 @@ export function DocumentsView() {
     setTagFilter,
     status,
     setStatusFilter,
+    namespaceFilter,
+    setNamespaceFilter,
     sortBy,
     sortOrder,
     setSort,
@@ -52,6 +55,10 @@ export function DocumentsView() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Facets state (not persisted - fetched fresh)
+  const [facets, setFacets] = useState<Record<string, TagFacetItem[]>>({});
+  const [facetsLoading, setFacetsLoading] = useState(false);
 
   // Selection state (not persisted - transient per visit)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -78,6 +85,22 @@ export function DocumentsView() {
     fetchTags();
   }, []);
 
+  // Fetch tag facets on mount
+  useEffect(() => {
+    const fetchFacets = async () => {
+      setFacetsLoading(true);
+      try {
+        const data = await getTagFacets();
+        setFacets(data);
+      } catch (err) {
+        console.error('Failed to fetch tag facets:', err);
+      } finally {
+        setFacetsLoading(false);
+      }
+    };
+    fetchFacets();
+  }, []);
+
   // Validate persisted tag filter when tags load
   useEffect(() => {
     if (tags.length > 0) {
@@ -100,6 +123,8 @@ export function DocumentsView() {
         status: status || undefined,
         sort_by: sortBy,
         sort_order: sortOrder,
+        tag_namespace: namespaceFilter?.namespace || undefined,
+        tag_value: namespaceFilter?.value || undefined,
       });
 
       setDocuments(data.documents);
@@ -109,7 +134,7 @@ export function DocumentsView() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, selectedTagId, status, sortBy, sortOrder]);
+  }, [page, search, selectedTagId, status, sortBy, sortOrder, namespaceFilter]);
 
   // Fetch suggestion counts for visible documents (admin only)
   const fetchSuggestionCounts = useCallback(async (docs: Document[]) => {
@@ -186,6 +211,8 @@ export function DocumentsView() {
           status: status || undefined,
           sort_by: sortBy,
           sort_order: sortOrder,
+          tag_namespace: namespaceFilter?.namespace || undefined,
+          tag_value: namespaceFilter?.value || undefined,
         }).then((data) => {
           setDocuments(data.documents);
           setTotal(data.total);
@@ -200,7 +227,7 @@ export function DocumentsView() {
         clearInterval(refreshIntervalRef.current);
       }
     };
-  }, [isProcessingActive, page, search, selectedTagId, status, sortBy, sortOrder]);
+  }, [isProcessingActive, page, search, selectedTagId, status, sortBy, sortOrder, namespaceFilter]);
 
   // Handle sort
   const handleSort = (field: string) => {
@@ -317,6 +344,15 @@ export function DocumentsView() {
         status={status}
         onStatusChange={setStatusFilter}
         tags={tags}
+      />
+
+      {/* Namespace Filters */}
+      <NamespaceFilters
+        facets={facets}
+        activeNamespace={namespaceFilter?.namespace ?? null}
+        activeValue={namespaceFilter?.value ?? null}
+        onFilterChange={setNamespaceFilter}
+        loading={facetsLoading}
       />
 
       {/* Bulk Actions (Admin only) */}

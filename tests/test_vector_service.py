@@ -4,7 +4,12 @@ These tests require Qdrant (localhost:6333) and Ollama (localhost:11434) to be r
 Use pytest -m "not integration" to skip integration tests.
 """
 
+import os
+import threading
+import unittest.mock
+
 import pytest
+from qdrant_client.http import models
 
 from ai_ready_rag.core.exceptions import EmbeddingError
 from ai_ready_rag.services.vector_service import (
@@ -948,3 +953,115 @@ class TestIndexingRollback:
         # before embedding, so if embedding fails, the doc is gone.
         # This is expected behavior - atomic delete-then-insert.
         assert stats_after.total_chunks == 0  # Rolled back
+
+
+class TestSparseEmbedding:
+    """Tests for sparse embedding methods (Issue #282)."""
+
+    def test_sparse_embed_produces_valid_vector(self):
+        """sparse_embed() returns SparseVector with non-empty indices and values."""
+        vs = VectorService()
+        result = vs.sparse_embed("Hello world, this is a test document.")
+        if result is None:
+            pytest.skip("fastembed not available")
+        assert isinstance(result, models.SparseVector)
+        assert len(result.indices) > 0
+        assert len(result.values) > 0
+        assert len(result.indices) == len(result.values)
+
+    def test_sparse_embed_batch(self):
+        """sparse_embed_batch() returns list matching input length."""
+        vs = VectorService()
+        texts = ["First document text", "Second document text", "Third document"]
+        results = vs.sparse_embed_batch(texts)
+        if results[0] is None:
+            pytest.skip("fastembed not available")
+        assert len(results) == 3
+        assert all(isinstance(r, models.SparseVector) for r in results)
+
+    def test_sparse_embed_deterministic(self):
+        """sparse_embed() returns same vector for same input."""
+        vs = VectorService()
+        text = "The quick brown fox jumps over the lazy dog."
+        r1 = vs.sparse_embed(text)
+        r2 = vs.sparse_embed(text)
+        if r1 is None:
+            pytest.skip("fastembed not available")
+        assert r1.indices == r2.indices
+        assert r1.values == r2.values
+
+    def test_sparse_model_lazy_load(self):
+        """Model is not loaded until first sparse_embed() call."""
+        vs = VectorService()
+        assert vs._sparse_model is None
+        vs.sparse_embed("trigger load")
+        if vs._sparse_available:
+            assert vs._sparse_model is not None
+
+    def test_sparse_model_thread_safe_init(self):
+        """Concurrent first calls produce single model instance."""
+        import concurrent.futures
+
+        vs = VectorService()
+        results = []
+
+        def call_sparse():
+            return vs.sparse_embed("test text for threading")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(call_sparse) for _ in range(8)]
+            results = [f.result() for f in futures]
+        if vs._sparse_available:
+            assert vs._sparse_model is not None
+            # All results should be identical (same model, same input)
+            for r in results:
+                assert r is not None
+
+    def test_sparse_model_load_failure_degrades(self):
+        """If model fails to load, _sparse_available=False, returns None."""
+        vs = VectorService()
+        vs._sparse_available = True
+        vs._sparse_model = None
+        vs._sparse_lock = threading.Lock()
+        with unittest.mock.patch(
+            "ai_ready_rag.services.vector_service.SparseTextEmbedding",
+            side_effect=RuntimeError("Model load failed"),
+        ):
+            vs._sparse_available = True  # Reset to allow attempt
+            result = vs.sparse_embed("test")
+        assert result is None
+        assert vs._sparse_available is False
+
+    def test_sparse_embed_after_model_failure(self):
+        """After model failure, returns None without retrying."""
+        vs = VectorService()
+        vs._sparse_available = False
+        vs._sparse_model = None
+        result = vs.sparse_embed("test")
+        assert result is None
+        batch = vs.sparse_embed_batch(["a", "b"])
+        assert batch == [None, None]
+
+    def test_sparse_model_cache_path_configurable(self):
+        """FASTEMBED_CACHE_PATH env var is passed to SparseTextEmbedding."""
+        mock_cls = unittest.mock.MagicMock()
+        mock_instance = unittest.mock.MagicMock()
+        mock_cls.return_value = mock_instance
+        mock_result = unittest.mock.MagicMock()
+        mock_result.indices.tolist.return_value = [0, 1, 2]
+        mock_result.values.tolist.return_value = [0.5, 0.3, 0.1]
+        mock_instance.embed.return_value = iter([mock_result])
+
+        with unittest.mock.patch.dict(os.environ, {"FASTEMBED_CACHE_PATH": "/tmp/test_cache"}):
+            with unittest.mock.patch(
+                "ai_ready_rag.services.vector_service.SparseTextEmbedding",
+                mock_cls,
+            ):
+                vs = VectorService()
+                vs._sparse_available = True
+                vs._sparse_model = None
+                vs.sparse_embed("test")
+                mock_cls.assert_called_once_with(
+                    model_name="Qdrant/bm25",
+                    cache_dir="/tmp/test_cache",
+                )
