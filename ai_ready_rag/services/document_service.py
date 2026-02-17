@@ -279,6 +279,253 @@ class DocumentService:
 
         return document
 
+    async def upload_batch(
+        self,
+        files: list,
+        source_paths: list[str | None],
+        tag_ids: list[str],
+        uploaded_by: str,
+        auto_tag: bool | None = None,
+    ) -> dict:
+        """Upload multiple documents with per-file idempotency and partial success.
+
+        Args:
+            files: List of UploadFile objects
+            source_paths: Parallel list of source paths (one per file, or None)
+            tag_ids: Manual tag IDs shared across all files
+            uploaded_by: User ID of uploader
+            auto_tag: Whether to enable auto-tagging
+
+        Returns:
+            Dict with total, uploaded, duplicates, failed, auto_tags_applied, results
+        """
+        import hashlib as _hashlib
+
+        # Validate inputs upfront
+        if len(files) != len(source_paths):
+            raise ValidationError("source_paths length must match files length")
+
+        # Validate manual tags once (shared across all files)
+        tags = []
+        if tag_ids:
+            tags = self.db.query(Tag).filter(Tag.id.in_(tag_ids)).all()
+            if len(tags) != len(tag_ids):
+                found_ids = {t.id for t in tags}
+                missing = [tid for tid in tag_ids if tid not in found_ids]
+                raise InvalidTagsError(f"Invalid tag IDs: {missing}")
+
+        # Determine if auto-tagging is active
+        auto_tagging_active = (
+            self.settings.auto_tagging_enabled
+            and self.settings.auto_tagging_path_enabled
+            and (auto_tag is True or any(sp is not None for sp in source_paths))
+        )
+
+        # Require at least one tag source
+        if not tag_ids and not auto_tagging_active:
+            raise NoTagsError("At least one tag is required")
+
+        # Load strategy once if auto-tagging is active
+        strategy = None
+        if auto_tagging_active:
+            try:
+                strategy_path = (
+                    Path(self.settings.auto_tagging_strategies_dir)
+                    / f"{self.settings.auto_tagging_strategy}.yaml"
+                )
+                strategy = AutoTagStrategy.load(str(strategy_path))
+            except Exception as e:
+                logger.warning("Failed to load auto-tag strategy, continuing without: %s", e)
+
+        results = []
+        uploaded_count = 0
+        duplicate_count = 0
+        failed_count = 0
+        auto_tags_applied_count = 0
+
+        for file, source_path in zip(files, source_paths, strict=True):
+            result = {
+                "filename": file.filename or "",
+                "source_path": source_path,
+                "status": "failed",
+                "error_code": None,
+                "error_message": None,
+                "document_id": None,
+                "auto_tags": [],
+            }
+
+            try:
+                # Validate file type
+                if not file.filename:
+                    result["error_code"] = "FAILED_TYPE"
+                    result["error_message"] = "No filename provided"
+                    failed_count += 1
+                    results.append(result)
+                    continue
+
+                extension = get_file_extension(file.filename)
+                if not validate_file_extension(file.filename, self.settings.allowed_extensions):
+                    result["error_code"] = "FAILED_TYPE"
+                    result["error_message"] = (
+                        f"File type '{extension}' not allowed. "
+                        f"Allowed: {', '.join(self.settings.allowed_extensions)}"
+                    )
+                    failed_count += 1
+                    results.append(result)
+                    continue
+
+                # Read content and validate size
+                content = await file.read()
+                file_size = len(content)
+                max_size = self.settings.max_upload_size_mb * 1024 * 1024
+                if file_size > max_size:
+                    result["error_code"] = "FAILED_SIZE"
+                    result["error_message"] = (
+                        f"File too large. Max size: {self.settings.max_upload_size_mb}MB"
+                    )
+                    failed_count += 1
+                    results.append(result)
+                    continue
+
+                # Compute content hash from in-memory bytes
+                content_hash = _hashlib.sha256(content).hexdigest()
+
+                # Determine strategy_id for idempotency check
+                strategy_id = strategy.id if strategy else None
+
+                # Check idempotency: composite query on existing columns
+                existing = (
+                    self.db.query(Document)
+                    .filter(
+                        Document.content_hash == content_hash,
+                        Document.source_path == source_path,
+                        Document.auto_tag_strategy == strategy_id,
+                    )
+                    .first()
+                )
+                if existing:
+                    result["status"] = "duplicate"
+                    result["error_code"] = "DUPLICATE"
+                    result["document_id"] = existing.id
+                    duplicate_count += 1
+                    results.append(result)
+                    continue
+
+                # Create document record
+                document = Document(
+                    filename="",
+                    original_filename=file.filename,
+                    file_path="",
+                    file_type=extension,
+                    file_size=file_size,
+                    status="pending",
+                    uploaded_by=uploaded_by,
+                )
+                self.db.add(document)
+                self.db.flush()
+
+                # Save file to storage
+                doc_dir = self.storage_path / document.id
+                doc_dir.mkdir(parents=True, exist_ok=True)
+                stored_filename = f"original.{extension}"
+                file_path = doc_dir / stored_filename
+
+                try:
+                    with open(file_path, "wb") as f:
+                        f.write(content)
+                except OSError as e:
+                    self.db.rollback()
+                    if doc_dir.exists():
+                        shutil.rmtree(doc_dir)
+                    result["error_code"] = "FAILED_STORAGE"
+                    result["error_message"] = f"Failed to save file: {e}"
+                    failed_count += 1
+                    results.append(result)
+                    continue
+
+                # Apply auto-tagging per file
+                auto_tag_objects = []
+                if auto_tagging_active and strategy and source_path:
+                    try:
+                        auto_tag_objects = self._apply_path_based_tags(
+                            source_path, strategy, uploaded_by
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Auto-tagging failed for %s, continuing: %s", file.filename, e
+                        )
+                        if not tags:
+                            self.db.rollback()
+                            if doc_dir.exists():
+                                shutil.rmtree(doc_dir)
+                            result["error_code"] = "FAILED_TAG"
+                            result["error_message"] = f"Auto-tagging failed and no manual tags: {e}"
+                            failed_count += 1
+                            results.append(result)
+                            continue
+
+                # Merge manual + auto tags (deduplicate by name)
+                all_tags = list(tags)
+                existing_names = {t.name for t in all_tags}
+                for at in auto_tag_objects:
+                    if at.name not in existing_names:
+                        all_tags.append(at)
+                        existing_names.add(at.name)
+
+                # Final tag check
+                if not all_tags:
+                    self.db.rollback()
+                    if doc_dir.exists():
+                        shutil.rmtree(doc_dir)
+                    result["error_code"] = "FAILED_TAG"
+                    result["error_message"] = (
+                        "No tags available (neither manual nor auto-tags produced)"
+                    )
+                    failed_count += 1
+                    results.append(result)
+                    continue
+
+                # Update document fields
+                document.filename = stored_filename
+                document.file_path = str(file_path)
+                document.content_hash = content_hash
+                document.source_path = source_path
+                document.tags = all_tags
+
+                if strategy:
+                    document.auto_tag_strategy = strategy.id
+                    document.auto_tag_version = strategy.version
+                    document.auto_tag_status = "pending"
+
+                # Commit per-file for partial success isolation
+                self.db.commit()
+
+                auto_tag_names = [at.name for at in auto_tag_objects]
+                result["status"] = "uploaded"
+                result["document_id"] = document.id
+                result["auto_tags"] = auto_tag_names
+                uploaded_count += 1
+                if auto_tag_names:
+                    auto_tags_applied_count += 1
+
+            except Exception as e:
+                logger.error("Unexpected error processing %s: %s", file.filename, e)
+                self.db.rollback()
+                result["error_code"] = "FAILED_STORAGE"
+                result["error_message"] = f"Unexpected error: {e}"
+                failed_count += 1
+
+            results.append(result)
+
+        return {
+            "total": len(files),
+            "uploaded": uploaded_count,
+            "duplicates": duplicate_count,
+            "failed": failed_count,
+            "auto_tags_applied": auto_tags_applied_count,
+            "results": results,
+        }
+
     def ensure_tag_exists(
         self,
         tag_name: str,

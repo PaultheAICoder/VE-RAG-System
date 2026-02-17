@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react';
 import { Checkbox, Badge } from '../../ui';
 import { StatusBadge } from './StatusBadge';
+import { SuggestionBadge } from './SuggestionBadge';
 import type { Document, Tag } from '../../../types';
 
 interface DocumentTableProps {
@@ -12,6 +13,8 @@ interface DocumentTableProps {
   onSort: (field: string) => void;
   onTagClick?: (tag: Tag) => void;
   loading?: boolean;
+  suggestionCounts?: Map<string, number>;
+  onSuggestionClick?: (doc: Document) => void;
 }
 
 type SortableField = 'original_filename' | 'uploaded_at' | 'status';
@@ -40,6 +43,8 @@ export function DocumentTable({
   onSort,
   onTagClick,
   loading = false,
+  suggestionCounts,
+  onSuggestionClick,
 }: DocumentTableProps) {
   const allSelected = documents.length > 0 && documents.every((d) => selectedIds.has(d.id));
   const someSelected = documents.some((d) => selectedIds.has(d.id)) && !allSelected;
@@ -182,8 +187,14 @@ export function DocumentTable({
                         <Badge variant="primary">{tag.display_name}</Badge>
                       </button>
                     ))}
-                    {doc.tags.length === 0 && (
+                    {doc.tags.length === 0 && (!suggestionCounts || !suggestionCounts.get(doc.id)) && (
                       <span className="text-sm text-gray-400">No tags</span>
+                    )}
+                    {suggestionCounts && (suggestionCounts.get(doc.id) ?? 0) > 0 && onSuggestionClick && (
+                      <SuggestionBadge
+                        count={suggestionCounts.get(doc.id) ?? 0}
+                        onClick={() => onSuggestionClick(doc)}
+                      />
                     )}
                   </div>
                 </td>

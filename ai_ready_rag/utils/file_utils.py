@@ -20,6 +20,20 @@ def compute_file_hash(file_path: Path) -> str:
     return sha256.hexdigest()
 
 
+def compute_idempotency_key(
+    content_hash: str, source_path: str | None, strategy_id: str | None
+) -> str:
+    """Compute composite idempotency key for batch upload duplicate detection.
+
+    Uses SHA-256 of content_hash + source_path + strategy_id.
+    None values are normalized to empty string for consistent hashing.
+    """
+    normalized_path = source_path or ""
+    normalized_strategy = strategy_id or ""
+    combined = f"{content_hash}:{normalized_path}:{normalized_strategy}"
+    return hashlib.sha256(combined.encode()).hexdigest()
+
+
 def get_storage_usage(upload_dir: Path) -> int:
     """Calculate total storage used in upload directory.
 

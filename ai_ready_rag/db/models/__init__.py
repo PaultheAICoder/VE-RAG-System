@@ -28,6 +28,7 @@ from ai_ready_rag.db.models.evaluation import (
     LiveEvaluationScore,
 )
 from ai_ready_rag.db.models.rag import CuratedQA, CuratedQAKeyword, QuerySynonym
+from ai_ready_rag.db.models.suggestion import TagSuggestion
 from ai_ready_rag.db.models.user import Tag, User
 from ai_ready_rag.db.models.warming import WarmingBatch, WarmingQuery
 
@@ -39,6 +40,7 @@ __all__ = [
     "User",
     "Tag",
     "Document",
+    "TagSuggestion",
     "ChatSession",
     "ChatMessage",
     "AuditLog",

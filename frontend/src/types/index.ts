@@ -895,3 +895,42 @@ export interface LiveStats {
   queue_capacity: number;
   drops_since_startup: number;
 }
+
+// =============================================================================
+// Tag Suggestion Types (Auto-Tagging)
+// =============================================================================
+
+export type SuggestionSource = 'path' | 'llm';
+export type SuggestionStatus = 'pending' | 'approved' | 'rejected';
+
+export interface TagSuggestion {
+  id: string;
+  document_id: string;
+  tag_name: string;
+  display_name: string;
+  namespace: string;
+  source: SuggestionSource;
+  confidence: number;
+  strategy_id: string;
+  status: SuggestionStatus;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+}
+
+export interface TagSuggestionListResponse {
+  suggestions: TagSuggestion[];
+  total: number;
+}
+
+export interface ApprovalResult {
+  suggestion_id: string;
+  status: string;
+  error: string | null;
+}
+
+export interface ApprovalResponse {
+  results: ApprovalResult[];
+  processed_count: number;
+  failed_count: number;
+}

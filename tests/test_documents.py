@@ -1198,6 +1198,291 @@ class TestAutoTaggingUpload:
             shutil.rmtree(doc_dir)
 
 
+class TestBatchUpload:
+    """Tests for batch upload endpoint."""
+
+    @patch("ai_ready_rag.api.documents.enqueue_document_processing", new_callable=AsyncMock)
+    def test_batch_upload_success(self, mock_enqueue, client, admin_headers, test_tag, tmp_path):
+        """Upload 2 valid files with tag_ids - both succeed."""
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        file1 = tmp_path / "batch1.txt"
+        file1.write_text("Batch file one content unique-batch-1")
+        file2 = tmp_path / "batch2.txt"
+        file2.write_text("Batch file two content unique-batch-2")
+
+        with open(file1, "rb") as f1, open(file2, "rb") as f2:
+            response = client.post(
+                "/api/documents/upload/batch",
+                files=[
+                    ("files", ("batch1.txt", f1, "text/plain")),
+                    ("files", ("batch2.txt", f2, "text/plain")),
+                ],
+                data={"tag_ids": [test_tag.id]},
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["total"] == 2
+        assert data["uploaded"] == 2
+        assert data["duplicates"] == 0
+        assert data["failed"] == 0
+        assert len(data["results"]) == 2
+        for r in data["results"]:
+            assert r["status"] == "uploaded"
+            assert r["document_id"] is not None
+
+        # Cleanup
+        for r in data["results"]:
+            doc_dir = upload_dir / r["document_id"]
+            if doc_dir.exists():
+                import shutil
+
+                shutil.rmtree(doc_dir)
+
+    @patch("ai_ready_rag.api.documents.enqueue_document_processing", new_callable=AsyncMock)
+    def test_batch_upload_mixed_results(
+        self, mock_enqueue, client, admin_headers, test_tag, tmp_path
+    ):
+        """Upload 1 valid + 1 invalid type: partial success."""
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        valid_file = tmp_path / "valid.txt"
+        valid_file.write_text("Valid batch content unique-batch-mix")
+        invalid_file = tmp_path / "invalid.exe"
+        invalid_file.write_bytes(b"bad content")
+
+        with open(valid_file, "rb") as f1, open(invalid_file, "rb") as f2:
+            response = client.post(
+                "/api/documents/upload/batch",
+                files=[
+                    ("files", ("valid.txt", f1, "text/plain")),
+                    ("files", ("invalid.exe", f2, "application/octet-stream")),
+                ],
+                data={"tag_ids": [test_tag.id]},
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["total"] == 2
+        assert data["uploaded"] == 1
+        assert data["failed"] == 1
+
+        # Check the failed result has correct error code
+        failed_results = [r for r in data["results"] if r["status"] == "failed"]
+        assert len(failed_results) == 1
+        assert failed_results[0]["error_code"] == "FAILED_TYPE"
+
+        # Cleanup
+        for r in data["results"]:
+            if r["document_id"]:
+                doc_dir = upload_dir / r["document_id"]
+                if doc_dir.exists():
+                    import shutil
+
+                    shutil.rmtree(doc_dir)
+
+    @patch("ai_ready_rag.api.documents.enqueue_document_processing", new_callable=AsyncMock)
+    def test_batch_upload_duplicate_detection(
+        self, mock_enqueue, client, admin_headers, test_tag, tmp_path
+    ):
+        """Upload same file+path twice: second call returns duplicate."""
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        test_file = tmp_path / "dup_test.txt"
+        test_file.write_text("Duplicate detection batch content unique-batch-dup")
+
+        # First upload
+        with open(test_file, "rb") as f:
+            response1 = client.post(
+                "/api/documents/upload/batch",
+                files=[("files", ("dup_test.txt", f, "text/plain"))],
+                data={"tag_ids": [test_tag.id]},
+                headers=admin_headers,
+            )
+
+        assert response1.status_code == status.HTTP_200_OK
+        data1 = response1.json()
+        assert data1["uploaded"] == 1
+        first_doc_id = data1["results"][0]["document_id"]
+
+        # Second upload of same file (same content, no source_path, no strategy)
+        with open(test_file, "rb") as f:
+            response2 = client.post(
+                "/api/documents/upload/batch",
+                files=[("files", ("dup_test.txt", f, "text/plain"))],
+                data={"tag_ids": [test_tag.id]},
+                headers=admin_headers,
+            )
+
+        assert response2.status_code == status.HTTP_200_OK
+        data2 = response2.json()
+        assert data2["duplicates"] == 1
+        assert data2["uploaded"] == 0
+        assert data2["results"][0]["status"] == "duplicate"
+        assert data2["results"][0]["error_code"] == "DUPLICATE"
+        assert data2["results"][0]["document_id"] == first_doc_id
+
+        # Cleanup
+        doc_dir = upload_dir / first_doc_id
+        if doc_dir.exists():
+            import shutil
+
+            shutil.rmtree(doc_dir)
+
+    @patch("ai_ready_rag.api.documents.enqueue_document_processing", new_callable=AsyncMock)
+    def test_batch_upload_same_content_different_path(
+        self, mock_enqueue, client, admin_headers, test_tag, tmp_path
+    ):
+        """Same file content with different source_paths creates two separate documents."""
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        file1 = tmp_path / "same1.txt"
+        file1.write_text("Same content different path unique-batch-paths")
+        file2 = tmp_path / "same2.txt"
+        file2.write_text("Same content different path unique-batch-paths")
+
+        with open(file1, "rb") as f1, open(file2, "rb") as f2:
+            response = client.post(
+                "/api/documents/upload/batch",
+                files=[
+                    ("files", ("same.txt", f1, "text/plain")),
+                    ("files", ("same.txt", f2, "text/plain")),
+                ],
+                data={
+                    "tag_ids": [test_tag.id],
+                    "source_paths": ["ClientA/same.txt", "ClientB/same.txt"],
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["uploaded"] == 2
+        assert data["duplicates"] == 0
+        # Verify different document IDs
+        doc_ids = [r["document_id"] for r in data["results"]]
+        assert len(set(doc_ids)) == 2
+
+        # Cleanup
+        for doc_id in doc_ids:
+            doc_dir = upload_dir / doc_id
+            if doc_dir.exists():
+                import shutil
+
+                shutil.rmtree(doc_dir)
+
+    def test_batch_upload_requires_admin(self, client, user_headers, test_tag, tmp_path):
+        """Non-admin users cannot access batch upload."""
+        test_file = tmp_path / "noadmin.txt"
+        test_file.write_text("no admin content")
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload/batch",
+                files=[("files", ("noadmin.txt", f, "text/plain"))],
+                data={"tag_ids": [test_tag.id]},
+                headers=user_headers,
+            )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_batch_upload_source_paths_mismatch(self, client, admin_headers, test_tag, tmp_path):
+        """Mismatched source_paths length returns 422."""
+        file1 = tmp_path / "mismatch1.txt"
+        file1.write_text("mismatch content 1")
+        file2 = tmp_path / "mismatch2.txt"
+        file2.write_text("mismatch content 2")
+
+        with open(file1, "rb") as f1, open(file2, "rb") as f2:
+            response = client.post(
+                "/api/documents/upload/batch",
+                files=[
+                    ("files", ("mismatch1.txt", f1, "text/plain")),
+                    ("files", ("mismatch2.txt", f2, "text/plain")),
+                ],
+                data={
+                    "tag_ids": [test_tag.id],
+                    "source_paths": ["only/one/path"],
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    @patch("ai_ready_rag.api.documents.enqueue_document_processing", new_callable=AsyncMock)
+    def test_batch_upload_auto_tagging(
+        self, mock_enqueue, client, admin_headers, test_tag, tmp_path, monkeypatch, db
+    ):
+        """Files with source_paths and auto_tag=True get auto-tags applied."""
+        from ai_ready_rag.config import Settings
+
+        strategies_dir = str(Path(__file__).parent.parent / "data" / "auto_tag_strategies")
+        test_settings = Settings(
+            auto_tagging_enabled=True,
+            auto_tagging_path_enabled=True,
+            auto_tagging_create_missing_tags=True,
+            auto_tagging_strategies_dir=strategies_dir,
+            auto_tagging_strategy="generic",
+        )
+        monkeypatch.setattr("ai_ready_rag.api.documents.get_settings", lambda: test_settings)
+
+        upload_dir = Path("./data/uploads")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        test_file = tmp_path / "autotagged.txt"
+        test_file.write_text("Auto tagged batch content unique-batch-autotag")
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload/batch",
+                files=[("files", ("autotagged.txt", f, "text/plain"))],
+                data={
+                    "tag_ids": [test_tag.id],
+                    "source_paths": ["AcmeCorp/Policies/autotagged.txt"],
+                    "auto_tag": "true",
+                },
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["uploaded"] == 1
+        assert data["auto_tags_applied"] == 1
+        assert len(data["results"][0]["auto_tags"]) > 0
+
+        # Cleanup
+        for r in data["results"]:
+            if r["document_id"]:
+                doc_dir = upload_dir / r["document_id"]
+                if doc_dir.exists():
+                    import shutil
+
+                    shutil.rmtree(doc_dir)
+
+    def test_batch_upload_no_tags_no_auto_tag(self, client, admin_headers, tmp_path):
+        """No tag_ids and auto_tag not active returns 400 NO_TAGS."""
+        test_file = tmp_path / "notags.txt"
+        test_file.write_text("no tags content")
+
+        with open(test_file, "rb") as f:
+            response = client.post(
+                "/api/documents/upload/batch",
+                files=[("files", ("notags.txt", f, "text/plain"))],
+                data={"tag_ids": []},
+                headers=admin_headers,
+            )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "tag" in response.json()["detail"].lower()
+
+
 class TestAccessControlIntegration:
     """Integration tests for tag-based access control with auto-tagging (spec Section 10.5)."""
 

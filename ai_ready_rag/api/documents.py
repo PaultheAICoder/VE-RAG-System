@@ -21,6 +21,8 @@ from ai_ready_rag.core.redis import get_redis_pool
 from ai_ready_rag.db.database import SessionLocal, get_db
 from ai_ready_rag.db.models import Document, User
 from ai_ready_rag.schemas.document import (
+    BatchFileResult,
+    BatchUploadResponse,
     BulkDeleteRequest,
     BulkDeleteResponse,
     BulkDeleteResult,
@@ -302,6 +304,63 @@ async def upload_document(
     await enqueue_document_processing(document.id, background_tasks, options_dict)
 
     return document
+
+
+@router.post("/upload/batch", response_model=BatchUploadResponse, status_code=status.HTTP_200_OK)
+async def batch_upload_documents(
+    files: list[UploadFile],
+    background_tasks: BackgroundTasks,
+    source_paths: list[str] = Form(default=[]),
+    tag_ids: list[str] = Form(default=[]),
+    auto_tag: bool | None = Form(None),
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Upload multiple documents in a single batch (admin only).
+
+    Supports partial success: each file is processed independently.
+    Returns 200 with per-file results (not 201, since batch may have mixed outcomes).
+
+    Idempotency: duplicate detection uses composite key of content_hash + source_path + strategy_id.
+    Same content with different source_paths creates separate documents.
+    """
+    settings = get_settings()
+
+    # Validate source_paths length
+    if source_paths and len(source_paths) != len(files):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="source_paths length must match files length",
+        )
+
+    # Pad source_paths to None if empty
+    if not source_paths:
+        padded_source_paths: list[str | None] = [None] * len(files)
+    else:
+        padded_source_paths = source_paths  # type: ignore[assignment]
+
+    service = DocumentService(db, settings)
+    batch_result = await service.upload_batch(
+        files=files,
+        source_paths=padded_source_paths,
+        tag_ids=tag_ids,
+        uploaded_by=current_user.id,
+        auto_tag=auto_tag,
+    )
+
+    # Enqueue background processing for each successfully uploaded file
+    for file_result in batch_result["results"]:
+        if file_result["status"] == "uploaded" and file_result["document_id"]:
+            await enqueue_document_processing(file_result["document_id"], background_tasks)
+
+    return BatchUploadResponse(
+        total=batch_result["total"],
+        uploaded=batch_result["uploaded"],
+        duplicates=batch_result["duplicates"],
+        failed=batch_result["failed"],
+        auto_tags_applied=batch_result["auto_tags_applied"],
+        results=[BatchFileResult(**r) for r in batch_result["results"]],
+    )
 
 
 @router.get("", response_model=DocumentListResponse)
