@@ -23,6 +23,7 @@ except ImportError:
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.exceptions import ResponseHandlingException
+from qdrant_client.http.models import Fusion, FusionQuery, Prefetch
 
 from ai_ready_rag.core.exceptions import EmbeddingError, IndexingError, SearchError
 from ai_ready_rag.services.vector_utils import generate_chunk_id
@@ -67,6 +68,7 @@ class IndexResult:
     replaced_existing: bool
     embedding_time_ms: float
     indexing_time_ms: float
+    sparse_indexed: bool = True  # Default True for backward compat
 
 
 @dataclass
@@ -144,6 +146,45 @@ class VectorService:
         self._sparse_model: SparseTextEmbedding | None = None
         self._sparse_available: bool = FASTEMBED_AVAILABLE
         self._sparse_lock = threading.Lock()
+
+        # Hybrid search capability detection
+        self._collection_has_sparse: bool = False
+        self._capabilities_checked_at: datetime | None = None
+
+    async def _detect_collection_capabilities(self) -> None:
+        """Check collection for sparse vector support (named vector 'sparse')."""
+        try:
+            info = await self._qdrant.get_collection(self.collection_name)
+            sparse_vectors = getattr(info.config.params, "sparse_vectors", None)
+            self._collection_has_sparse = sparse_vectors is not None and "sparse" in sparse_vectors
+            self._capabilities_checked_at = datetime.now(UTC)
+            logger.info(f"Collection capabilities detected: sparse={self._collection_has_sparse}")
+        except Exception as e:
+            logger.warning(f"Failed to detect collection capabilities: {e}")
+            self._collection_has_sparse = False
+
+    @property
+    def hybrid_enabled(self) -> bool:
+        """Whether hybrid search is enabled via admin settings."""
+        from ai_ready_rag.services.settings_service import get_rag_setting
+
+        return bool(get_rag_setting("retrieval_hybrid_enabled", False))
+
+    @property
+    def min_similarity_score(self) -> float:
+        """Get the appropriate score threshold based on active search mode."""
+        from ai_ready_rag.services.settings_service import get_rag_setting
+
+        if self.hybrid_enabled and self._collection_has_sparse:
+            return float(get_rag_setting("retrieval_min_score_hybrid", 0.05))
+        return float(get_rag_setting("retrieval_min_score_dense", 0.3))
+
+    @property
+    def prefetch_multiplier(self) -> int:
+        """Multiplier for prefetch limit in hybrid search."""
+        from ai_ready_rag.services.settings_service import get_rag_setting
+
+        return int(get_rag_setting("retrieval_prefetch_multiplier", 3))
 
     def _get_sparse_model(self) -> SparseTextEmbedding | None:
         """Thread-safe lazy-load of sparse embedding model.
@@ -223,13 +264,31 @@ class VectorService:
 
         if self.collection_name not in collection_names:
             logger.info(f"Creating collection: {self.collection_name}")
-            await self._qdrant.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=models.VectorParams(
-                    size=self.embedding_dimension,
-                    distance=models.Distance.COSINE,
-                ),
-            )
+            if self.hybrid_enabled:
+                # Named vectors: dense + sparse
+                await self._qdrant.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config={
+                        "dense": models.VectorParams(
+                            size=self.embedding_dimension,
+                            distance=models.Distance.COSINE,
+                        ),
+                    },
+                    sparse_vectors_config={
+                        "sparse": models.SparseVectorParams(
+                            modifier=models.Modifier.IDF,
+                        ),
+                    },
+                )
+            else:
+                # Legacy: unnamed dense vector only
+                await self._qdrant.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=models.VectorParams(
+                        size=self.embedding_dimension,
+                        distance=models.Distance.COSINE,
+                    ),
+                )
 
             # Create payload indexes for efficient filtering
             await self._qdrant.create_payload_index(
@@ -247,9 +306,27 @@ class VectorService:
                 field_name="tenant_id",
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
+            await self._qdrant.create_payload_index(
+                collection_name=self.collection_name,
+                field_name="sparse_indexed",
+                field_schema=models.PayloadSchemaType.BOOL,
+            )
             logger.info(f"Collection {self.collection_name} created with indexes")
         else:
             logger.debug(f"Collection {self.collection_name} already exists")
+
+        # Detect collection capabilities (sparse vector support)
+        await self._detect_collection_capabilities()
+
+    async def refresh_capabilities(self) -> dict:
+        """Re-detect collection capabilities. Called on config change or migration."""
+        await self._detect_collection_capabilities()
+        return {
+            "collection_has_sparse": self._collection_has_sparse,
+            "capabilities_checked_at": (
+                self._capabilities_checked_at.isoformat() if self._capabilities_checked_at else None
+            ),
+        }
 
     async def health_check(self) -> HealthStatus:
         """Check connectivity to Qdrant and Ollama.
@@ -493,6 +570,23 @@ class VectorService:
             raise IndexingError(f"Failed to generate embeddings: {e}") from e
         embedding_time_ms = (time.perf_counter() - embed_start) * 1000
 
+        # Generate sparse vectors (hybrid mode)
+        sparse_vectors: list[models.SparseVector | None] = []
+        sparse_indexed = False
+        if self.hybrid_enabled and self._collection_has_sparse:
+            try:
+                sparse_vectors = self.sparse_embed_batch(chunks)
+                sparse_indexed = all(sv is not None for sv in sparse_vectors)
+                if not sparse_indexed:
+                    logger.warning(
+                        f"Some sparse vectors failed for {document_id}, "
+                        f"indexing dense-only for affected chunks"
+                    )
+            except Exception as e:
+                logger.error(f"Sparse embedding failed for {document_id}, indexing dense-only: {e}")
+                sparse_vectors = [None] * len(chunks)
+                sparse_indexed = False
+
         # Build points for Qdrant
         points = []
         for i, (chunk_text, embedding) in enumerate(zip(chunks, embeddings, strict=True)):
@@ -513,6 +607,11 @@ class VectorService:
                 "uploaded_at": uploaded_at,
                 "page_number": meta.get("page_number"),
                 "section": meta.get("section"),
+                "sparse_indexed": (
+                    sparse_indexed
+                    if (self.hybrid_enabled and self._collection_has_sparse)
+                    else True  # Legacy collections: not applicable, default True
+                ),
             }
 
             # Pass through extra metadata keys (e.g., is_summary, document_type)
@@ -520,13 +619,27 @@ class VectorService:
                 if key not in payload and value is not None:
                     payload[key] = value
 
-            points.append(
-                models.PointStruct(
-                    id=chunk_id,
-                    vector=embedding,
-                    payload=payload,
+            # Build vector: named vectors if collection supports it, unnamed otherwise
+            if self._collection_has_sparse:
+                vector: dict | list = {"dense": embedding}
+                if sparse_vectors and i < len(sparse_vectors) and sparse_vectors[i] is not None:
+                    vector["sparse"] = sparse_vectors[i]
+                points.append(
+                    models.PointStruct(
+                        id=chunk_id,
+                        vector=vector,
+                        payload=payload,
+                    )
                 )
-            )
+            else:
+                # Legacy unnamed vector (pre-migration collection)
+                points.append(
+                    models.PointStruct(
+                        id=chunk_id,
+                        vector=embedding,
+                        payload=payload,
+                    )
+                )
 
         # Upsert to Qdrant
         index_start = time.perf_counter()
@@ -554,6 +667,9 @@ class VectorService:
             replaced_existing=replaced_existing,
             embedding_time_ms=embedding_time_ms,
             indexing_time_ms=indexing_time_ms,
+            sparse_indexed=sparse_indexed
+            if (self.hybrid_enabled and self._collection_has_sparse)
+            else True,
         )
 
     async def delete_document(self, document_id: str) -> bool:
@@ -623,6 +739,11 @@ class VectorService:
     ) -> list[SearchResult]:
         """Semantic search with access control filtering.
 
+        Supports three execution paths:
+        - Hybrid: Prefetch dense + sparse, fuse with RRF, normalize scores
+        - Degraded: Sparse embed fails, fall back to dense-only with named vector
+        - Dense-only: Hybrid disabled or collection lacks sparse vectors
+
         Args:
             query: Natural language query.
             user_tags: Tags the user has access to. None = no tag filtering
@@ -639,19 +760,20 @@ class VectorService:
 
         Note:
             Access control filter is applied BEFORE vector search (pre-retrieval).
+            In hybrid mode, the SAME filter is applied to BOTH prefetch queries.
             - user_tags=None: No tag filtering (admin or tag_access_enabled=False users)
             - user_tags=[]: Only documents with "public" tag
             - user_tags=["hr"]: Public + hr documents
         """
         tenant = tenant_id or self.tenant_id
 
-        # Generate query embedding
+        # 1. Dense embedding (always needed)
         try:
             query_embedding = await self.embed(query)
         except EmbeddingError as e:
             raise SearchError(f"Failed to embed query: {e}") from e
 
-        # Build access control filter
+        # 2. Access filter (unchanged)
         if user_tags is None:
             # System admin: no tag filtering, tenant only
             access_filter = models.Filter(
@@ -665,22 +787,95 @@ class VectorService:
         else:
             access_filter = self._build_access_filter(user_tags, tenant)
 
-        # Search Qdrant using query_points (newer API)
+        # 3. Execute search
+        degraded = False
+        use_hybrid = self.hybrid_enabled and self._collection_has_sparse
+
         try:
-            response = await self._qdrant.query_points(
-                collection_name=self.collection_name,
-                query=query_embedding,
-                query_filter=access_filter,
-                limit=limit,
-                score_threshold=score_threshold,
-                with_payload=True,
-            )
+            if use_hybrid:
+                # Try sparse embedding
+                query_sparse = None
+                try:
+                    query_sparse = self.sparse_embed(query)
+                except Exception as e:
+                    logger.warning(f"Sparse embed failed, falling back to dense-only: {e}")
+                    degraded = True
+
+                if query_sparse is None and not degraded:
+                    # sparse_embed returned None (model unavailable)
+                    logger.warning("Sparse model unavailable, falling back to dense-only")
+                    degraded = True
+
+                if query_sparse is not None:
+                    # HYBRID PATH (Path A)
+                    logger.info(
+                        f"Hybrid search: dense+sparse prefetch with RRF fusion (limit={limit})"
+                    )
+                    prefetch_limit = max(20, min(100, limit * self.prefetch_multiplier))
+                    response = await self._qdrant.query_points(
+                        collection_name=self.collection_name,
+                        prefetch=[
+                            Prefetch(
+                                query=query_embedding,
+                                using="dense",
+                                limit=prefetch_limit,
+                                filter=access_filter,
+                            ),
+                            Prefetch(
+                                query=query_sparse,
+                                using="sparse",
+                                limit=prefetch_limit,
+                                filter=access_filter,
+                            ),
+                        ],
+                        query=FusionQuery(fusion=Fusion.RRF),
+                        limit=limit,
+                        with_payload=True,
+                        # NOTE: No score_threshold - RRF scores are raw, apply post-normalization
+                        # NOTE: No query_filter - filters are on Prefetch, not top-level
+                    )
+                    points = self._normalize_scores(response.points)
+                    if score_threshold > 0:
+                        points = [p for p in points if p.score >= score_threshold]
+                else:
+                    # DEGRADED PATH (Path B): dense-only with named vector
+                    logger.info(
+                        "Degraded search: sparse unavailable, using dense-only with named vector"
+                    )
+                    response = await self._qdrant.query_points(
+                        collection_name=self.collection_name,
+                        query=query_embedding,
+                        using="dense",
+                        query_filter=access_filter,
+                        limit=limit,
+                        score_threshold=score_threshold if score_threshold > 0 else None,
+                        with_payload=True,
+                    )
+                    points = response.points
+            else:
+                # DENSE-ONLY PATH (Path C): hybrid disabled or no sparse in collection
+                logger.info("Dense-only search: hybrid disabled or collection lacks sparse vectors")
+                query_kwargs: dict = {
+                    "collection_name": self.collection_name,
+                    "query": query_embedding,
+                    "query_filter": access_filter,
+                    "limit": limit,
+                    "score_threshold": score_threshold if score_threshold > 0 else None,
+                    "with_payload": True,
+                }
+                if self._collection_has_sparse:
+                    # Collection has named vectors but hybrid is disabled
+                    query_kwargs["using"] = "dense"
+                response = await self._qdrant.query_points(**query_kwargs)
+                points = response.points
         except Exception as e:
+            if isinstance(e, SearchError):
+                raise
             raise SearchError(f"Qdrant search failed: {e}") from e
 
-        # Convert to SearchResult objects
+        # 4. Convert to SearchResult (unchanged)
         search_results = []
-        for point in response.points:
+        for point in points:
             payload = point.payload or {}
             search_results.append(
                 SearchResult(
@@ -693,6 +888,11 @@ class VectorService:
                     page_number=payload.get("page_number"),
                     section=payload.get("section"),
                 )
+            )
+
+        if degraded:
+            logger.info(
+                f"Search completed in degraded mode (dense-only): {len(search_results)} results"
             )
 
         return search_results
@@ -734,6 +934,33 @@ class VectorService:
                 models.Filter(should=tag_conditions),
             ],
         )
+
+    def _normalize_scores(self, points: list) -> list:
+        """Min-max normalize RRF fusion scores to 0.0-1.0 range.
+
+        RRF scores are rank-based (typically 0.008-0.033) and not cosine-calibrated.
+        Normalization preserves relative ordering while producing values compatible
+        with existing confidence scoring and score_threshold filtering.
+
+        Applied only in hybrid mode. Dense-only returns native cosine scores.
+        """
+        if not points:
+            return points
+
+        scores = [p.score for p in points]
+        min_score = min(scores)
+        max_score = max(scores)
+
+        if max_score == min_score:
+            # All same rank - assign 1.0 (best possible)
+            for p in points:
+                p.score = 1.0
+            return points
+
+        for p in points:
+            p.score = (p.score - min_score) / (max_score - min_score)
+
+        return points
 
     async def _count_document_chunks(self, document_id: str) -> int:
         """Count chunks for a document."""
@@ -970,3 +1197,94 @@ class VectorService:
         except Exception as e:
             logger.error(f"Failed to clear collection: {e}")
             return False
+
+    async def backfill_sparse_vectors(self, batch_size: int = 100) -> int:
+        """Scan for points with sparse_indexed=false and add sparse vectors.
+
+        Called manually via CLI or scheduled job. Idempotent.
+
+        Args:
+            batch_size: Number of points to process per batch.
+
+        Returns:
+            Count of points backfilled.
+        """
+        if not self._collection_has_sparse:
+            logger.warning("Collection does not support sparse vectors, skipping backfill")
+            return 0
+
+        total_backfilled = 0
+        offset = None
+
+        while True:
+            # Scroll points where sparse_indexed == false
+            results, offset = await self._qdrant.scroll(
+                collection_name=self.collection_name,
+                limit=batch_size,
+                offset=offset,
+                with_payload=["chunk_text", "sparse_indexed"],
+                with_vectors=False,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="sparse_indexed",
+                            match=models.MatchValue(value=False),
+                        ),
+                    ]
+                ),
+            )
+
+            if not results:
+                break
+
+            # Extract texts for batch embedding
+            texts = []
+            point_ids = []
+            for point in results:
+                chunk_text = point.payload.get("chunk_text", "") if point.payload else ""
+                if chunk_text:
+                    texts.append(chunk_text)
+                    point_ids.append(point.id)
+
+            if not texts:
+                if offset is None:
+                    break
+                continue
+
+            # Generate sparse vectors
+            try:
+                sparse_vectors = self.sparse_embed_batch(texts)
+            except Exception as e:
+                logger.error(f"Sparse embedding failed during backfill: {e}")
+                break
+
+            # Update points with sparse vectors
+            for pid, sv in zip(point_ids, sparse_vectors, strict=True):
+                if sv is None:
+                    continue
+                try:
+                    await self._qdrant.update_vectors(
+                        collection_name=self.collection_name,
+                        points=[
+                            models.PointVectors(
+                                id=pid,
+                                vector={"sparse": sv},
+                            )
+                        ],
+                    )
+                    await self._qdrant.set_payload(
+                        collection_name=self.collection_name,
+                        payload={"sparse_indexed": True},
+                        points=[pid],
+                    )
+                    total_backfilled += 1
+                except Exception as e:
+                    logger.error(f"Failed to backfill point {pid}: {e}")
+
+            logger.info(f"Backfilled {total_backfilled} points so far")
+
+            if offset is None:
+                break
+
+        logger.info(f"Backfill complete: {total_backfilled} points updated")
+        return total_backfilled
