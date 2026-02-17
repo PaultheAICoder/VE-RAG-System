@@ -377,6 +377,7 @@ class DocumentService:
         user_id: str,
         user_tags: list[str],
         is_admin: bool,
+        tag_access_enabled: bool = True,
     ) -> Document | None:
         """Get document if user has access.
 
@@ -399,9 +400,10 @@ class DocumentService:
             return document
 
         # Users can only see documents with matching tags
-        doc_tag_names = {tag.name for tag in document.tags}
-        if not doc_tag_names.intersection(set(user_tags)):
-            return None
+        if tag_access_enabled:
+            doc_tag_names = {tag.name for tag in document.tags}
+            if not doc_tag_names.intersection(set(user_tags)):
+                return None
 
         return document
 
@@ -410,6 +412,7 @@ class DocumentService:
         user_id: str,
         user_tags: list[str],
         is_admin: bool,
+        tag_access_enabled: bool = True,
         limit: int = 20,
         offset: int = 0,
         status_filter: str | None = None,
@@ -440,7 +443,7 @@ class DocumentService:
         query = self.db.query(Document)
 
         # Access control for non-admins
-        if not is_admin:
+        if not is_admin and tag_access_enabled:
             query = query.join(Document.tags).filter(Tag.name.in_(user_tags)).distinct()
 
         # Filter by status

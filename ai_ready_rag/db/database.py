@@ -140,6 +140,12 @@ _TRACKED_MIGRATIONS = [
             "ALTER TABLE documents ADD COLUMN auto_tag_source TEXT",
         ],
     ),
+    (
+        "access_control_v1_columns",
+        [
+            "ALTER TABLE users ADD COLUMN tag_access_enabled BOOLEAN DEFAULT 1 NOT NULL",
+        ],
+    ),
 ]
 
 

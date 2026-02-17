@@ -7,7 +7,13 @@ from ai_ready_rag.core.dependencies import require_admin
 from ai_ready_rag.core.security import generate_temporary_password, hash_password
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import Tag, User
-from ai_ready_rag.schemas.user import TagAssignment, UserCreate, UserResponse, UserUpdate
+from ai_ready_rag.schemas.user import (
+    BulkAutoTagAssignment,
+    TagAssignment,
+    UserCreate,
+    UserResponse,
+    UserUpdate,
+)
 
 router = APIRouter()
 
@@ -129,6 +135,54 @@ async def assign_tags(
     return {
         "message": f"Assigned {len(tags)} tags to user",
         "tags": [{"id": t.id, "name": t.name} for t in tags],
+    }
+
+
+@router.post("/{user_id}/tags/auto")
+async def bulk_auto_assign_tags(
+    user_id: str,
+    assignment: BulkAutoTagAssignment,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Bulk assign auto-tags to user by client names (admin only).
+
+    Looks up tags by client names (with 'client:' prefix), optionally
+    includes doctype: and entity: tags, then assigns all matching tags
+    to the user (merged with existing tags).
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Build list of tag name patterns to match
+    tag_patterns = [f"client:{name}" for name in assignment.client_names]
+
+    if assignment.include_doctypes:
+        tag_patterns.extend(
+            [t.name for t in db.query(Tag).filter(Tag.name.like("doctype:%")).all()]
+        )
+
+    if assignment.include_entities:
+        tag_patterns.extend([t.name for t in db.query(Tag).filter(Tag.name.like("entity:%")).all()])
+
+    # Find matching tags
+    matching_tags = db.query(Tag).filter(Tag.name.in_(tag_patterns)).all()
+
+    # Merge with existing tags (don't replace)
+    existing_tag_ids = {t.id for t in user.tags}
+    for tag in matching_tags:
+        if tag.id not in existing_tag_ids:
+            user.tags.append(tag)
+
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": f"Assigned {len(matching_tags)} auto-tags to user",
+        "requested": len(assignment.client_names),
+        "matched": len(matching_tags),
+        "tags": [{"id": t.id, "name": t.name, "display_name": t.display_name} for t in user.tags],
     }
 
 
