@@ -16,6 +16,9 @@ python-dotenv>=1.0.0
 # ============== Vector Store ==============
 qdrant-client>=1.13.0
 
+# ============== Sparse Embeddings ==============
+fastembed==0.4.1
+
 # ============== LLM ==============
 langchain>=0.3.0
 langchain-community>=0.3.0

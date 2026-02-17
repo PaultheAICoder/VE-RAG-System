@@ -5,11 +5,21 @@ Provides an abstraction over Qdrant (vector database) and Ollama (embeddings).
 
 import asyncio
 import logging
+import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import httpx
+
+try:
+    from fastembed import SparseTextEmbedding
+
+    FASTEMBED_AVAILABLE = True
+except ImportError:
+    SparseTextEmbedding = None
+    FASTEMBED_AVAILABLE = False
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.exceptions import ResponseHandlingException
@@ -129,6 +139,77 @@ class VectorService:
         # Initialize async Qdrant client
         # Note: check_compatibility=False to allow minor version mismatches
         self._qdrant = AsyncQdrantClient(url=qdrant_url, check_compatibility=False)
+
+        # Sparse embedding state (thread-safe lazy loading)
+        self._sparse_model: SparseTextEmbedding | None = None
+        self._sparse_available: bool = FASTEMBED_AVAILABLE
+        self._sparse_lock = threading.Lock()
+
+    def _get_sparse_model(self) -> SparseTextEmbedding | None:
+        """Thread-safe lazy-load of sparse embedding model.
+
+        Uses double-checked locking pattern for thread safety.
+        Returns None if model fails to load (graceful degradation).
+        """
+        if not self._sparse_available:
+            return None
+        if self._sparse_model is not None:
+            return self._sparse_model
+        with self._sparse_lock:
+            if self._sparse_model is not None:
+                return self._sparse_model
+            try:
+                self._sparse_model = SparseTextEmbedding(
+                    model_name="Qdrant/bm25",
+                    cache_dir=os.environ.get("FASTEMBED_CACHE_PATH"),
+                )
+            except Exception as e:
+                logger.error(f"Failed to load sparse embedding model: {e}")
+                self._sparse_available = False
+                return None
+        return self._sparse_model
+
+    def sparse_embed(self, text: str) -> models.SparseVector | None:
+        """Generate sparse BM25 vector for text.
+
+        Args:
+            text: Input text to embed.
+
+        Returns:
+            SparseVector with indices and values, or None if model unavailable.
+        """
+        model = self._get_sparse_model()
+        if model is None:
+            return None
+        result = list(model.embed([text]))[0]
+        return models.SparseVector(
+            indices=result.indices.tolist(),
+            values=result.values.tolist(),
+        )
+
+    def sparse_embed_batch(self, texts: list[str]) -> list[models.SparseVector | None]:
+        """Generate sparse BM25 vectors for multiple texts.
+
+        Args:
+            texts: List of input texts.
+
+        Returns:
+            List of SparseVector objects (same order as input),
+            or empty list if model unavailable.
+        """
+        if not texts:
+            return []
+        model = self._get_sparse_model()
+        if model is None:
+            return [None] * len(texts)
+        results = list(model.embed(texts))
+        return [
+            models.SparseVector(
+                indices=r.indices.tolist(),
+                values=r.values.tolist(),
+            )
+            for r in results
+        ]
 
     async def initialize(self) -> None:
         """Create collection if not exists.
