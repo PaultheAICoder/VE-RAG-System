@@ -1,0 +1,139 @@
+strategy:
+  id: "construction"
+  name: "Construction"
+  description: "For construction companies managing project documentation"
+  version: "1.0"
+
+namespaces:
+  client:
+    display: "Project"
+    color: "#6366f1"
+  year:
+    display: "Year"
+    color: "#f59e0b"
+  doctype:
+    display: "Document Type"
+    color: "#10b981"
+  stage:
+    display: "Project Phase"
+    color: "#64748b"
+  entity:
+    display: "Subcontractor/Vendor"
+    color: "#0ea5e9"
+  topic:
+    display: "Trade/Discipline"
+    color: "#f43f5e"
+
+path_rules:
+  - namespace: "client"
+    level: 0
+    pattern: "^(.+?)(?:\\s*Phase.*)?$"
+    capture_group: 1
+    transform: "slugify"
+
+  - namespace: "stage"
+    level: 1
+    mapping:
+      "Bids": "bidding"
+      "Contracts": "contract"
+      "Submittals": "submittal"
+      "RFIs": "rfi"
+      "Change Orders": "change-order"
+      "Pay Applications": "pay-app"
+      "Inspections": "inspection"
+      "Punch List": "punch-list"
+      "Close-Out": "close-out"
+      "Safety": "safety"
+      "Photos": "photos"
+      "Drawings": "drawings"
+
+document_types:
+  bid:
+    display: "Bid/Proposal"
+    keywords: ["bid", "proposal", "estimate", "scope of work"]
+  contract:
+    display: "Contract"
+    keywords: ["contract", "agreement", "aia", "subcontract"]
+  change_order:
+    display: "Change Order"
+    keywords: ["change order", "co", "modification", "amendment"]
+  submittal:
+    display: "Submittal"
+    keywords: ["submittal", "shop drawing", "product data", "sample"]
+  rfi:
+    display: "RFI"
+    keywords: ["request for information", "rfi", "clarification"]
+  pay_app:
+    display: "Pay Application"
+    keywords: ["pay application", "aia g702", "g703", "schedule of values"]
+  inspection:
+    display: "Inspection Report"
+    keywords: ["inspection", "report", "punch list", "deficiency"]
+  drawing:
+    display: "Drawing/Plan"
+    keywords: ["drawing", "plan", "elevation", "detail", "blueprint"]
+  permit:
+    display: "Permit"
+    keywords: ["permit", "building permit", "variance", "approval"]
+  safety:
+    display: "Safety Document"
+    keywords: ["safety", "osha", "incident", "toolbox talk"]
+  correspondence:
+    display: "Correspondence"
+    keywords: ["letter", "email", "memo", "notice"]
+  unknown:
+    display: "Unknown"
+    keywords: []
+
+entity_extraction:
+  namespace: "entity"
+  prompt_label: "subcontractor or vendor"
+  prompt_instruction: "Identify the subcontractor, vendor, or supplier named in this document. Return null if not identifiable."
+  aliases: {}
+
+topic_extraction:
+  namespace: "topic"
+  prompt_label: "construction trades"
+  prompt_instruction: "List the construction trades or disciplines relevant to this document."
+  values:
+    - id: "electrical"
+      display: "Electrical"
+      keywords: ["electrical", "wiring", "conduit", "panel"]
+    - id: "plumbing"
+      display: "Plumbing"
+      keywords: ["plumbing", "piping", "fixture", "drain"]
+    - id: "hvac"
+      display: "HVAC"
+      keywords: ["hvac", "mechanical", "ductwork", "air handling"]
+    - id: "structural"
+      display: "Structural"
+      keywords: ["structural", "foundation", "framing", "steel"]
+    - id: "concrete"
+      display: "Concrete"
+      keywords: ["concrete", "formwork", "rebar", "pour"]
+    - id: "roofing"
+      display: "Roofing"
+      keywords: ["roofing", "membrane", "flashing", "gutter"]
+    - id: "sitework"
+      display: "Sitework"
+      keywords: ["grading", "excavation", "paving", "landscaping"]
+    - id: "fire-protection"
+      display: "Fire Protection"
+      keywords: ["fire", "sprinkler", "alarm", "suppression"]
+
+llm_prompt: |
+  Classify this construction project document. Return JSON only.
+
+  Document filename: {filename}
+  First 2000 characters of content:
+  {content_preview}
+
+  Return this exact JSON structure:
+  {{
+    "document_type": "<one of: {document_type_ids}>",
+    "entity": "<subcontractor or vendor name or null>",
+    "topics": [<list of: {topic_ids}>],
+    "year_start": "<YYYY or null>",
+    "year_end": "<YYYY or null>",
+    "confidence": <0.0 to 1.0>
+  }}

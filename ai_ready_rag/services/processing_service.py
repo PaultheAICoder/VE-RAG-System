@@ -1,6 +1,7 @@
 """Document processing service with profile-aware chunking."""
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -248,6 +249,18 @@ class ProcessingService:
                 except Exception as e:
                     logger.warning(f"Summary generation failed for {document.id}, continuing: {e}")
 
+            # --- LLM Auto-Tagging Classification ---
+            try:
+                await self._run_llm_classification(document, chunks, db)
+            except Exception as e:
+                logger.warning(
+                    "LLM auto-tagging failed for %s, continuing with path tags: %s",
+                    document.id,
+                    e,
+                )
+                if document.auto_tag_status == "pending":
+                    document.auto_tag_status = "partial"
+
             # Extract tag names for vector indexing
             tag_names = [tag.name for tag in document.tags]
 
@@ -378,3 +391,137 @@ class ProcessingService:
 
         forms_service = FormsProcessingService(self.settings)
         return await forms_service.process_form(document, db)
+
+    async def _run_llm_classification(
+        self,
+        document: Document,
+        chunks: list[ChunkInfo],
+        db: Session,
+    ) -> None:
+        """Run LLM classification, conflict resolution, and provenance recording.
+
+        Modifies document.tags, document.auto_tag_source, and
+        document.auto_tag_status in-place. Caller must db.commit() after this
+        returns.
+        """
+        if not (
+            self.settings.auto_tagging_enabled
+            and self.settings.auto_tagging_llm_enabled
+            and document.auto_tag_status == "pending"
+        ):
+            return
+
+        # Extract content preview from first 2000 chars of chunks
+        content_preview = " ".join(chunk.text for chunk in chunks)[:2000]
+
+        # Load pinned strategy
+        from ai_ready_rag.services.auto_tagging import AutoTagStrategy
+
+        strategy_name = document.auto_tag_strategy or self.settings.auto_tagging_strategy
+        strategy_path = Path(self.settings.auto_tagging_strategies_dir) / f"{strategy_name}.yaml"
+        strategy = AutoTagStrategy.load(str(strategy_path))
+
+        # Version mismatch warning
+        if document.auto_tag_version and strategy.version != document.auto_tag_version:
+            logger.warning(
+                "Strategy version mismatch for doc %s: pinned=%s, loaded=%s",
+                document.id,
+                document.auto_tag_version,
+                strategy.version,
+            )
+
+        # Run classifier
+        from ai_ready_rag.services.auto_tagging import DocumentClassifier
+
+        classifier = DocumentClassifier(self.settings)
+        result = await classifier.classify(
+            strategy,
+            document.original_filename,
+            document.source_path or "",
+            content_preview,
+        )
+
+        # Identify existing path tags on document
+        path_auto_tags: list = []
+        if document.source_path:
+            path_auto_tags = strategy.parse_path(document.source_path)
+
+        path_tag_names = {at.tag_name for at in path_auto_tags}
+        manual_tag_names = {tag.name for tag in document.tags if tag.name not in path_tag_names}
+
+        # Resolve conflicts
+        from ai_ready_rag.services.auto_tagging.conflict import (
+            build_provenance,
+            enforce_guardrail,
+            resolve_conflicts,
+        )
+
+        winning_llm, losing_path, conflicts = resolve_conflicts(
+            path_tags=path_auto_tags,
+            llm_result=result,
+            confidence_threshold=self.settings.auto_tagging_confidence_threshold,
+        )
+
+        # Remove losing path tags from document.tags
+        losing_path_names = {at.tag_name for at in losing_path}
+        if losing_path_names:
+            document.tags = [t for t in document.tags if t.name not in losing_path_names]
+
+        # Convert winning LLM AutoTag objects to DB Tag objects and add
+        from ai_ready_rag.services.document_service import DocumentService
+
+        doc_service = DocumentService(db, self.settings)
+        existing_tag_names = {t.name for t in document.tags}
+        for at in winning_llm:
+            if at.tag_name not in existing_tag_names:
+                tag_obj = doc_service.ensure_tag_exists(
+                    tag_name=at.tag_name,
+                    display_name=at.display_name,
+                    namespace=at.namespace,
+                    strategy=strategy,
+                    created_by=document.uploaded_by,
+                )
+                if tag_obj is not None:
+                    document.tags.append(tag_obj)
+                    existing_tag_names.add(at.tag_name)
+
+        # Enforce guardrail
+        current_path_tags = [at for at in path_auto_tags if at.tag_name not in losing_path_names]
+        kept_path, kept_llm, truncated = enforce_guardrail(
+            manual_tag_names=manual_tag_names,
+            path_tags=current_path_tags,
+            llm_tags=winning_llm,
+            max_tags=self.settings.auto_tagging_max_tags_per_doc,
+        )
+        # If any truncated, remove from document.tags
+        if truncated:
+            truncated_set = set(truncated)
+            document.tags = [t for t in document.tags if t.name not in truncated_set]
+
+        # Build and write provenance
+        applied_names = [t.name for t in document.tags]
+        discarded_names = [at.tag_name for at in result.discarded]
+        # Add conflict-losing LLM tags to discarded
+        for conflict in conflicts:
+            if conflict["winner"] == "path":
+                discarded_names.append(f"{conflict['namespace']}:{conflict['llm_value']}")
+        suggested_names = [at.tag_name for at in result.suggested]
+
+        provenance = build_provenance(
+            strategy_id=strategy.id,
+            strategy_version=strategy.version,
+            path_tags=path_auto_tags,
+            llm_result=result,
+            conflicts=conflicts,
+            applied_tag_names=applied_names,
+            discarded_tag_names=discarded_names,
+            suggested_tag_names=suggested_names,
+            truncated_tag_names=truncated if truncated else None,
+        )
+        document.auto_tag_source = json.dumps(provenance)
+
+        # Update auto_tag_status
+        document.auto_tag_status = result.status
+
+        # Flush to ensure tag changes are visible before vector indexing
+        db.flush()
