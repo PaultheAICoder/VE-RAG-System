@@ -45,4 +45,11 @@ class Document(Base):
     forms_ingest_key = Column(String, nullable=True, index=True)
     forms_db_table_names = Column(Text, nullable=True)  # JSON array of table names
 
+    # Auto-tagging fields (all nullable — only populated when auto-tagging is enabled)
+    auto_tag_status = Column(String, nullable=True)  # null|pending|completed|partial|failed
+    auto_tag_strategy = Column(String, nullable=True)  # Strategy ID used
+    auto_tag_version = Column(String, nullable=True)  # Strategy version used
+    auto_tag_source = Column(Text, nullable=True)  # JSON provenance
+    source_path = Column(String, nullable=True)  # Original folder path from upload
+
     tags = relationship("Tag", secondary=document_tags, back_populates="documents")

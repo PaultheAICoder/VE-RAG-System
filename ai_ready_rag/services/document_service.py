@@ -20,6 +20,7 @@ from ai_ready_rag.core.exceptions import (
     ValidationError,
 )
 from ai_ready_rag.db.models import Document, Tag
+from ai_ready_rag.services.auto_tagging import AutoTagStrategy
 from ai_ready_rag.utils.file_utils import (
     compute_file_hash,
     get_file_extension,
@@ -79,6 +80,8 @@ class DocumentService:
         description: str | None = None,
         replace: bool = False,
         vector_service=None,
+        source_path: str | None = None,
+        auto_tag: bool | None = None,
     ) -> Document:
         """Upload and store a document.
 
@@ -106,15 +109,25 @@ class DocumentService:
                 f"File type '{extension}' not allowed. Allowed: {', '.join(self.settings.allowed_extensions)}"
             )
 
-        # Validate tags
-        if not tag_ids:
-            raise NoTagsError("At least one tag is required")
+        # Determine if auto-tagging will produce tags
+        auto_tagging_active = (
+            self.settings.auto_tagging_enabled
+            and (source_path is not None or auto_tag is True)
+            and self.settings.auto_tagging_path_enabled
+        )
 
-        tags = self.db.query(Tag).filter(Tag.id.in_(tag_ids)).all()
-        if len(tags) != len(tag_ids):
-            found_ids = {t.id for t in tags}
-            missing = [tid for tid in tag_ids if tid not in found_ids]
-            raise InvalidTagsError(f"Invalid tag IDs: {missing}")
+        # Validate manual tags (if provided)
+        tags = []
+        if tag_ids:
+            tags = self.db.query(Tag).filter(Tag.id.in_(tag_ids)).all()
+            if len(tags) != len(tag_ids):
+                found_ids = {t.id for t in tags}
+                missing = [tid for tid in tag_ids if tid not in found_ids]
+                raise InvalidTagsError(f"Invalid tag IDs: {missing}")
+
+        # Require at least one tag (manual or auto)
+        if not tag_ids and not auto_tagging_active:
+            raise NoTagsError("At least one tag is required")
 
         # Read file content to check size
         content = await file.read()
@@ -223,13 +236,140 @@ class DocumentService:
         document.file_path = str(file_path)
         document.content_hash = content_hash
 
+        # Apply auto-tagging if active
+        auto_tag_objects = []
+        strategy = None
+        if auto_tagging_active and source_path:
+            try:
+                strategy_path = (
+                    Path(self.settings.auto_tagging_strategies_dir)
+                    / f"{self.settings.auto_tagging_strategy}.yaml"
+                )
+                strategy = AutoTagStrategy.load(str(strategy_path))
+                auto_tag_objects = self._apply_path_based_tags(source_path, strategy, uploaded_by)
+            except Exception as e:
+                logger.warning("Auto-tagging failed, continuing without: %s", e)
+
+        # Merge manual + auto tags (deduplicate by tag name)
+        all_tags = list(tags)
+        existing_names = {t.name for t in all_tags}
+        for at in auto_tag_objects:
+            if at.name not in existing_names:
+                all_tags.append(at)
+                existing_names.add(at.name)
+
+        # Final check: must have at least one tag
+        if not all_tags:
+            raise NoTagsError(
+                "At least one tag is required (neither manual nor auto-tags produced)"
+            )
+
         # Link tags
-        document.tags = tags
+        document.tags = all_tags
+
+        # Set auto-tagging metadata
+        if strategy:
+            document.auto_tag_strategy = strategy.id
+            document.auto_tag_version = strategy.version
+            document.auto_tag_status = "pending"
+        document.source_path = source_path
 
         self.db.commit()
         self.db.refresh(document)
 
         return document
+
+    def ensure_tag_exists(
+        self,
+        tag_name: str,
+        display_name: str,
+        namespace: str,
+        strategy: AutoTagStrategy,
+        created_by: str,
+    ) -> Tag | None:
+        """Find or create a tag by name. Returns the Tag object or None if skipped."""
+        existing = self.db.query(Tag).filter(Tag.name == tag_name).first()
+        if existing:
+            return existing
+
+        if not self.settings.auto_tagging_create_missing_tags:
+            return None
+
+        if len(tag_name) > self.settings.auto_tagging_max_tag_name_length:
+            logger.warning(
+                "Tag name '%s' exceeds max length %d, skipping",
+                tag_name,
+                self.settings.auto_tagging_max_tag_name_length,
+            )
+            return None
+
+        # Check namespace cardinality
+        ns_prefix = f"{namespace}:"
+        max_count = self.settings.auto_tagging_max_client_tags if namespace == "client" else 1000
+
+        current_count = self.db.query(Tag).filter(Tag.name.like(f"{ns_prefix}%")).count()
+        if current_count >= max_count:
+            logger.warning(
+                "Namespace '%s' at cardinality limit (%d/%d), skipping tag '%s'",
+                namespace,
+                current_count,
+                max_count,
+                tag_name,
+            )
+            return None
+        elif current_count >= int(max_count * 0.8):
+            logger.warning(
+                "Namespace '%s' at %d%% cardinality (%d/%d)",
+                namespace,
+                int(current_count / max_count * 100),
+                current_count,
+                max_count,
+            )
+
+        ns_config = strategy.namespaces.get(namespace)
+        color = ns_config.color if ns_config else "#6B7280"
+
+        tag = Tag(
+            name=tag_name,
+            display_name=display_name,
+            description=f"Auto-created by {strategy.name} strategy",
+            color=color,
+            is_system=False,
+            created_by=created_by,
+        )
+        self.db.add(tag)
+        self.db.flush()
+        return tag
+
+    def _apply_path_based_tags(
+        self,
+        source_path: str,
+        strategy: AutoTagStrategy,
+        created_by: str,
+    ) -> list[Tag]:
+        """Apply path-based auto-tagging. Returns list of Tag objects."""
+        auto_tags = strategy.parse_path(source_path)
+
+        max_tags = self.settings.auto_tagging_max_tags_per_doc
+        if len(auto_tags) > max_tags:
+            logger.warning(
+                "Path parsing produced %d tags, truncating to %d", len(auto_tags), max_tags
+            )
+            auto_tags = auto_tags[:max_tags]
+
+        tag_objects = []
+        for at in auto_tags:
+            tag_obj = self.ensure_tag_exists(
+                tag_name=at.tag_name,
+                display_name=at.display_name,
+                namespace=at.namespace,
+                strategy=strategy,
+                created_by=created_by,
+            )
+            if tag_obj is not None:
+                tag_objects.append(tag_obj)
+
+        return tag_objects
 
     def get_document(
         self,

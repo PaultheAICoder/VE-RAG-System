@@ -248,6 +248,25 @@ class Settings(BaseSettings):
     forms_redact_high_risk_fields: bool = True  # Redact SSN, tax ID, account numbers
     forms_template_require_approval: bool = True  # Templates must be approved before matching
 
+    # Auto-tagging
+    auto_tagging_enabled: bool = False
+    auto_tagging_strategy: str = "generic"
+    auto_tagging_path_enabled: bool = True
+    auto_tagging_llm_enabled: bool = True
+    auto_tagging_llm_model: str = "qwen3:8b"
+    auto_tagging_require_approval: bool = False
+    auto_tagging_create_missing_tags: bool = True
+    auto_tagging_confidence_threshold: float = 0.7
+    auto_tagging_suggestion_threshold: float = 0.4
+    auto_tagging_strategies_dir: str = "./data/auto_tag_strategies"
+
+    # Auto-tagging guardrails
+    auto_tagging_max_tags_per_doc: int = 20
+    auto_tagging_max_tag_name_length: int = 100
+    auto_tagging_max_client_tags: int = 500
+    auto_tagging_llm_timeout_seconds: int = 30
+    auto_tagging_llm_max_retries: int = 1
+
     # Document Processing
     enable_ocr: bool | None = None  # None = use profile default
     ocr_language: str = "eng"

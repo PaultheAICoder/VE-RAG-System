@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from typing import Annotated
 
 from fastapi import (
     APIRouter,
@@ -214,8 +213,8 @@ async def check_duplicates(
 @router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile,
-    tag_ids: Annotated[list[str], Form()],
     background_tasks: BackgroundTasks,
+    tag_ids: list[str] = Form(default=[]),
     title: str | None = Form(None),
     description: str | None = Form(None),
     enable_ocr: bool | None = Form(None),
@@ -223,6 +222,8 @@ async def upload_document(
     ocr_language: str | None = Form(None),
     table_extraction_mode: str | None = Form(None),
     include_image_descriptions: bool | None = Form(None),
+    source_path: str | None = Form(None),
+    auto_tag: bool | None = Form(None),
     replace: bool = Query(False, description="Replace existing duplicate if found"),
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
@@ -268,6 +269,8 @@ async def upload_document(
         description=description,
         replace=replace,
         vector_service=vector_service,
+        source_path=source_path,
+        auto_tag=auto_tag,
     )
 
     # Build processing options if any are provided
