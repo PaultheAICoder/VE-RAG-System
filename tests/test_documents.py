@@ -1196,3 +1196,123 @@ class TestAutoTaggingUpload:
             import shutil
 
             shutil.rmtree(doc_dir)
+
+
+class TestAccessControlIntegration:
+    """Integration tests for tag-based access control with auto-tagging (spec Section 10.5)."""
+
+    @pytest.fixture
+    def client_tag(self, db, admin_user):
+        """Create a client: namespaced tag."""
+        tag = Tag(
+            name="client:acme-corp",
+            display_name="Acme Corp",
+            description="Auto-created client tag",
+            created_by=admin_user.id,
+        )
+        db.add(tag)
+        db.flush()
+        db.refresh(tag)
+        return tag
+
+    @pytest.fixture
+    def tagged_document(self, db, admin_user, client_tag):
+        """Create a document with client:acme-corp tag."""
+        doc = Document(
+            filename="acme_policy.pdf",
+            original_filename="acme_policy.pdf",
+            file_path="/tmp/test/acme_policy.pdf",
+            file_type="pdf",
+            file_size=2048,
+            status="ready",
+            uploaded_by=admin_user.id,
+            chunk_count=3,
+        )
+        doc.tags.append(client_tag)
+        db.add(doc)
+        db.flush()
+        db.refresh(doc)
+        return doc
+
+    def test_auto_tag_not_assigned_to_non_admin(
+        self, client, user_headers, tagged_document, regular_user
+    ):
+        """User without client:acme-corp tag cannot see the tagged document."""
+        response = client.get("/api/documents", headers=user_headers)
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["total"] == 0
+        assert len(data["documents"]) == 0
+
+    def test_user_without_tag_gets_zero_results(
+        self, client, user_headers, tagged_document, regular_user
+    ):
+        """Regular user with no matching tags gets zero document results."""
+        response = client.get("/api/documents", headers=user_headers)
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["total"] == 0
+        assert data["documents"] == []
+
+    def test_admin_assigns_tag_user_sees_documents(
+        self, client, admin_headers, user_headers, tagged_document, regular_user, client_tag, db
+    ):
+        """After admin assigns tag to user, user can see the document."""
+        # Assign tag to user
+        response = client.post(
+            f"/api/users/{regular_user.id}/tags",
+            headers=admin_headers,
+            json={"tag_ids": [client_tag.id]},
+        )
+        assert response.status_code == 200
+
+        # Now user should see the document
+        response = client.get("/api/documents", headers=user_headers)
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["total"] == 1
+        assert data["documents"][0]["id"] == tagged_document.id
+
+    def test_tag_access_disabled_sees_all(self, client, unrestricted_headers, tagged_document):
+        """User with tag_access_enabled=False sees all documents without tag assignment."""
+        response = client.get("/api/documents", headers=unrestricted_headers)
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["total"] >= 1
+        doc_ids = [d["id"] for d in data["documents"]]
+        assert tagged_document.id in doc_ids
+
+    def test_admin_always_sees_all(self, client, admin_headers, tagged_document):
+        """Admin sees all documents regardless of tag assignment."""
+        response = client.get("/api/documents", headers=admin_headers)
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["total"] >= 1
+        doc_ids = [d["id"] for d in data["documents"]]
+        assert tagged_document.id in doc_ids
+
+    def test_remove_tag_no_longer_sees(
+        self, client, admin_headers, user_headers, tagged_document, regular_user, client_tag, db
+    ):
+        """After tag removal, user can no longer see the document."""
+        # Assign tag first
+        regular_user.tags.append(client_tag)
+        db.flush()
+
+        # Verify user can see it
+        response = client.get("/api/documents", headers=user_headers)
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["total"] == 1
+
+        # Remove tag (assign empty list)
+        response = client.post(
+            f"/api/users/{regular_user.id}/tags",
+            headers=admin_headers,
+            json={"tag_ids": []},
+        )
+        assert response.status_code == 200
+
+        # Verify user can no longer see it
+        response = client.get("/api/documents", headers=user_headers)
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["total"] == 0

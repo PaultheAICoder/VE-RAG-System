@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Modal, Button, Input, Select } from '../../ui';
+import { Modal, Button, Input, Select, Checkbox } from '../../ui';
 import type { UserWithTags, UserCreate, UserUpdate, UserRole } from '../../../types';
 
 interface UserFormProps {
@@ -22,6 +22,7 @@ export function UserForm({ isOpen, onClose, onSave, user, isLoading = false }: U
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [role, setRole] = useState<UserRole>('user');
+  const [tagAccessEnabled, setTagAccessEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const isEditing = Boolean(user);
@@ -33,6 +34,7 @@ export function UserForm({ isOpen, onClose, onSave, user, isLoading = false }: U
         setEmail(user.email);
         setDisplayName(user.display_name);
         setRole(user.role);
+        setTagAccessEnabled(user.tag_access_enabled ?? true);
         setPassword('');
         setConfirmPassword('');
       } else {
@@ -41,6 +43,7 @@ export function UserForm({ isOpen, onClose, onSave, user, isLoading = false }: U
         setPassword('');
         setConfirmPassword('');
         setRole('user');
+        setTagAccessEnabled(true);
       }
       setError(null);
     }
@@ -88,6 +91,7 @@ export function UserForm({ isOpen, onClose, onSave, user, isLoading = false }: U
           email: email.trim(),
           display_name: displayName.trim(),
           role,
+          tag_access_enabled: tagAccessEnabled,
         } as UserUpdate);
       } else {
         await onSave({
@@ -138,6 +142,19 @@ export function UserForm({ isOpen, onClose, onSave, user, isLoading = false }: U
           onChange={(e) => setRole(e.target.value as UserRole)}
           options={ROLE_OPTIONS}
         />
+
+        {isEditing && (
+          <div>
+            <Checkbox
+              label="Enable tag-based access"
+              checked={tagAccessEnabled}
+              onChange={(e) => setTagAccessEnabled((e.target as HTMLInputElement).checked)}
+            />
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-7">
+              When disabled, user can access all documents regardless of tag assignments.
+            </p>
+          </div>
+        )}
 
         {!isEditing && (
           <>

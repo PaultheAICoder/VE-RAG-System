@@ -543,6 +543,9 @@ async def send_message(
         # Admin bypasses tag filtering - get all tags
         all_tags = db.query(Tag).all()
         user_tags = [tag.name for tag in all_tags]
+    elif not getattr(current_user, "tag_access_enabled", True):
+        # tag_access_enabled=False: bypass tag filtering entirely
+        user_tags = None
     else:
         user_tags = [tag.name for tag in current_user.tags]
 

@@ -3,10 +3,13 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
+from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.redis import is_redis_available
+from ai_ready_rag.db.database import get_db
+from ai_ready_rag.db.models import Tag
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -65,8 +68,74 @@ def _count_templates(app_settings) -> tuple[int, int]:
         return 0, 0
 
 
+def _build_auto_tagging_status(app_settings, db: Session) -> dict:
+    """Build the auto_tagging section of the health response.
+
+    Loads the configured strategy YAML and reports its metadata.
+    Falls back to generic strategy or error status on failure.
+    """
+    if not app_settings.auto_tagging_enabled:
+        return {"enabled": False}
+
+    from ai_ready_rag.services.auto_tagging.strategy import AutoTagStrategy
+
+    result: dict = {
+        "enabled": True,
+        "strategy": app_settings.auto_tagging_strategy,
+        "path_enabled": app_settings.auto_tagging_path_enabled,
+        "llm_enabled": app_settings.auto_tagging_llm_enabled,
+        "llm_model": app_settings.auto_tagging_llm_model,
+        "require_approval": app_settings.auto_tagging_require_approval,
+    }
+
+    strategy_path = (
+        f"{app_settings.auto_tagging_strategies_dir}/{app_settings.auto_tagging_strategy}.yaml"
+    )
+
+    strategy = None
+    strategy_status = "error"
+
+    try:
+        strategy = AutoTagStrategy.load(strategy_path)
+        strategy_status = "loaded"
+    except (FileNotFoundError, ValueError):
+        logger.warning("Failed to load strategy '%s', trying generic fallback", strategy_path)
+        if app_settings.auto_tagging_strategy != "generic":
+            generic_path = f"{app_settings.auto_tagging_strategies_dir}/generic.yaml"
+            try:
+                strategy = AutoTagStrategy.load(generic_path)
+                strategy_status = "fallback_generic"
+            except (FileNotFoundError, ValueError):
+                logger.warning("Generic fallback strategy also failed to load")
+
+    if strategy is not None:
+        result["strategy_name"] = strategy.name
+        result["strategy_version"] = strategy.version
+        result["namespaces"] = list(strategy.namespaces.keys())
+        result["document_types"] = len(strategy.document_types)
+        result["path_rules"] = len(strategy.path_rules)
+    else:
+        result["strategy_name"] = None
+        result["strategy_version"] = None
+        result["namespaces"] = []
+        result["document_types"] = 0
+        result["path_rules"] = 0
+
+    result["strategy_status"] = strategy_status
+
+    # Live DB count of client namespace tags
+    current_client_tags = db.query(Tag).filter(Tag.name.like("client:%")).count()
+    result["guardrails"] = {
+        "max_tags_per_doc": app_settings.auto_tagging_max_tags_per_doc,
+        "max_client_tags": app_settings.auto_tagging_max_client_tags,
+        "current_client_tags": current_client_tags,
+    }
+
+    return result
+
+
 @router.get("/health")
-async def health_check(request: Request):
+async def health_check(request: Request, db: Session = Depends(get_db)):
     """Health check endpoint."""
     redis_ok = await is_redis_available()
 
@@ -115,6 +184,7 @@ async def health_check(request: Request):
         },
         "evaluation": eval_status,
         "forms": forms_status,
+        "auto_tagging": _build_auto_tagging_status(settings, db),
     }
 
 

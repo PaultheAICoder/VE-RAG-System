@@ -281,7 +281,9 @@ export function UsersView() {
                     </td>
                     <td className="py-3 px-4">
                       <div className="flex flex-wrap gap-1">
-                        {user.tags.length === 0 ? (
+                        {!user.tag_access_enabled ? (
+                          <Badge variant="warning">All Access</Badge>
+                        ) : user.tags.length === 0 ? (
                           <span className="text-gray-400 text-sm">No tags</span>
                         ) : user.role === 'admin' || user.role === 'customer_admin' ? (
                           <Badge variant="primary">All</Badge>
@@ -290,7 +292,8 @@ export function UsersView() {
                             <Badge key={tag.id}>{tag.display_name}</Badge>
                           ))
                         )}
-                        {user.tags.length > 3 &&
+                        {user.tag_access_enabled &&
+                          user.tags.length > 3 &&
                           user.role !== 'admin' &&
                           user.role !== 'customer_admin' && (
                             <Badge>+{user.tags.length - 3}</Badge>

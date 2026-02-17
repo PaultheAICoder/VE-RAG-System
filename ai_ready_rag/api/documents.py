@@ -325,11 +325,13 @@ async def list_documents(
 
     is_admin = current_user.role == "admin"
     user_tags = [tag.name for tag in current_user.tags]
+    tag_access_enabled = getattr(current_user, "tag_access_enabled", True)
 
     documents, total = service.list_documents(
         user_id=current_user.id,
         user_tags=user_tags,
         is_admin=is_admin,
+        tag_access_enabled=tag_access_enabled,
         limit=limit,
         offset=offset,
         status_filter=status,
@@ -362,12 +364,14 @@ async def get_document(
 
     is_admin = current_user.role == "admin"
     user_tags = [tag.name for tag in current_user.tags]
+    tag_access_enabled = getattr(current_user, "tag_access_enabled", True)
 
     document = service.get_document(
         document_id=document_id,
         user_id=current_user.id,
         user_tags=user_tags,
         is_admin=is_admin,
+        tag_access_enabled=tag_access_enabled,
     )
 
     if not document:

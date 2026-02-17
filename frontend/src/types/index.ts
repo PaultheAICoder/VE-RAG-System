@@ -6,6 +6,7 @@ export interface User {
   display_name: string;
   role: UserRole;
   is_active: boolean;
+  tag_access_enabled: boolean;
 }
 
 export interface NavItem {
@@ -159,6 +160,7 @@ export interface UserUpdate {
   display_name?: string;
   role?: UserRole;
   is_active?: boolean;
+  tag_access_enabled?: boolean;
 }
 
 // Admin types

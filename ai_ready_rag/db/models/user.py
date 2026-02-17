@@ -19,6 +19,7 @@ class User(TimestampMixin, Base):
     must_reset_password = Column(Boolean, default=False)
     failed_login_attempts = Column(Integer, default=0)
     locked_until = Column(DateTime, nullable=True)
+    tag_access_enabled = Column(Boolean, default=True, nullable=False)
     created_by = Column(String, nullable=True)  # Removed FK to avoid circular ref
     last_login = Column(DateTime, nullable=True)
     login_count = Column(Integer, default=0)

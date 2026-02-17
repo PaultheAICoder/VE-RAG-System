@@ -545,7 +545,7 @@ class VectorService:
         Args:
             query: Natural language query.
             user_tags: Tags the user has access to. None = no tag filtering
-                (system admin bypass), empty list = public only.
+                (admin bypass or tag_access_enabled=False), empty list = public only.
             limit: Maximum results to return (1-100, default: 5).
             score_threshold: Minimum similarity score (0.0-1.0, default: 0.0).
             tenant_id: Tenant to search within (defaults to service's tenant_id).
@@ -558,7 +558,7 @@ class VectorService:
 
         Note:
             Access control filter is applied BEFORE vector search (pre-retrieval).
-            - user_tags=None: No tag filtering (system admin cache warming)
+            - user_tags=None: No tag filtering (admin or tag_access_enabled=False users)
             - user_tags=[]: Only documents with "public" tag
             - user_tags=["hr"]: Public + hr documents
         """

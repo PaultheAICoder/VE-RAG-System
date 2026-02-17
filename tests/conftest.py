@@ -197,6 +197,41 @@ def system_admin_headers(system_admin_token) -> dict:
 
 
 @pytest.fixture(scope="function")
+def unrestricted_user(db) -> User:
+    """Create a user with tag_access_enabled=False (sees all documents)."""
+    user = User(
+        email="unrestricted@test.com",
+        display_name="Unrestricted User",
+        password_hash=hash_password("UnrestrictedPassword123"),
+        role="user",
+        is_active=True,
+        tag_access_enabled=False,
+    )
+    db.add(user)
+    db.flush()
+    db.refresh(user)
+    return user
+
+
+@pytest.fixture(scope="function")
+def unrestricted_token(unrestricted_user) -> str:
+    """Get JWT token for unrestricted user."""
+    return create_access_token(
+        data={
+            "sub": unrestricted_user.id,
+            "email": unrestricted_user.email,
+            "role": unrestricted_user.role,
+        }
+    )
+
+
+@pytest.fixture(scope="function")
+def unrestricted_headers(unrestricted_token) -> dict:
+    """Authorization headers for unrestricted user."""
+    return {"Authorization": f"Bearer {unrestricted_token}"}
+
+
+@pytest.fixture(scope="function")
 def sample_tag(db, admin_user) -> Tag:
     """Create a sample tag."""
     tag = Tag(
