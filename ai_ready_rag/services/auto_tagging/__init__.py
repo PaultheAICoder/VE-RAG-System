@@ -1,5 +1,11 @@
 """Auto-tagging strategy engine for hybrid path-based and LLM-based tagging."""
 
+from ai_ready_rag.services.auto_tagging.classifier import ClassificationResult, DocumentClassifier
+from ai_ready_rag.services.auto_tagging.conflict import (
+    build_provenance,
+    enforce_guardrail,
+    resolve_conflicts,
+)
 from ai_ready_rag.services.auto_tagging.models import (
     AutoTag,
     DocumentTypeConfig,
@@ -26,7 +32,13 @@ from ai_ready_rag.services.auto_tagging.transforms import (
 __all__ = [
     # Strategy
     "AutoTagStrategy",
+    "ClassificationResult",
+    "DocumentClassifier",
     "PathRule",
+    # Conflict resolution
+    "build_provenance",
+    "enforce_guardrail",
+    "resolve_conflicts",
     # Models
     "AutoTag",
     "DocumentTypeConfig",

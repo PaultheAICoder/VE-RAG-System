@@ -1,0 +1,129 @@
+strategy:
+  id: "law_firm"
+  name: "Law Firm"
+  description: "For legal practices managing client matter folders"
+  version: "1.0"
+
+namespaces:
+  client:
+    display: "Client"
+    color: "#6366f1"
+  year:
+    display: "Year"
+    color: "#f59e0b"
+  doctype:
+    display: "Document Type"
+    color: "#10b981"
+  stage:
+    display: "Matter Stage"
+    color: "#64748b"
+  entity:
+    display: "Opposing Party"
+    color: "#0ea5e9"
+  topic:
+    display: "Practice Area"
+    color: "#f43f5e"
+
+path_rules:
+  - namespace: "client"
+    level: 0
+    pattern: "^(.+)$"
+    capture_group: 1
+    transform: "slugify"
+
+  - namespace: "stage"
+    level: 1
+    mapping:
+      "Pleadings": "pleadings"
+      "Discovery": "discovery"
+      "Depositions": "depositions"
+      "Motions": "motions"
+      "Correspondence": "correspondence"
+      "Billing": "billing"
+      "Research": "research"
+      "Trial": "trial"
+      "Appeals": "appeals"
+      "Settlement": "settlement"
+      "Close-Out": "close-out"
+
+document_types:
+  pleading:
+    display: "Pleading"
+    keywords: ["complaint", "answer", "motion", "brief", "memorandum"]
+  deposition:
+    display: "Deposition"
+    keywords: ["deposition", "transcript", "testimony"]
+  contract:
+    display: "Contract"
+    keywords: ["agreement", "contract", "settlement", "release"]
+  discovery:
+    display: "Discovery"
+    keywords: ["interrogatory", "request for production", "subpoena"]
+  correspondence:
+    display: "Correspondence"
+    keywords: ["letter", "dear", "re:", "counsel"]
+  court_order:
+    display: "Court Order"
+    keywords: ["order", "ruling", "judgment", "decree"]
+  billing:
+    display: "Billing"
+    keywords: ["invoice", "time entry", "retainer", "trust account"]
+  research:
+    display: "Research Memo"
+    keywords: ["research", "memorandum", "analysis", "case law"]
+  evidence:
+    display: "Evidence"
+    keywords: ["exhibit", "evidence", "photograph", "record"]
+  unknown:
+    display: "Unknown"
+    keywords: []
+
+entity_extraction:
+  namespace: "entity"
+  prompt_label: "opposing party"
+  prompt_instruction: "Identify the opposing party or adverse entity in this legal document. Return null if not identifiable."
+  aliases: {}
+
+topic_extraction:
+  namespace: "topic"
+  prompt_label: "practice areas"
+  prompt_instruction: "List the areas of law relevant to this document."
+  values:
+    - id: "litigation"
+      display: "Litigation"
+      keywords: ["litigation", "lawsuit", "court", "trial"]
+    - id: "corporate"
+      display: "Corporate"
+      keywords: ["corporate", "formation", "merger", "acquisition"]
+    - id: "real-estate"
+      display: "Real Estate"
+      keywords: ["property", "lease", "deed", "easement", "zoning"]
+    - id: "employment"
+      display: "Employment"
+      keywords: ["employment", "termination", "discrimination", "wage"]
+    - id: "ip"
+      display: "Intellectual Property"
+      keywords: ["patent", "trademark", "copyright", "trade secret"]
+    - id: "tax"
+      display: "Tax"
+      keywords: ["tax", "irs", "assessment", "deduction"]
+    - id: "estate"
+      display: "Estate Planning"
+      keywords: ["trust", "will", "estate", "probate", "beneficiary"]
+
+llm_prompt: |
+  Classify this legal document. Return JSON only.
+
+  Document filename: {filename}
+  First 2000 characters of content:
+  {content_preview}
+
+  Return this exact JSON structure:
+  {{
+    "document_type": "<one of: {document_type_ids}>",
+    "entity": "<opposing party name or null>",
+    "topics": [<list of: {topic_ids}>],
+    "year_start": "<YYYY or null>",
+    "year_end": "<YYYY or null>",
+    "confidence": <0.0 to 1.0>
+  }}

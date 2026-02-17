@@ -35,6 +35,18 @@ def insurance_strategy() -> AutoTagStrategy:
 
 
 @pytest.fixture
+def law_firm_strategy() -> AutoTagStrategy:
+    """Load the built-in law firm strategy."""
+    return AutoTagStrategy.load(str(STRATEGIES_DIR / "law_firm.yaml"))
+
+
+@pytest.fixture
+def construction_strategy() -> AutoTagStrategy:
+    """Load the built-in construction strategy."""
+    return AutoTagStrategy.load(str(STRATEGIES_DIR / "construction.yaml"))
+
+
+@pytest.fixture
 def tmp_strategy_file(tmp_path):
     """Helper that writes a YAML dict to a temp file and returns the path."""
 
@@ -212,6 +224,24 @@ class TestStrategyLoad:
         assert insurance_strategy.topic_extraction is not None
         assert len(insurance_strategy.path_rules) == 4
 
+    def test_load_law_firm_yaml(self, law_firm_strategy):
+        assert law_firm_strategy.id == "law_firm"
+        assert law_firm_strategy.name == "Law Firm"
+        assert law_firm_strategy.entity_extraction is not None
+        assert law_firm_strategy.topic_extraction is not None
+        assert len(law_firm_strategy.path_rules) == 2
+        assert len(law_firm_strategy.document_types) == 10
+        assert "unknown" in law_firm_strategy.document_types
+
+    def test_load_construction_yaml(self, construction_strategy):
+        assert construction_strategy.id == "construction"
+        assert construction_strategy.name == "Construction"
+        assert construction_strategy.entity_extraction is not None
+        assert construction_strategy.topic_extraction is not None
+        assert len(construction_strategy.path_rules) == 2
+        assert len(construction_strategy.document_types) == 12
+        assert "unknown" in construction_strategy.document_types
+
     def test_load_validates_id_matches_filename(self, tmp_strategy_file):
         data = _minimal_strategy("wrong_id")
         path = tmp_strategy_file(data, "test_strategy.yaml")
@@ -316,6 +346,83 @@ class TestParsePath:
             assert tag.source == "path"
             assert tag.confidence == 1.0
             assert tag.strategy_id == "insurance_agency"
+
+
+# ============================================================
+# parse_path Tests — Law Firm
+# ============================================================
+
+
+class TestParsePathLawFirm:
+    def test_law_firm_client_extraction(self, law_firm_strategy):
+        tags = law_firm_strategy.parse_path("Acme Corp/Discovery/file.pdf")
+        tag_map = {t.namespace: t.value for t in tags}
+        assert tag_map["client"] == "acme-corp"
+
+    def test_law_firm_stage_mapping(self, law_firm_strategy):
+        tags = law_firm_strategy.parse_path("Client/Pleadings/file.pdf")
+        stage_tags = [t for t in tags if t.namespace == "stage"]
+        assert len(stage_tags) == 1
+        assert stage_tags[0].value == "pleadings"
+
+    def test_law_firm_full_path(self, law_firm_strategy):
+        tags = law_firm_strategy.parse_path("Acme Corp/Discovery/Depositions/file.pdf")
+        tag_map = {t.namespace: t.value for t in tags}
+        assert tag_map["client"] == "acme-corp"
+        assert tag_map["stage"] == "discovery"
+
+    def test_law_firm_unmapped_stage(self, law_firm_strategy):
+        tags = law_firm_strategy.parse_path("Client/UnknownFolder/file.pdf")
+        stage_tags = [t for t in tags if t.namespace == "stage"]
+        assert len(stage_tags) == 0
+
+    def test_law_firm_all_tags_source(self, law_firm_strategy):
+        tags = law_firm_strategy.parse_path("Acme Corp/Discovery/file.pdf")
+        for tag in tags:
+            assert tag.source == "path"
+            assert tag.confidence == 1.0
+            assert tag.strategy_id == "law_firm"
+
+
+# ============================================================
+# parse_path Tests — Construction
+# ============================================================
+
+
+class TestParsePathConstruction:
+    def test_construction_client_extraction(self, construction_strategy):
+        tags = construction_strategy.parse_path("Riverdale Phase 2/Bids/file.pdf")
+        tag_map = {t.namespace: t.value for t in tags}
+        assert tag_map["client"] == "riverdale"
+
+    def test_construction_client_no_phase(self, construction_strategy):
+        tags = construction_strategy.parse_path("Downtown Tower/Contracts/file.pdf")
+        tag_map = {t.namespace: t.value for t in tags}
+        assert tag_map["client"] == "downtown-tower"
+
+    def test_construction_stage_mapping(self, construction_strategy):
+        tags = construction_strategy.parse_path("Project/Bids/file.pdf")
+        stage_tags = [t for t in tags if t.namespace == "stage"]
+        assert len(stage_tags) == 1
+        assert stage_tags[0].value == "bidding"
+
+    def test_construction_full_path(self, construction_strategy):
+        tags = construction_strategy.parse_path("Project/RFIs/file.pdf")
+        tag_map = {t.namespace: t.value for t in tags}
+        assert "client" in tag_map
+        assert tag_map["stage"] == "rfi"
+
+    def test_construction_unmapped_stage(self, construction_strategy):
+        tags = construction_strategy.parse_path("Project/Random/file.pdf")
+        stage_tags = [t for t in tags if t.namespace == "stage"]
+        assert len(stage_tags) == 0
+
+    def test_construction_all_tags_source(self, construction_strategy):
+        tags = construction_strategy.parse_path("Project/Bids/file.pdf")
+        for tag in tags:
+            assert tag.source == "path"
+            assert tag.confidence == 1.0
+            assert tag.strategy_id == "construction"
 
 
 # ============================================================
