@@ -6,6 +6,7 @@ from ai_ready_rag.services.auto_tagging.conflict import (
     enforce_guardrail,
     resolve_conflicts,
 )
+from ai_ready_rag.services.auto_tagging.email_processor import EmailProcessingResult, EmailProcessor
 from ai_ready_rag.services.auto_tagging.models import (
     AutoTag,
     DocumentTypeConfig,
@@ -35,6 +36,9 @@ __all__ = [
     "ClassificationResult",
     "DocumentClassifier",
     "PathRule",
+    # Email processor
+    "EmailProcessingResult",
+    "EmailProcessor",
     # Conflict resolution
     "build_provenance",
     "enforce_guardrail",
