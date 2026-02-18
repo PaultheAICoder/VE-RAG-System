@@ -49,9 +49,12 @@ def _pymupdf_renderer(file_path: str, dpi: int) -> list:
         # Clear form field values before rendering so filled forms produce
         # the same fingerprint as blank templates (in-memory only, not saved).
         for widget in page.widgets():
-            if widget.field_value:
-                widget.field_value = ""
-                widget.update()
+            try:
+                if widget.field_value:
+                    widget.field_value = ""
+                    widget.update()
+            except (ValueError, RuntimeError):
+                pass  # Skip widgets with invalid rects
         pix = page.get_pixmap(dpi=dpi)
         images.append(Image.open(io.BytesIO(pix.tobytes("png"))))
     doc.close()

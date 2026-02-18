@@ -105,7 +105,7 @@ def get_template_api():
         config=config,
     )
 
-    return FormTemplateAPI(store=store, config=config, router=router)
+    return FormTemplateAPI(store=store, config=config, renderer=_pymupdf_renderer, router=router)
 
 
 # ---------------------------------------------------------------------------
