@@ -93,7 +93,7 @@ export function UploadModal({
           setQueuedFiles((prev) =>
             prev.map((f) => (f.id === qf.id ? { ...f, progress } : f))
           );
-        }, replaceMode);
+        }, replaceMode, autoTaggingEnabled);
 
         // Mark as done
         setQueuedFiles((prev) =>

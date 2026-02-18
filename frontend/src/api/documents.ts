@@ -126,7 +126,8 @@ export async function uploadDocument(
   file: File,
   tagIds: string[],
   onProgress?: (percent: number) => void,
-  replace?: boolean
+  replace?: boolean,
+  autoTag?: boolean
 ): Promise<Document> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -137,6 +138,9 @@ export async function uploadDocument(
     tagIds.forEach((tagId) => {
       formData.append('tag_ids', tagId);
     });
+    if (autoTag) {
+      formData.append('auto_tag', 'true');
+    }
 
     xhr.upload.addEventListener('progress', (e) => {
       if (e.lengthComputable && onProgress) {
