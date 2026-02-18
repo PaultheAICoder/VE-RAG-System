@@ -1571,8 +1571,8 @@ async def get_settings_audit(
 # Default values for advanced settings
 ADVANCED_DEFAULTS = {
     "embedding_model": "nomic-embed-text",
-    "chunk_size": 200,
-    "chunk_overlap": 40,
+    "chunk_size": 512,
+    "chunk_overlap": 80,
     "hnsw_ef_construct": 100,
     "hnsw_m": 16,
     "vector_backend": "qdrant",

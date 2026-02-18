@@ -58,6 +58,19 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 
+# Per-document-type chunk sizes based on tag name.
+# Documents matching these tags use larger chunks for better context retention.
+# Falls back to settings.chunk_size for unmatched documents.
+CHUNK_SIZE_BY_TAG: dict[str, int] = {
+    "insurance": 1024,
+    "legal": 1024,
+    "financial": 1024,
+    "policy": 1024,
+    "hr": 512,
+    "handbook": 512,
+}
+
+
 class Settings(BaseSettings):
     # Application
     app_name: str = "AI Ready RAG"
@@ -290,8 +303,8 @@ class Settings(BaseSettings):
     force_full_page_ocr: bool = False
     table_extraction_mode: Literal["accurate", "fast"] = "accurate"
     include_image_descriptions: bool = True
-    chunk_size: int = 200  # Smaller chunks = more precise matching
-    chunk_overlap: int = 40  # ~20% overlap for context continuity
+    chunk_size: int = 512  # Optimal for retrieval recall (400-512 tokens per research)
+    chunk_overlap: int = 80  # ~15% overlap for boundary coverage
 
     def model_post_init(self, __context: Any) -> None:
         """Apply profile defaults after Pydantic initialization."""
