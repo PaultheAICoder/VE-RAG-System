@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -282,9 +283,53 @@ async def lifespan(app: FastAPI):
     await warming_cleanup.start()
     logger.info("WarmingCleanupService started")
 
+    # Periodic recovery for stuck processing documents (#308)
+    async def _stale_processing_recovery_loop():
+        """Reset documents stuck in 'processing' for >15 min back to 'pending'."""
+        while True:
+            await asyncio.sleep(300)  # Every 5 minutes
+            try:
+                recovery_db = SessionLocal()
+                try:
+                    from datetime import datetime, timedelta
+
+                    cutoff = datetime.utcnow() - timedelta(minutes=15)
+                    reset_count = (
+                        recovery_db.query(Document)
+                        .filter(
+                            Document.status == "processing",
+                            Document.uploaded_at < cutoff,
+                        )
+                        .update(
+                            {"status": "pending", "error_message": None},
+                            synchronize_session=False,
+                        )
+                    )
+                    recovery_db.commit()
+                    if reset_count:
+                        logger.warning(
+                            f"[RECOVERY] Reset {reset_count} stale processing documents to pending"
+                        )
+                finally:
+                    recovery_db.close()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("[RECOVERY] Error in stale processing recovery loop")
+
+    recovery_task = asyncio.create_task(_stale_processing_recovery_loop())
+    logger.info("Stale processing recovery loop started (every 5 minutes)")
+
     yield
 
     # Shutdown
+    recovery_task.cancel()
+    try:
+        await recovery_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Stale processing recovery loop stopped")
+
     await warming_cleanup.stop()
     logger.info("WarmingCleanupService stopped")
 
