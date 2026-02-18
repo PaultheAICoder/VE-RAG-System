@@ -85,6 +85,7 @@ class FormsProcessingService:
             VERagFormDBAdapter,
             VERagLayoutFingerprinter,
             VERagOCRAdapter,
+            VERagPDFWidgetAdapter,
             VERagVectorStoreAdapter,
             VERagVLMAdapter,
             create_embedding_adapter,
@@ -150,9 +151,8 @@ class FormsProcessingService:
                 model=settings.forms_vlm_model,
             )
 
-        # 3. Create router (with OCR + optional VLM backends)
-        # Note: pdf_widget_backend deferred to v2 (requires PyMuPDF or pdfplumber).
-        # Router logs W_FORM_NATIVE_FIELDS_UNAVAILABLE at startup — expected for v1.
+        # 3. Create router (with OCR + PDF widget + optional VLM backends)
+        pdf_widget_backend = VERagPDFWidgetAdapter()
         router = create_default_router(
             template_store=template_store,
             form_db=form_db,
@@ -160,6 +160,7 @@ class FormsProcessingService:
             embedder=embedder,
             fingerprinter=fingerprinter,
             ocr_backend=ocr_backend,
+            pdf_widget_backend=pdf_widget_backend,
             vlm_backend=vlm_backend,
             config=config,
         )

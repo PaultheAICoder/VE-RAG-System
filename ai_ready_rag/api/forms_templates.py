@@ -31,6 +31,7 @@ from ai_ready_rag.schemas.forms_template import (
     FormTemplateListResponse,
     FormTemplateResponse,
 )
+from ai_ready_rag.services.forms_processing_service import _pymupdf_renderer
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -45,17 +46,66 @@ def get_template_api():
     """Build FormTemplateAPI from current settings.
 
     Lazy import to support conditional mounting (ingestkit-forms optional).
+    Includes a FormRouter so preview_extraction works.
     """
-    from ingestkit_forms import FileSystemTemplateStore
+    from ingestkit_forms import FileSystemTemplateStore, create_default_router
     from ingestkit_forms.api import FormTemplateAPI
     from ingestkit_forms.config import FormProcessorConfig
+
+    from ai_ready_rag.services.ingestkit_adapters import (
+        VERagFormDBAdapter,
+        VERagLayoutFingerprinter,
+        VERagOCRAdapter,
+        VERagPDFWidgetAdapter,
+        VERagVectorStoreAdapter,
+        create_embedding_adapter,
+    )
 
     settings = get_settings()
     store = FileSystemTemplateStore(settings.forms_template_storage_path)
     config = FormProcessorConfig(
         form_template_storage_path=settings.forms_template_storage_path,
+        form_ocr_engine=settings.forms_ocr_engine,
+        form_vlm_enabled=settings.forms_vlm_enabled,
+        embedding_model=settings.embedding_model or "nomic-embed-text",
+        embedding_dimension=settings.embedding_dimension,
+        default_collection=settings.qdrant_collection,
+        tenant_id=settings.default_tenant_id,
     )
-    return FormTemplateAPI(store=store, config=config)
+
+    # Build adapters needed by the router
+    vector_store = VERagVectorStoreAdapter(
+        qdrant_url=settings.qdrant_url,
+        collection_name=settings.qdrant_collection,
+        embedding_dimension=settings.embedding_dimension,
+        document_id="preview",
+        document_name="preview",
+        tags=[],
+        uploaded_by="system",
+        tenant_id=settings.default_tenant_id,
+    )
+    embedder = create_embedding_adapter(
+        ollama_url=settings.ollama_base_url,
+        embedding_model=settings.embedding_model or "nomic-embed-text",
+        embedding_dimension=settings.embedding_dimension,
+    )
+    form_db = VERagFormDBAdapter(db_path=settings.forms_db_path)
+    fingerprinter = VERagLayoutFingerprinter(config, renderer=_pymupdf_renderer)
+    ocr_backend = VERagOCRAdapter(engine=settings.forms_ocr_engine)
+    pdf_widget_backend = VERagPDFWidgetAdapter()
+
+    router = create_default_router(
+        template_store=store,
+        form_db=form_db,
+        vector_store=vector_store,
+        embedder=embedder,
+        fingerprinter=fingerprinter,
+        ocr_backend=ocr_backend,
+        pdf_widget_backend=pdf_widget_backend,
+        config=config,
+    )
+
+    return FormTemplateAPI(store=store, config=config, router=router)
 
 
 # ---------------------------------------------------------------------------

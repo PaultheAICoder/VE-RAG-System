@@ -581,3 +581,91 @@ class VERagVLMAdapter:
             return any(m.get("name", "").startswith(self._model) for m in models)
         except Exception:
             return False
+
+
+class VERagPDFWidgetAdapter:
+    """PDF widget adapter implementing ingestkit_forms.PDFWidgetBackend protocol.
+
+    Uses pypdf to extract AcroForm field values from fillable PDFs.
+    """
+
+    def extract_widgets(self, file_path: str, page: int) -> list:
+        """Extract all form widgets from the specified page."""
+        from ingestkit_forms.models import BoundingBox
+        from ingestkit_forms.protocols import WidgetField
+        from pypdf import PdfReader
+
+        reader = PdfReader(file_path)
+        if page >= len(reader.pages):
+            return []
+
+        pdf_page = reader.pages[page]
+        page_width = float(pdf_page.mediabox.width)
+        page_height = float(pdf_page.mediabox.height)
+
+        widgets = []
+        annotations = pdf_page.get("/Annots")
+        if not annotations:
+            return []
+
+        for annot in annotations:
+            annot_obj = annot.get_object() if hasattr(annot, "get_object") else annot
+            subtype = annot_obj.get("/Subtype")
+            if subtype != "/Widget":
+                continue
+
+            field_name = annot_obj.get("/T", "")
+            if hasattr(field_name, "__str__"):
+                field_name = str(field_name)
+
+            field_value = annot_obj.get("/V")
+            if field_value is not None:
+                field_value = str(field_value)
+                if field_value.startswith("/"):
+                    field_value = field_value[1:]
+
+            ft = annot_obj.get("/FT", "/Tx")
+            type_map = {"/Tx": "text", "/Btn": "checkbox", "/Ch": "dropdown"}
+            field_type = type_map.get(str(ft), "text")
+
+            rect = annot_obj.get("/Rect", [0, 0, 0, 0])
+            rect = [float(r) for r in rect]
+            x0 = min(rect[0], rect[2]) / page_width
+            y0 = 1.0 - max(rect[1], rect[3]) / page_height
+            x1 = max(rect[0], rect[2]) / page_width
+            y1 = 1.0 - min(rect[1], rect[3]) / page_height
+            bbox = BoundingBox(
+                x=max(0.0, min(1.0, x0)),
+                y=max(0.0, min(1.0, y0)),
+                width=max(0.001, min(1.0, x1 - x0)),
+                height=max(0.001, min(1.0, y1 - y0)),
+            )
+
+            widgets.append(
+                WidgetField(
+                    field_name=field_name,
+                    field_value=field_value,
+                    field_type=field_type,
+                    bbox=bbox,
+                    page=page,
+                )
+            )
+
+        return widgets
+
+    def has_form_fields(self, file_path: str) -> bool:
+        """Check whether the PDF contains any fillable form fields."""
+        from pypdf import PdfReader
+
+        try:
+            reader = PdfReader(file_path)
+            for pg in reader.pages:
+                annots = pg.get("/Annots")
+                if annots and len(annots) > 0:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def engine_name(self) -> str:
+        return "pypdf"
