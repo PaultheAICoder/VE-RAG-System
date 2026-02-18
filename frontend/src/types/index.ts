@@ -278,6 +278,9 @@ export interface HealthResponse {
     chunker: string;
     ocr_enabled: boolean;
   };
+  auto_tagging?: {
+    enabled: boolean;
+  };
 }
 
 export interface ComponentHealth {

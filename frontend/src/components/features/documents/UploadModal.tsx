@@ -12,6 +12,7 @@ interface UploadModalProps {
   onClose: () => void;
   tags: Tag[];
   onUploadComplete: () => void;
+  autoTaggingEnabled?: boolean;
 }
 
 function generateId(): string {
@@ -23,6 +24,7 @@ export function UploadModal({
   onClose,
   tags,
   onUploadComplete,
+  autoTaggingEnabled = false,
 }: UploadModalProps) {
   const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
@@ -133,7 +135,7 @@ export function UploadModal({
   };
 
   const handleUploadAll = async () => {
-    if (selectedTagIds.length === 0) {
+    if (selectedTagIds.length === 0 && !autoTaggingEnabled) {
       setError('Please select at least one tag');
       return;
     }
@@ -265,7 +267,10 @@ export function UploadModal({
           {/* Tag Selection */}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Tags <span className="text-red-500">*</span>
+              Tags {!autoTaggingEnabled && <span className="text-red-500">*</span>}
+              {autoTaggingEnabled && (
+                <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">(optional — auto-tagging enabled)</span>
+              )}
             </label>
             <div className="flex flex-wrap gap-2">
               {tags.map((tag) => (
@@ -315,7 +320,7 @@ export function UploadModal({
             </Button>
             <Button
               onClick={handleUploadAll}
-              disabled={!hasQueuedFiles || isUploading || selectedTagIds.length === 0}
+              disabled={!hasQueuedFiles || isUploading || (!autoTaggingEnabled && selectedTagIds.length === 0)}
             >
               {isUploading ? 'Checking...' : 'Upload All'}
             </Button>

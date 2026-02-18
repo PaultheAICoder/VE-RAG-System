@@ -19,6 +19,7 @@ import {
 } from '../api/documents';
 import { listTagSuggestions } from '../api/suggestions';
 import { listTags, getTagFacets } from '../api/tags';
+import { getHealth } from '../api/health';
 import { useAuthStore } from '../stores/authStore';
 import { useDocumentsStore } from '../stores/documentsStore';
 import type { Document, Tag, TagFacetItem } from '../types';
@@ -71,6 +72,20 @@ export function DocumentsView() {
   const [selectedDocForSuggestions, setSelectedDocForSuggestions] = useState<Document | null>(null);
   const [suggestionCounts, setSuggestionCounts] = useState<Map<string, number>>(new Map());
   const [actionLoading, setActionLoading] = useState(false);
+  const [autoTaggingEnabled, setAutoTaggingEnabled] = useState(false);
+
+  // Fetch auto-tagging status on mount
+  useEffect(() => {
+    const fetchAutoTagStatus = async () => {
+      try {
+        const health = await getHealth();
+        setAutoTaggingEnabled(health.auto_tagging?.enabled ?? false);
+      } catch {
+        // Default to false if health check fails
+      }
+    };
+    fetchAutoTagStatus();
+  }, []);
 
   // Fetch tags on mount
   useEffect(() => {
@@ -397,6 +412,7 @@ export function DocumentsView() {
         onClose={() => setShowUpload(false)}
         tags={tags}
         onUploadComplete={fetchDocuments}
+        autoTaggingEnabled={autoTaggingEnabled}
       />
 
       {/* Tag Edit Modal */}
