@@ -549,8 +549,8 @@ def _update_collection_setting(collection_name: str, reason: str) -> None:
         svc.set_with_audit(
             key="qdrant_collection",
             value=collection_name,
-            changed_by="migration-cli",
-            reason=reason,
+            changed_by=None,
+            reason=f"[migration-cli] {reason}",
         )
         logger.info(f"Updated qdrant_collection setting to '{collection_name}'")
     finally:
