@@ -781,7 +781,7 @@ class DocumentService:
             return False
 
         # Clean up ingestkit Excel tables if present
-        if document.excel_db_table_names:
+        if getattr(document, "excel_db_table_names", None):
             self._cleanup_excel_tables(document.excel_db_table_names)
 
         # Clean up ingestkit-forms tables if present
