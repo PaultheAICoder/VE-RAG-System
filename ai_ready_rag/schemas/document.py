@@ -42,6 +42,12 @@ class DocumentResponse(BaseModel):
     auto_tag_version: str | None = None
     auto_tag_source: str | None = None
     source_path: str | None = None
+    forms_template_id: str | None = None
+    forms_template_name: str | None = None
+    forms_template_version: int | None = None
+    forms_overall_confidence: float | None = None
+    forms_extraction_method: str | None = None
+    forms_match_method: str | None = None
     error_message: str | None
     tags: list[TagInfo]
     uploaded_by: str
