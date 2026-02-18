@@ -25,6 +25,9 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_concurrent_processing": 3,
         # Summary generation
         "generate_summaries": True,
+        # ingestkit - disabled on laptop
+        "use_ingestkit_image": False,
+        "use_ingestkit_email": False,
     },
     "spark": {
         "vector_backend": "qdrant",
@@ -252,12 +255,12 @@ class Settings(BaseSettings):
     forms_template_require_approval: bool = True  # Templates must be approved before matching
 
     # ingestkit-image integration
-    use_ingestkit_image: bool = False  # Feature flag (off by default)
+    use_ingestkit_image: bool | None = None  # None = use profile default
     image_ocr_language: str = "eng"
     image_ocr_config: str | None = None
 
     # ingestkit-email integration
-    use_ingestkit_email: bool = False  # Feature flag (off by default)
+    use_ingestkit_email: bool | None = None  # None = use profile default
     email_include_headers: bool = True
 
     # Auto-tagging
