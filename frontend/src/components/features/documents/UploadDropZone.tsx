@@ -119,7 +119,7 @@ async function extractDroppedFiles(dataTransfer: DataTransfer): Promise<File[]> 
     .flatMap((r) => r.value);
 }
 
-const DEFAULT_MAX_FILES = 100;
+const DEFAULT_MAX_FILES = 500;
 
 export function UploadDropZone({
   onFilesSelected,
