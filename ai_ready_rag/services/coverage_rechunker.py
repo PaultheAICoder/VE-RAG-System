@@ -51,12 +51,6 @@ SECTION_KEYWORDS = [
     "equipment breakdown",
 ]
 
-# Compiled pattern for fast matching
-_SECTION_PATTERN = re.compile(
-    "|".join(re.escape(kw) for kw in SECTION_KEYWORDS),
-    re.IGNORECASE,
-)
-
 
 def is_coverage_summary(document: Document) -> bool:
     """Detect whether a document is a Coverage Summary xlsx.
@@ -82,10 +76,15 @@ def _is_section_header(row_values: list, bold_flags: list[bool] | None = None) -
     if not text:
         return None
 
-    # Check if the text matches a known section keyword
-    match = _SECTION_PATTERN.search(text)
-    if match:
-        return text
+    # Only match if the row is primarily a section header — not a data row
+    # that happens to contain a keyword (e.g. "Business Personal Property: $500K")
+    text_lower = text.lower().strip()
+    for kw in SECTION_KEYWORDS:
+        if text_lower == kw or text_lower.startswith(kw + " ") or text_lower.endswith(" " + kw):
+            return text
+        # Also match "Property Insurance", "General Liability Coverage", etc.
+        if kw in text_lower and len(text) < 60 and not re.search(r"[\$%]", text):
+            return text
 
     # Check if the row is bold (common for section headers)
     if (
