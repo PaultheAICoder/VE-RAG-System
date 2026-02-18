@@ -46,6 +46,12 @@ def _pymupdf_renderer(file_path: str, dpi: int) -> list:
     doc = fitz.open(file_path)
     images = []
     for page in doc:
+        # Clear form field values before rendering so filled forms produce
+        # the same fingerprint as blank templates (in-memory only, not saved).
+        for widget in page.widgets():
+            if widget.field_value:
+                widget.field_value = ""
+                widget.update()
         pix = page.get_pixmap(dpi=dpi)
         images.append(Image.open(io.BytesIO(pix.tobytes("png"))))
     doc.close()

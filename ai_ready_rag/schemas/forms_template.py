@@ -54,7 +54,7 @@ class CreateTemplateRequest(BaseModel):
     sample_file_path: str
     page_count: int = Field(ge=1)
     fields: list[dict]  # Pass through to ingestkit FieldMapping
-    tenant_id: str | None = None
+    tenant_id: str | None = "default"
 
 
 class ExtractedFieldResponse(BaseModel):

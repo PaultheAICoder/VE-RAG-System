@@ -196,6 +196,9 @@ async def create_template(
             detail=f"Invalid field mapping: {e}",
         ) from e
 
+    # Ensure tenant_id is set — fall back to settings default
+    tenant_id = request.tenant_id or settings.default_tenant_id
+
     create_req = FormTemplateCreateRequest(
         name=request.name,
         description=request.description,
@@ -203,7 +206,7 @@ async def create_template(
         sample_file_path=request.sample_file_path,
         page_count=request.page_count,
         fields=fields,
-        tenant_id=request.tenant_id,
+        tenant_id=tenant_id,
         created_by=str(current_user.id),
         initial_status=initial_status,
     )
