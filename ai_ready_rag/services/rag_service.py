@@ -1058,8 +1058,8 @@ class RAGService:
 
     @property
     def recency_weight(self) -> float:
-        """Get recency boost weight from settings."""
-        return self.settings.rag_recency_weight
+        """Get recency boost weight from database setting."""
+        return get_rag_setting("retrieval_recency_weight", self.settings.rag_recency_weight)
 
     def _apply_recency_boost(self, chunks: list[SearchResult]) -> list[SearchResult]:
         """Boost scores of newer documents using year tags + content dates.

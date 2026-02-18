@@ -1190,6 +1190,7 @@ RETRIEVAL_DEFAULTS = {
     "retrieval_prefetch_multiplier": 3,
     "retrieval_min_score_dense": 0.3,
     "retrieval_min_score_hybrid": 0.05,
+    "retrieval_recency_weight": 0.15,
 }
 
 LLM_DEFAULTS = {
@@ -1246,6 +1247,11 @@ async def get_retrieval_settings(
             "retrieval_min_score_hybrid",
             "RETRIEVAL_MIN_SCORE_HYBRID",
             RETRIEVAL_DEFAULTS["retrieval_min_score_hybrid"],
+        ),
+        retrieval_recency_weight=service.get_with_env_fallback(
+            "retrieval_recency_weight",
+            "RAG_RECENCY_WEIGHT",
+            RETRIEVAL_DEFAULTS["retrieval_recency_weight"],
         ),
     )
 
@@ -1346,6 +1352,19 @@ async def update_retrieval_settings(
             reason="Updated via admin settings",
         )
 
+    if request.retrieval_recency_weight is not None:
+        if not (0.0 <= request.retrieval_recency_weight <= 0.5):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="retrieval_recency_weight must be between 0.0 and 0.5",
+            )
+        service.set_with_audit(
+            "retrieval_recency_weight",
+            request.retrieval_recency_weight,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
     logger.info(
         f"Admin {current_user.email} updated retrieval settings: "
         f"{request.model_dump(exclude_none=True)}"
@@ -1387,6 +1406,11 @@ async def update_retrieval_settings(
             "retrieval_min_score_hybrid",
             "RETRIEVAL_MIN_SCORE_HYBRID",
             RETRIEVAL_DEFAULTS["retrieval_min_score_hybrid"],
+        ),
+        retrieval_recency_weight=service.get_with_env_fallback(
+            "retrieval_recency_weight",
+            "RAG_RECENCY_WEIGHT",
+            RETRIEVAL_DEFAULTS["retrieval_recency_weight"],
         ),
     )
 

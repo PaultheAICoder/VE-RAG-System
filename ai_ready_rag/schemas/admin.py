@@ -319,6 +319,7 @@ class RetrievalSettingsRequest(BaseModel):
     retrieval_prefetch_multiplier: int | None = None
     retrieval_min_score_dense: float | None = None
     retrieval_min_score_hybrid: float | None = None
+    retrieval_recency_weight: float | None = None
 
 
 class RetrievalSettingsResponse(BaseModel):
@@ -331,6 +332,7 @@ class RetrievalSettingsResponse(BaseModel):
     retrieval_prefetch_multiplier: int
     retrieval_min_score_dense: float
     retrieval_min_score_hybrid: float
+    retrieval_recency_weight: float
 
 
 class LLMSettingsRequest(BaseModel):

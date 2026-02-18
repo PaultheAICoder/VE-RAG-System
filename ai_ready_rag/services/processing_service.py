@@ -354,6 +354,29 @@ class ProcessingService:
                 chunk_metadata=chunk_metadata,
             )
 
+            # Post-process: rechunk Coverage Summary xlsx files
+            if file_path.suffix.lower() == ".xlsx" and self.settings.coverage_rechunk_enabled:
+                try:
+                    from ai_ready_rag.services.coverage_rechunker import (
+                        is_coverage_summary,
+                        rechunk_coverage_summary,
+                    )
+
+                    if is_coverage_summary(document):
+                        rechunk_count = await rechunk_coverage_summary(document, db, self.settings)
+                        if rechunk_count > 0:
+                            logger.info(
+                                "Coverage rechunk replaced chunks: doc=%s new_count=%d",
+                                document.id,
+                                rechunk_count,
+                            )
+                except Exception as e:
+                    logger.warning(
+                        "Coverage rechunk failed for %s, keeping original chunks: %s",
+                        document.id,
+                        e,
+                    )
+
             # Calculate processing time
             processing_time_ms = int((time.perf_counter() - start_time) * 1000)
 
