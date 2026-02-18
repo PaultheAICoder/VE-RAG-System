@@ -305,8 +305,17 @@ export function UploadModal({
 
           {selectionSkippedResults.length > 0 && (
             <Alert variant="warning">
-              {selectionSkippedResults.length} unsupported file
-              {selectionSkippedResults.length !== 1 ? 's were' : ' was'} skipped.
+              <details>
+                <summary className="cursor-pointer">
+                  {selectionSkippedResults.length} unsupported file
+                  {selectionSkippedResults.length !== 1 ? 's were' : ' was'} skipped.
+                </summary>
+                <ul className="mt-2 text-xs space-y-0.5 max-h-32 overflow-y-auto">
+                  {selectionSkippedResults.map((r, i) => (
+                    <li key={i} className="text-gray-600 dark:text-gray-400">{r.filename}</li>
+                  ))}
+                </ul>
+              </details>
             </Alert>
           )}
 
