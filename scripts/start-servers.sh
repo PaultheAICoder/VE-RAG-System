@@ -98,13 +98,13 @@ preflight_checks() {
     echo ""
 }
 
-# Initialize database and create admin/tags
+# Initialize database and create admin
 init_database() {
     echo "=== Initializing database ==="
     python << "PYTHON"
 import os
 from ai_ready_rag.db.database import SessionLocal, init_db
-from ai_ready_rag.db.models import User, Tag
+from ai_ready_rag.db.models import User
 from ai_ready_rag.core.security import hash_password
 
 init_db()
@@ -130,21 +130,6 @@ try:
         print(f"Admin user created: {admin_email}")
     else:
         print(f"Admin user exists: {admin_email}")
-
-    # Create default tags
-    default_tags = [
-        {"name": "hr", "display_name": "HR", "color": "#10B981"},
-        {"name": "it", "display_name": "IT", "color": "#3B82F6"},
-        {"name": "legal", "display_name": "Legal", "color": "#8B5CF6"},
-        {"name": "finance", "display_name": "Finance", "color": "#F59E0B"},
-    ]
-
-    for tag_data in default_tags:
-        tag = db.query(Tag).filter(Tag.name == tag_data["name"]).first()
-        if not tag:
-            tag = Tag(**tag_data)
-            db.add(tag)
-            print(f"Tag created: {tag_data['display_name']}")
 
     db.commit()
 finally:
