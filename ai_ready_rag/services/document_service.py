@@ -156,7 +156,7 @@ class DocumentService:
         # Create document record first to get ID
         document = Document(
             filename="",  # Will update after saving
-            original_filename=file.filename,
+            original_filename=Path(file.filename).name if file.filename else file.filename,
             file_path="",  # Will update after saving
             file_type=extension,
             file_size=file_size,
@@ -414,7 +414,7 @@ class DocumentService:
                 # Create document record
                 document = Document(
                     filename="",
-                    original_filename=file.filename,
+                    original_filename=Path(file.filename).name if file.filename else file.filename,
                     file_path="",
                     file_type=extension,
                     file_size=file_size,
@@ -736,8 +736,8 @@ class DocumentService:
 
         return documents, total
 
-    def get_tag_facets(self) -> dict[str, list[dict]]:
-        """Get tag facets grouped by namespace with document counts."""
+    def get_tag_facets(self) -> dict:
+        """Get tag facets grouped by namespace with document counts and ordering."""
         from sqlalchemy import func
 
         from ai_ready_rag.db.models.base import document_tags
@@ -764,7 +764,21 @@ class DocumentService:
                 }
             )
 
-        return facets
+        # Derive namespace_order from active auto-tag strategy YAML
+        namespace_order: list[str] = sorted(facets.keys())
+        try:
+            from ai_ready_rag.services.auto_tagging import AutoTagStrategy
+
+            strategy_path = (
+                Path(self.settings.auto_tagging_strategies_dir)
+                / f"{self.settings.auto_tagging_strategy}.yaml"
+            )
+            strategy = AutoTagStrategy.load(str(strategy_path))
+            namespace_order = list(strategy.namespaces.keys())
+        except Exception:
+            pass  # Fall back to sorted(facets.keys())
+
+        return {"facets": facets, "namespace_order": namespace_order}
 
     async def delete_document(self, document_id: str) -> bool:
         """Delete document, file, and vectors.

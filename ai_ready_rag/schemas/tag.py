@@ -26,6 +26,13 @@ class TagFacetItem(BaseModel):
     count: int
 
 
+class TagFacetsResponse(BaseModel):
+    """Tag facets grouped by namespace with ordering."""
+
+    facets: dict[str, list[TagFacetItem]]
+    namespace_order: list[str]
+
+
 class TagResponse(BaseModel):
     id: str
     name: str

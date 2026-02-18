@@ -8,6 +8,7 @@ interface NamespaceFiltersProps {
   activeValue: string | null;
   onFilterChange: (namespace: string | null, value: string | null) => void;
   loading: boolean;
+  namespaceOrder?: string[];
 }
 
 /** Human-readable display names for known namespaces. */
@@ -30,10 +31,13 @@ export function NamespaceFilters({
   activeValue,
   onFilterChange,
   loading,
+  namespaceOrder = [],
 }: NamespaceFiltersProps) {
   const [expandedNamespace, setExpandedNamespace] = useState<string | null>(null);
 
-  const namespaceKeys = Object.keys(facets);
+  const namespaceKeys = namespaceOrder.length > 0
+    ? namespaceOrder.filter(ns => ns in facets)
+    : Object.keys(facets);
 
   // Nothing to render if no facets
   if (namespaceKeys.length === 0 && !loading) {

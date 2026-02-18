@@ -46,6 +46,7 @@ export interface Document {
   uploaded_by: string;
   uploaded_at: string;
   processed_at: string | null;
+  source_path: string | null;
 }
 
 export interface DocumentListResponse {
@@ -71,6 +72,11 @@ export interface TagFacetItem {
   name: string;
   display: string;
   count: number;
+}
+
+export interface TagFacetsResponse {
+  facets: Record<string, TagFacetItem[]>;
+  namespace_order: string[];
 }
 
 export interface BulkDeleteResult {

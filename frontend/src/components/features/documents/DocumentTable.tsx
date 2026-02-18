@@ -15,6 +15,7 @@ interface DocumentTableProps {
   loading?: boolean;
   suggestionCounts?: Map<string, number>;
   onSuggestionClick?: (doc: Document) => void;
+  namespaceOrder?: string[];
 }
 
 type SortableField = 'original_filename' | 'uploaded_at' | 'status';
@@ -34,6 +35,26 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function extractFilename(path: string): string {
+  const parts = path.split('/');
+  return parts[parts.length - 1] || path;
+}
+
+function getTagNamespace(tag: Tag): string {
+  const idx = tag.name.indexOf(':');
+  return idx > -1 ? tag.name.substring(0, idx) : 'other';
+}
+
+function sortTagsByNamespace(tags: Tag[], order: string[]): Tag[] {
+  if (order.length === 0) return tags;
+  const priority = new Map(order.map((ns, i) => [ns, i]));
+  return [...tags].sort((a, b) => {
+    const pa = priority.get(getTagNamespace(a)) ?? 999;
+    const pb = priority.get(getTagNamespace(b)) ?? 999;
+    return pa - pb;
+  });
+}
+
 export function DocumentTable({
   documents,
   selectedIds,
@@ -45,6 +66,7 @@ export function DocumentTable({
   loading = false,
   suggestionCounts,
   onSuggestionClick,
+  namespaceOrder = [],
 }: DocumentTableProps) {
   const allSelected = documents.length > 0 && documents.every((d) => selectedIds.has(d.id));
   const someSelected = documents.some((d) => selectedIds.has(d.id)) && !allSelected;
@@ -166,11 +188,17 @@ export function DocumentTable({
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-col">
-                    <span className="font-medium text-gray-900 dark:text-white truncate max-w-xs">
-                      {doc.original_filename}
+                    <span
+                      className="font-medium text-gray-900 dark:text-white truncate max-w-md"
+                      title={doc.source_path || doc.original_filename}
+                    >
+                      {extractFilename(doc.original_filename)}
                     </span>
                     {doc.title && doc.title !== doc.original_filename && (
-                      <span className="text-sm text-gray-500 dark:text-gray-400 truncate max-w-xs">
+                      <span
+                        className="text-sm text-gray-500 dark:text-gray-400 truncate max-w-md"
+                        title={doc.title}
+                      >
                         {doc.title}
                       </span>
                     )}
@@ -178,7 +206,7 @@ export function DocumentTable({
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-1">
-                    {doc.tags.map((tag) => (
+                    {sortTagsByNamespace(doc.tags, namespaceOrder).map((tag) => (
                       <button
                         key={tag.id}
                         onClick={() => onTagClick?.(tag)}
