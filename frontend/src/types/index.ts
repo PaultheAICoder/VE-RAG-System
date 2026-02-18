@@ -327,6 +327,10 @@ export interface RetrievalSettings {
   retrieval_top_k: number;
   retrieval_min_score: number;
   retrieval_enable_expansion: boolean;
+  retrieval_hybrid_enabled: boolean;
+  retrieval_prefetch_multiplier: number;
+  retrieval_min_score_dense: number;
+  retrieval_min_score_hybrid: number;
 }
 
 export interface LLMSettings {

@@ -169,7 +169,19 @@ export function SettingsView() {
           retrievalSettings.retrieval_min_score
         ) ||
         formRetrievalSettings.retrieval_enable_expansion !==
-          retrievalSettings.retrieval_enable_expansion);
+          retrievalSettings.retrieval_enable_expansion ||
+        formRetrievalSettings.retrieval_hybrid_enabled !==
+          retrievalSettings.retrieval_hybrid_enabled ||
+        formRetrievalSettings.retrieval_prefetch_multiplier !==
+          retrievalSettings.retrieval_prefetch_multiplier ||
+        floatsDiffer(
+          formRetrievalSettings.retrieval_min_score_dense,
+          retrievalSettings.retrieval_min_score_dense
+        ) ||
+        floatsDiffer(
+          formRetrievalSettings.retrieval_min_score_hybrid,
+          retrievalSettings.retrieval_min_score_hybrid
+        ));
 
     const llmDirty =
       formLlmSettings &&
@@ -320,7 +332,19 @@ export function SettingsView() {
             retrievalSettings.retrieval_min_score
           ) ||
           formRetrievalSettings.retrieval_enable_expansion !==
-            retrievalSettings.retrieval_enable_expansion)
+            retrievalSettings.retrieval_enable_expansion ||
+          formRetrievalSettings.retrieval_hybrid_enabled !==
+            retrievalSettings.retrieval_hybrid_enabled ||
+          formRetrievalSettings.retrieval_prefetch_multiplier !==
+            retrievalSettings.retrieval_prefetch_multiplier ||
+          floatsDiffer(
+            formRetrievalSettings.retrieval_min_score_dense,
+            retrievalSettings.retrieval_min_score_dense
+          ) ||
+          floatsDiffer(
+            formRetrievalSettings.retrieval_min_score_hybrid,
+            retrievalSettings.retrieval_min_score_hybrid
+          ))
       ) {
         await updateRetrievalSettings(formRetrievalSettings);
       }
@@ -559,9 +583,22 @@ export function SettingsView() {
 
       {/* Retrieval Settings Section */}
       <Card>
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-          Retrieval Settings
-        </h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+            Retrieval Settings
+          </h2>
+          <span
+            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+              formRetrievalSettings.retrieval_hybrid_enabled
+                ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+                : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+            }`}
+          >
+            {formRetrievalSettings.retrieval_hybrid_enabled
+              ? 'Hybrid (Dense + Sparse)'
+              : 'Dense Only'}
+          </span>
+        </div>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
           Control how documents are retrieved and ranked for context.
         </p>
@@ -582,7 +619,7 @@ export function SettingsView() {
           />
           <Slider
             label="Minimum Similarity Score"
-            description="Filter out chunks below this relevance threshold"
+            description="Legacy fallback threshold used when specific mode thresholds are not set"
             value={formRetrievalSettings.retrieval_min_score}
             min={0.1}
             max={0.9}
@@ -608,6 +645,103 @@ export function SettingsView() {
           <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2 ml-6">
             Automatically rephrase queries to improve retrieval quality
           </p>
+
+          {/* Hybrid Search Section */}
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">
+              Hybrid Search
+            </h3>
+            <Checkbox
+              label="Enable Hybrid Search"
+              checked={formRetrievalSettings.retrieval_hybrid_enabled}
+              onChange={(e) =>
+                setFormRetrievalSettings({
+                  ...formRetrievalSettings,
+                  retrieval_hybrid_enabled: e.target.checked,
+                })
+              }
+            />
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 ml-7">
+              Combines dense vector search with BM25 keyword matching. Better for exact term
+              matching (names, IDs, codes). Requires a hybrid-enabled collection.
+            </p>
+          </div>
+
+          {/* Score Thresholds - conditional on hybrid mode */}
+          <div className="space-y-6">
+            <div
+              className={
+                formRetrievalSettings.retrieval_hybrid_enabled ? 'opacity-50' : ''
+              }
+            >
+              <Slider
+                label="Dense Score Threshold"
+                description="Cosine similarity threshold for dense-only search (0-1). Higher = stricter matching, fewer but more relevant results."
+                value={formRetrievalSettings.retrieval_min_score_dense}
+                min={0.05}
+                max={0.95}
+                step={0.05}
+                valueFormatter={(v) => v.toFixed(2)}
+                disabled={formRetrievalSettings.retrieval_hybrid_enabled}
+                onChange={(e) =>
+                  setFormRetrievalSettings({
+                    ...formRetrievalSettings,
+                    retrieval_min_score_dense: parseFloat(e.target.value),
+                  })
+                }
+              />
+              {!formRetrievalSettings.retrieval_hybrid_enabled && (
+                <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                  Active threshold (dense mode)
+                </p>
+              )}
+            </div>
+
+            <div
+              className={
+                !formRetrievalSettings.retrieval_hybrid_enabled ? 'opacity-50' : ''
+              }
+            >
+              <Slider
+                label="Hybrid Score Threshold"
+                description="Normalized RRF threshold for hybrid search (0-1). Hybrid scores are typically lower than dense scores since RRF normalizes across result sets."
+                value={formRetrievalSettings.retrieval_min_score_hybrid}
+                min={0.01}
+                max={0.5}
+                step={0.01}
+                valueFormatter={(v) => v.toFixed(2)}
+                disabled={!formRetrievalSettings.retrieval_hybrid_enabled}
+                onChange={(e) =>
+                  setFormRetrievalSettings({
+                    ...formRetrievalSettings,
+                    retrieval_min_score_hybrid: parseFloat(e.target.value),
+                  })
+                }
+              />
+              {formRetrievalSettings.retrieval_hybrid_enabled && (
+                <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                  Active threshold (hybrid mode)
+                </p>
+              )}
+            </div>
+
+            {formRetrievalSettings.retrieval_hybrid_enabled && (
+              <Slider
+                label="Prefetch Multiplier"
+                description="Multiplier for prefetch limit before fusion. Higher = more candidates considered, better quality but slower."
+                value={formRetrievalSettings.retrieval_prefetch_multiplier}
+                min={2}
+                max={5}
+                step={1}
+                onChange={(e) =>
+                  setFormRetrievalSettings({
+                    ...formRetrievalSettings,
+                    retrieval_prefetch_multiplier: parseInt(e.target.value, 10),
+                  })
+                }
+              />
+            )}
+          </div>
         </div>
       </Card>
 
