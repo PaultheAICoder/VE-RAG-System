@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -107,6 +108,13 @@ class VERagVectorStoreAdapter:
             meta = chunk.metadata
             chunk_index = meta.chunk_index
 
+            # Qdrant requires point IDs to be UUIDs or unsigned ints.
+            # Some ingestkit packages (e.g. email) produce non-UUID IDs.
+            try:
+                point_id = str(uuid.UUID(chunk.id))
+            except ValueError:
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk.id))
+
             payload = {
                 # VE-RAG standard fields (must match vector_service.py schema)
                 "chunk_id": chunk.id,
@@ -144,7 +152,7 @@ class VERagVectorStoreAdapter:
 
             points.append(
                 PointStruct(
-                    id=chunk.id,
+                    id=point_id,
                     vector={"dense": chunk.vector},
                     payload=payload,
                 )
