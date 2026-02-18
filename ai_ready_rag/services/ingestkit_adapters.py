@@ -659,10 +659,24 @@ class VERagPDFWidgetAdapter:
 
         try:
             reader = PdfReader(file_path)
+            # Check AcroForm at document root (most reliable)
+            if reader.trailer.get("/Root"):
+                root = reader.trailer["/Root"].get_object()
+                acro_form = root.get("/AcroForm")
+                if acro_form:
+                    acro_obj = (
+                        acro_form.get_object() if hasattr(acro_form, "get_object") else acro_form
+                    )
+                    fields = acro_obj.get("/Fields", [])
+                    if len(fields) > 0:
+                        return True
+            # Fallback: check page annotations
             for pg in reader.pages:
                 annots = pg.get("/Annots")
-                if annots and len(annots) > 0:
-                    return True
+                if annots:
+                    resolved = annots.get_object() if hasattr(annots, "get_object") else annots
+                    if len(resolved) > 0:
+                        return True
             return False
         except Exception:
             return False
