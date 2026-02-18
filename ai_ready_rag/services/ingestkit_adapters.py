@@ -79,10 +79,12 @@ class VERagVectorStoreAdapter:
         if not self._client.collection_exists(name):
             self._client.create_collection(
                 collection_name=name,
-                vectors_config=VectorParams(
-                    size=vector_size,
-                    distance=Distance.COSINE,
-                ),
+                vectors_config={
+                    "dense": VectorParams(
+                        size=vector_size,
+                        distance=Distance.COSINE,
+                    )
+                },
             )
             logger.info("Created Qdrant collection '%s' (dim=%d)", name, vector_size)
 
@@ -143,7 +145,7 @@ class VERagVectorStoreAdapter:
             points.append(
                 PointStruct(
                     id=chunk.id,
-                    vector=chunk.vector,
+                    vector={"dense": chunk.vector},
                     payload=payload,
                 )
             )
