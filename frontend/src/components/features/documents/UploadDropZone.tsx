@@ -16,9 +16,22 @@ const ALLOWED_TYPES = [
   'text/markdown',
   'text/html',
   'text/csv',
+  // Image formats (OCR extraction)
+  'image/png',
+  'image/jpeg',
+  'image/tiff',
+  // Email formats
+  'message/rfc822', // .eml
+  'application/vnd.ms-outlook', // .msg
 ];
 
-const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.html', '.csv'];
+const ALLOWED_EXTENSIONS = [
+  '.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.md', '.html', '.csv',
+  // Image formats
+  '.png', '.jpg', '.jpeg', '.tiff', '.tif',
+  // Email formats
+  '.eml', '.msg',
+];
 
 // Hidden/system files to always skip
 const IGNORED_NAMES = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini', '.gitkeep']);
@@ -310,7 +323,7 @@ export function UploadDropZone({
         </p>
       ) : (
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          PDF, DOCX, XLSX, PPTX, TXT, MD, HTML, CSV
+          PDF, DOCX, XLSX, PPTX, TXT, MD, HTML, CSV, PNG, JPG, TIFF, EML, MSG
         </p>
       )}
       <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
