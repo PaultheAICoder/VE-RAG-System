@@ -711,8 +711,8 @@ async def bulk_reprocess_documents(
             skipped_ids.append(doc_id)
             continue
 
-        # Skip only if currently processing (to avoid double-processing)
-        if document.status == "processing":
+        # Skip if already queued or actively processing (to avoid double-queueing)
+        if document.status in ("processing", "pending"):
             logger.debug(
                 "bulk_reprocess_skip",
                 extra={"document_id": doc_id, "reason": "already_processing"},
@@ -733,7 +733,7 @@ async def bulk_reprocess_documents(
         )
 
         # Reset document state
-        document.status = "processing"
+        document.status = "pending"
         document.chunk_count = None
         document.processed_at = None
         document.error_message = None

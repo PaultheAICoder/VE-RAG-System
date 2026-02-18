@@ -285,7 +285,7 @@ async def lifespan(app: FastAPI):
 
     # Periodic recovery for stuck processing documents (#308)
     async def _stale_processing_recovery_loop():
-        """Reset documents stuck in 'processing' for >30 min back to 'pending'."""
+        """Reset documents stuck in 'processing' for >15 min back to 'pending'."""
         while True:
             await asyncio.sleep(300)  # Every 5 minutes
             try:
@@ -293,7 +293,7 @@ async def lifespan(app: FastAPI):
                 try:
                     from datetime import datetime, timedelta
 
-                    cutoff = datetime.utcnow() - timedelta(minutes=30)
+                    cutoff = datetime.utcnow() - timedelta(minutes=15)
                     reset_count = (
                         recovery_db.query(Document)
                         .filter(
