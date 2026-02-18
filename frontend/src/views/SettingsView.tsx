@@ -181,6 +181,10 @@ export function SettingsView() {
         floatsDiffer(
           formRetrievalSettings.retrieval_min_score_hybrid,
           retrievalSettings.retrieval_min_score_hybrid
+        ) ||
+        floatsDiffer(
+          formRetrievalSettings.retrieval_recency_weight,
+          retrievalSettings.retrieval_recency_weight
         ));
 
     const llmDirty =
@@ -344,6 +348,10 @@ export function SettingsView() {
           floatsDiffer(
             formRetrievalSettings.retrieval_min_score_hybrid,
             retrievalSettings.retrieval_min_score_hybrid
+          ) ||
+          floatsDiffer(
+            formRetrievalSettings.retrieval_recency_weight,
+            retrievalSettings.retrieval_recency_weight
           ))
       ) {
         await updateRetrievalSettings(formRetrievalSettings);
@@ -645,6 +653,21 @@ export function SettingsView() {
           <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2 ml-6">
             Automatically rephrase queries to improve retrieval quality
           </p>
+          <Slider
+            label="Recency Weight"
+            description="Boost newer documents in search results. 0 = disabled, higher = stronger preference for recent docs."
+            value={formRetrievalSettings.retrieval_recency_weight}
+            min={0.0}
+            max={0.5}
+            step={0.05}
+            valueFormatter={(v) => v.toFixed(2)}
+            onChange={(e) =>
+              setFormRetrievalSettings({
+                ...formRetrievalSettings,
+                retrieval_recency_weight: parseFloat(e.target.value),
+              })
+            }
+          />
 
           {/* Hybrid Search Section */}
           <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
