@@ -189,6 +189,21 @@ class FormsProcessingService:
         if match is None:
             return (None, True)  # No match, fallback to standard chunker
 
+        # Reject matches below our confidence threshold (prevents false positives
+        # like loss runs being misidentified as ACORD forms)
+        if match.confidence < settings.forms_match_confidence_threshold:
+            logger.info(
+                "forms.match.below_threshold",
+                extra={
+                    "document_id": document.id,
+                    "template_id": match.template_id,
+                    "confidence": match.confidence,
+                    "threshold": settings.forms_match_confidence_threshold,
+                },
+            )
+            forms_metrics.inc_fallback("low_confidence")
+            return (None, True)  # Below threshold, fallback to standard chunker
+
         logger.info(
             "forms.match.success",
             extra={
