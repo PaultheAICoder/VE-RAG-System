@@ -25,6 +25,9 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_concurrent_processing": 3,
         # Summary generation
         "generate_summaries": True,
+        # ingestkit - disabled on laptop
+        "use_ingestkit_image": False,
+        "use_ingestkit_email": False,
     },
     "spark": {
         "vector_backend": "qdrant",
@@ -48,6 +51,9 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "use_ingestkit_forms": True,
         "forms_ocr_engine": "paddleocr",
         "forms_vlm_enabled": True,
+        # ingestkit-image / ingestkit-email - enabled on Spark
+        "use_ingestkit_image": True,
+        "use_ingestkit_email": True,
     },
 }
 
@@ -147,6 +153,7 @@ class Settings(BaseSettings):
     rag_chunk_overlap_threshold: float = 0.9
     rag_enable_query_expansion: bool = True  # Expand queries for better recall
     rag_enable_hallucination_check: bool | None = None  # None = use profile default
+    rag_recency_weight: float = 0.15  # 0=disabled, blend weight for recency boost
 
     # Cache Warming - Core settings
     warming_delay_seconds: float = 2.0  # Delay between warming queries to reduce Ollama contention
@@ -247,6 +254,16 @@ class Settings(BaseSettings):
     forms_template_storage_path: str = "./data/form_templates"
     forms_redact_high_risk_fields: bool = True  # Redact SSN, tax ID, account numbers
     forms_template_require_approval: bool = True  # Templates must be approved before matching
+    forms_rechunk_enabled: bool = True  # Split form mega-chunks into field groups
+
+    # ingestkit-image integration
+    use_ingestkit_image: bool | None = None  # None = use profile default
+    image_ocr_language: str = "eng"
+    image_ocr_config: str | None = None
+
+    # ingestkit-email integration
+    use_ingestkit_email: bool | None = None  # None = use profile default
+    email_include_headers: bool = True
 
     # Auto-tagging
     auto_tagging_enabled: bool = False

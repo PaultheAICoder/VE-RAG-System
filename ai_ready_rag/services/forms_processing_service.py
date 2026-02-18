@@ -10,8 +10,11 @@ Mirrors the ExcelProcessingService pattern.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
+import re
+import sqlite3
 
 from sqlalchemy.orm import Session
 
@@ -31,6 +34,35 @@ _HIGH_RISK_PATTERNS = [
     r"\b\d{2}-\d{7}\b",  # EIN
     r"\b\d{9,18}\b",  # Account numbers
 ]
+
+# Field name prefix mapping for ACORD 25 rechunking.
+# Keys are group names; values are fnmatch patterns matched against field names.
+ACORD_25_GROUPS: dict[str, list[str]] = {
+    "Producer Info": ["Producer_*", "Producer*"],
+    "Named Insured": ["NamedInsured_*", "NamedInsured*", "Insured*"],
+    "Insurers": ["Insurer_*", "Insurer*"],
+    "General Liability": ["GeneralLiability_*", "GeneralLiability*", "Policy_GeneralLiability_*"],
+    "Auto Liability": [
+        "Vehicle_*",
+        "Vehicle*",
+        "Policy_AutomobileLiability_*",
+        "AutomobileLiability*",
+    ],
+    "Umbrella/Excess": [
+        "ExcessUmbrella_*",
+        "ExcessUmbrella*",
+        "Policy_ExcessLiability_*",
+        "Umbrella*",
+    ],
+    "Workers Comp": ["WorkersCompensation*", "Policy_WorkersCompensation*"],
+    "Other": [
+        "OtherPolicy_*",
+        "CertificateHolder_*",
+        "CertificateOf*",
+        "Description*",
+        "Remarks*",
+    ],
+}
 
 
 def _pymupdf_renderer(file_path: str, dpi: int) -> list:
@@ -189,6 +221,21 @@ class FormsProcessingService:
         if match is None:
             return (None, True)  # No match, fallback to standard chunker
 
+        # Reject matches below our confidence threshold (prevents false positives
+        # like loss runs being misidentified as ACORD forms)
+        if match.confidence < settings.forms_match_confidence_threshold:
+            logger.info(
+                "forms.match.below_threshold",
+                extra={
+                    "document_id": document.id,
+                    "template_id": match.template_id,
+                    "confidence": match.confidence,
+                    "threshold": settings.forms_match_confidence_threshold,
+                },
+            )
+            forms_metrics.inc_fallback("low_confidence")
+            return (None, True)  # Below threshold, fallback to standard chunker
+
         logger.info(
             "forms.match.success",
             extra={
@@ -279,6 +326,34 @@ class FormsProcessingService:
                 result.warnings,
             )
 
+        # 8.5 Rechunk form mega-chunk into field groups (if enabled)
+        rechunk_count = 0
+        if self.settings.forms_rechunk_enabled:
+            try:
+                rechunk_count = await self._rechunk_form(
+                    document=document,
+                    result=result,
+                    settings=settings,
+                    form_db=form_db,
+                    vector_store=vector_store,
+                    embedder=embedder,
+                )
+                if rechunk_count > 0:
+                    logger.info(
+                        "forms.rechunk.success",
+                        extra={
+                            "document_id": document.id,
+                            "original_chunks": result.chunks_created,
+                            "rechunked_chunks": rechunk_count,
+                        },
+                    )
+            except Exception as e:
+                # Rechunking is best-effort — original chunks still exist if this fails
+                logger.warning(
+                    "forms.rechunk.failed",
+                    extra={"document_id": document.id, "error": str(e)},
+                )
+
         # 9. Update document columns (last step — after all writes succeeded)
         document.forms_template_id = er.template_id
         document.forms_template_name = er.template_name
@@ -293,13 +368,190 @@ class FormsProcessingService:
         return (
             ProcessingResult(
                 success=True,
-                chunk_count=result.chunks_created,
+                chunk_count=rechunk_count if rechunk_count > 0 else result.chunks_created,
                 page_count=er.pages_processed if hasattr(er, "pages_processed") else None,
                 word_count=0,  # ingestkit-forms doesn't track word count
                 processing_time_ms=processing_time_ms,
             ),
             False,
         )
+
+    async def _rechunk_form(
+        self,
+        document: Document,
+        result,
+        settings: Settings,
+        form_db,
+        vector_store,
+        embedder,
+    ) -> int:
+        """Split form mega-chunk into logical field-group chunks.
+
+        Reads extracted fields from the forms SQLite DB, groups them by
+        ACORD section, deletes the original mega-chunk from Qdrant,
+        formats each group as natural text, embeds, and writes back.
+
+        Returns the number of new chunks created (0 if rechunking was skipped).
+        """
+        # 1. Find the forms DB table(s) for this document
+        table_names = result.tables
+        if not table_names:
+            logger.debug("forms.rechunk.skip: no tables for %s", document.id)
+            return 0
+
+        # 2. Read fields from the first table (ACORD forms typically have one)
+        table_name = table_names[0]
+        form_db.check_table_name(table_name)
+        db_path = form_db.get_connection_uri().replace("sqlite:///", "")
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(f"SELECT * FROM [{table_name}] LIMIT 1")
+            row = cursor.fetchone()
+            if row is None:
+                return 0
+            columns = row.keys()
+            fields: dict[str, str] = {}
+            for col in columns:
+                val = row[col]
+                if val is not None and str(val).strip():
+                    fields[col] = str(val).strip()
+        finally:
+            conn.close()
+
+        if not fields:
+            return 0
+
+        # 3. Group fields by ACORD section
+        groups: dict[str, dict[str, str]] = {}
+        ungrouped: dict[str, str] = {}
+
+        for field_name, field_value in fields.items():
+            # Skip metadata columns
+            if field_name.lower() in (
+                "id",
+                "ingest_key",
+                "document_id",
+                "tenant_id",
+                "created_at",
+                "updated_at",
+            ):
+                continue
+
+            matched = False
+            for group_name, patterns in ACORD_25_GROUPS.items():
+                for pattern in patterns:
+                    if fnmatch.fnmatch(field_name, pattern):
+                        if group_name not in groups:
+                            groups[group_name] = {}
+                        groups[group_name][field_name] = field_value
+                        matched = True
+                        break
+                if matched:
+                    break
+
+            if not matched:
+                ungrouped[field_name] = field_value
+
+        # Add ungrouped fields to "Other"
+        if ungrouped:
+            if "Other" not in groups:
+                groups["Other"] = {}
+            groups["Other"].update(ungrouped)
+
+        if not groups:
+            return 0
+
+        # 4. Build document header from key fields
+        template_name = document.forms_template_name or "Form"
+        insured_name = fields.get("NamedInsured_Name", fields.get("Insured_Name", ""))
+        header = f"{template_name}\n"
+        if insured_name:
+            header += f"Insured: {insured_name}\n"
+
+        # 5. Format each group as natural text
+        chunk_texts: list[str] = []
+        chunk_sections: list[str] = []
+        for group_name, group_fields in groups.items():
+            if not group_fields:
+                continue
+
+            lines = [f"{header}{group_name}\n"]
+            for fname, fval in group_fields.items():
+                # Clean up field name: CamelCase_SubField -> readable label
+                label = self._field_name_to_label(fname)
+                lines.append(f"{label}: {fval}")
+
+            chunk_text = "\n".join(lines)
+            chunk_texts.append(chunk_text)
+            chunk_sections.append(group_name)
+
+        if not chunk_texts:
+            return 0
+
+        # 6. Delete original mega-chunk from Qdrant by ingest_key
+        if result.ingest_key:
+            try:
+                vector_store.delete_by_filter(
+                    settings.qdrant_collection,
+                    "ingestkit_ingest_key",
+                    result.ingest_key,
+                )
+            except Exception as e:
+                logger.warning(
+                    "forms.rechunk.delete_original_failed",
+                    extra={"document_id": document.id, "error": str(e)},
+                )
+                # Continue anyway — we'll have duplicates rather than missing data
+
+        # 7. Embed each chunk via the ingestkit embedder
+        from ingestkit_core.models import ChunkMetadata, ChunkPayload
+
+        chunks_to_upsert: list[ChunkPayload] = []
+
+        for i, (text, section) in enumerate(zip(chunk_texts, chunk_sections, strict=True)):
+            embedding = embedder.embed(text)
+            chunk_id = f"{document.id}_form_{i}"
+            metadata = ChunkMetadata(
+                chunk_index=i,
+                section_title=section,
+                source_format="form_rechunk",
+                ingestion_method="rechunk",
+                parser_version="ve-rag-rechunk-1.0",
+                ingest_key=result.ingest_key or "",
+                chunk_hash="",
+                source_uri=str(document.file_path or ""),
+                ingest_run_id="",
+            )
+            chunks_to_upsert.append(
+                ChunkPayload(
+                    id=chunk_id,
+                    text=text,
+                    vector=embedding,
+                    metadata=metadata,
+                )
+            )
+
+        # 8. Write new chunks to Qdrant via the adapter
+        count = vector_store.upsert_chunks(settings.qdrant_collection, chunks_to_upsert)
+        return count
+
+    @staticmethod
+    def _field_name_to_label(field_name: str) -> str:
+        """Convert a form field name to a human-readable label.
+
+        Examples:
+            GeneralLiability_EachOccurrenceLimit -> Each Occurrence Limit
+            Producer_ContactName -> Contact Name
+        """
+        # Remove group prefix (everything before first underscore)
+        parts = field_name.split("_", 1)
+        name = parts[-1] if len(parts) > 1 else parts[0]
+        # Split CamelCase
+        name = re.sub(r"([a-z])([A-Z])", r"\1 \2", name)
+        # Replace underscores with spaces
+        name = name.replace("_", " ")
+        return name.strip()
 
     async def _compensate(
         self,

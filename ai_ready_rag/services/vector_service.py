@@ -83,6 +83,7 @@ class SearchResult:
     score: float  # 0.0 to 1.0 (cosine similarity)
     page_number: int | None
     section: str | None
+    tags: list[str] | None = None  # For recency boost from year tags
 
 
 @dataclass
@@ -887,6 +888,7 @@ class VectorService:
                     score=point.score,
                     page_number=payload.get("page_number"),
                     section=payload.get("section"),
+                    tags=payload.get("tags"),
                 )
             )
 
