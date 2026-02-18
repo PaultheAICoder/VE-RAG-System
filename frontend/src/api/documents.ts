@@ -141,6 +141,10 @@ export async function uploadDocument(
     if (autoTag) {
       formData.append('auto_tag', 'true');
     }
+    // Send folder-relative path for path-based auto-tagging
+    if (file.webkitRelativePath) {
+      formData.append('source_path', file.webkitRelativePath);
+    }
 
     xhr.upload.addEventListener('progress', (e) => {
       if (e.lengthComputable && onProgress) {
