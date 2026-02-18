@@ -154,6 +154,56 @@ class ProcessingService:
                 forms_metrics.inc_fallback("no_match")
                 forms_metrics.inc_documents_processed("fallback")
 
+            # Route image files to ingestkit-image if enabled
+            IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tiff", ".tif"}
+            if file_path.suffix.lower() in IMAGE_EXTS and self._should_use_ingestkit_image():
+                result, should_fallback = await self._process_with_ingestkit_image(document, db)
+                if result is not None:
+                    # ingestkit-image handled it (success or failure), no fallback
+                    processing_time_ms = int((time.perf_counter() - start_time) * 1000)
+                    if result.success:
+                        document.status = "ready"
+                        document.chunk_count = result.chunk_count
+                        document.processing_time_ms = processing_time_ms
+                    else:
+                        document.status = "failed"
+                        document.error_message = result.error_message
+                        document.processing_time_ms = processing_time_ms
+                    db.commit()
+                    return ProcessingResult(
+                        success=result.success,
+                        chunk_count=result.chunk_count,
+                        page_count=result.page_count,
+                        word_count=result.word_count,
+                        processing_time_ms=processing_time_ms,
+                        error_message=result.error_message,
+                    )
+
+            # Route email files to ingestkit-email if enabled
+            EMAIL_EXTS = {".eml", ".msg"}
+            if file_path.suffix.lower() in EMAIL_EXTS and self._should_use_ingestkit_email():
+                result, should_fallback = await self._process_with_ingestkit_email(document, db)
+                if result is not None:
+                    # ingestkit-email handled it (success or failure), no fallback
+                    processing_time_ms = int((time.perf_counter() - start_time) * 1000)
+                    if result.success:
+                        document.status = "ready"
+                        document.chunk_count = result.chunk_count
+                        document.processing_time_ms = processing_time_ms
+                    else:
+                        document.status = "failed"
+                        document.error_message = result.error_message
+                        document.processing_time_ms = processing_time_ms
+                    db.commit()
+                    return ProcessingResult(
+                        success=result.success,
+                        chunk_count=result.chunk_count,
+                        page_count=result.page_count,
+                        word_count=result.word_count,
+                        processing_time_ms=processing_time_ms,
+                        error_message=result.error_message,
+                    )
+
             # Route Excel files to ingestkit if enabled
             if file_path.suffix.lower() == ".xlsx" and self._should_use_ingestkit():
                 result, should_fallback = await self._process_with_ingestkit(document, db)
@@ -373,6 +423,64 @@ class ProcessingService:
         except ImportError:
             logger.warning("forms.dependency.missing")
             return False
+
+    def _should_use_ingestkit_image(self) -> bool:
+        """Check if ingestkit-image integration is enabled and available."""
+        if not self.settings.use_ingestkit_image:
+            return False
+        try:
+            import ingestkit_image  # noqa: F401
+
+            return True
+        except ImportError:
+            logger.warning("use_ingestkit_image=True but ingestkit_image not importable")
+            return False
+
+    async def _process_with_ingestkit_image(
+        self,
+        document: Document,
+        db: Session,
+    ) -> tuple[ProcessingResult | None, bool]:
+        """Delegate image processing to ingestkit-image.
+
+        Returns:
+            Tuple of (result, should_fallback). should_fallback is always False.
+        """
+        from ai_ready_rag.services.image_processing_service import (
+            ImageProcessingService,
+        )
+
+        image_service = ImageProcessingService(self.settings)
+        return await image_service.process_image(document, db)
+
+    def _should_use_ingestkit_email(self) -> bool:
+        """Check if ingestkit-email integration is enabled and available."""
+        if not self.settings.use_ingestkit_email:
+            return False
+        try:
+            import ingestkit_email  # noqa: F401
+
+            return True
+        except ImportError:
+            logger.warning("use_ingestkit_email=True but ingestkit_email not importable")
+            return False
+
+    async def _process_with_ingestkit_email(
+        self,
+        document: Document,
+        db: Session,
+    ) -> tuple[ProcessingResult | None, bool]:
+        """Delegate email processing to ingestkit-email.
+
+        Returns:
+            Tuple of (result, should_fallback). should_fallback is always False.
+        """
+        from ai_ready_rag.services.email_processing_service import (
+            EmailProcessingService,
+        )
+
+        email_service = EmailProcessingService(self.settings)
+        return await email_service.process_email(document, db)
 
     async def _process_with_ingestkit_forms(
         self,

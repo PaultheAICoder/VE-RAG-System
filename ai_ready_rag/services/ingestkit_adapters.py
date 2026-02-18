@@ -585,6 +585,65 @@ class VERagVLMAdapter:
             return False
 
 
+class VERagImageOCRAdapter:
+    """OCR adapter implementing ingestkit_image.ImageOCRBackend protocol.
+
+    Uses pytesseract to extract text from full images (not form regions).
+    """
+
+    def __init__(self, language: str = "eng", config: str | None = None) -> None:
+        self._language = language
+        self._config = config
+
+    def ocr_image(
+        self,
+        image_bytes: bytes,
+        language: str | None = None,
+        config: str | None = None,
+        timeout: float | None = None,
+    ):
+        """Run OCR on a full image and return an OCRResult."""
+        import io
+
+        from ingestkit_image import OCRResult
+        from PIL import Image
+
+        try:
+            import pytesseract
+        except ImportError as exc:
+            raise RuntimeError(
+                "pytesseract is required for image OCR. Install with: pip install pytesseract"
+            ) from exc
+
+        lang = language or self._language
+        tess_config = config or self._config or "--psm 6"
+
+        img = Image.open(io.BytesIO(image_bytes))
+        data = pytesseract.image_to_data(
+            img, lang=lang, config=tess_config, output_type=pytesseract.Output.DICT
+        )
+
+        texts = []
+        confidences = []
+        for i, text in enumerate(data["text"]):
+            if text.strip():
+                texts.append(text)
+                conf = data["conf"][i]
+                confidences.append(max(0.0, float(conf)) / 100.0)
+
+        full_text = " ".join(texts)
+        avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
+        return OCRResult(
+            text=full_text,
+            confidence=avg_conf,
+            engine="tesseract",
+            language=lang,
+        )
+
+    def engine_name(self) -> str:
+        return "tesseract"
+
+
 class VERagPDFWidgetAdapter:
     """PDF widget adapter implementing ingestkit_forms.PDFWidgetBackend protocol.
 

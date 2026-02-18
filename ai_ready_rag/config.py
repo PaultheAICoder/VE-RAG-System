@@ -48,6 +48,9 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "use_ingestkit_forms": True,
         "forms_ocr_engine": "paddleocr",
         "forms_vlm_enabled": True,
+        # ingestkit-image / ingestkit-email - enabled on Spark
+        "use_ingestkit_image": True,
+        "use_ingestkit_email": True,
     },
 }
 
@@ -247,6 +250,15 @@ class Settings(BaseSettings):
     forms_template_storage_path: str = "./data/form_templates"
     forms_redact_high_risk_fields: bool = True  # Redact SSN, tax ID, account numbers
     forms_template_require_approval: bool = True  # Templates must be approved before matching
+
+    # ingestkit-image integration
+    use_ingestkit_image: bool = False  # Feature flag (off by default)
+    image_ocr_language: str = "eng"
+    image_ocr_config: str | None = None
+
+    # ingestkit-email integration
+    use_ingestkit_email: bool = False  # Feature flag (off by default)
+    email_include_headers: bool = True
 
     # Auto-tagging
     auto_tagging_enabled: bool = False
