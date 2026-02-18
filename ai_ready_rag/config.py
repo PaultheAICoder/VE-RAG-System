@@ -153,6 +153,7 @@ class Settings(BaseSettings):
     rag_chunk_overlap_threshold: float = 0.9
     rag_enable_query_expansion: bool = True  # Expand queries for better recall
     rag_enable_hallucination_check: bool | None = None  # None = use profile default
+    rag_recency_weight: float = 0.15  # 0=disabled, blend weight for recency boost
 
     # Cache Warming - Core settings
     warming_delay_seconds: float = 2.0  # Delay between warming queries to reduce Ollama contention
@@ -253,6 +254,7 @@ class Settings(BaseSettings):
     forms_template_storage_path: str = "./data/form_templates"
     forms_redact_high_risk_fields: bool = True  # Redact SSN, tax ID, account numbers
     forms_template_require_approval: bool = True  # Templates must be approved before matching
+    forms_rechunk_enabled: bool = True  # Split form mega-chunks into field groups
 
     # ingestkit-image integration
     use_ingestkit_image: bool | None = None  # None = use profile default

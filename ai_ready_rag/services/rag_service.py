@@ -982,6 +982,10 @@ class RAGService:
                         seen_content.add(content_hash)
                         all_candidates.append(chunk)
 
+        # 3.5 Apply recency boost (before score filter so boosted scores are filtered correctly)
+        if self.recency_weight > 0:
+            all_candidates = self._apply_recency_boost(all_candidates)
+
         # 4. Filter by minimum similarity (Qdrant cosine is 0-1)
         filtered = [c for c in all_candidates if c.score >= self.min_similarity_score]
 
@@ -1051,6 +1055,71 @@ class RAGService:
                 doc_counts[chunk.document_id] = count + 1
 
         return result
+
+    @property
+    def recency_weight(self) -> float:
+        """Get recency boost weight from settings."""
+        return self.settings.rag_recency_weight
+
+    def _apply_recency_boost(self, chunks: list[SearchResult]) -> list[SearchResult]:
+        """Boost scores of newer documents using year tags + content dates.
+
+        Args:
+            chunks: List of search results to rerank.
+
+        Returns:
+            Reranked list with recency-boosted scores.
+        """
+        weight = self.recency_weight
+
+        # Find the max year across all candidates to normalize
+        max_year = 0
+        chunk_years: list[int | None] = []
+
+        for chunk in chunks:
+            year = self._extract_year(chunk)
+            chunk_years.append(year)
+            if year and year > max_year:
+                max_year = year
+
+        if max_year == 0:
+            return chunks  # No year data, skip reranking
+
+        for chunk, year in zip(chunks, chunk_years, strict=True):
+            if year is None:
+                recency_score = 0.5  # Neutral
+            else:
+                # Newer = higher. Each year difference = 0.2 penalty
+                years_behind = max_year - year
+                recency_score = max(0.0, 1.0 - years_behind * 0.2)
+            chunk.score = (1 - weight) * chunk.score + weight * recency_score
+
+        chunks.sort(key=lambda c: c.score, reverse=True)
+        return chunks
+
+    def _extract_year(self, chunk: SearchResult) -> int | None:
+        """Extract document year from tags (primary) or content (fallback).
+
+        Args:
+            chunk: Search result to extract year from.
+
+        Returns:
+            Year as integer, or None if not found.
+        """
+        # Primary: year tag (e.g., "year:2025-2026" → take end year)
+        if chunk.tags:
+            for tag in chunk.tags:
+                if tag.startswith("year:"):
+                    match = re.search(r"(\d{4})$", tag)
+                    if match:
+                        return int(match.group(1))
+
+        # Fallback: scan chunk_text for years (first 500 chars)
+        years = re.findall(r"\b(20[2-3]\d)\b", chunk.chunk_text[:500])
+        if years:
+            return max(int(y) for y in years)
+
+        return None
 
     async def evaluate_hallucination(
         self,
