@@ -933,7 +933,23 @@ class DocumentService:
                 shutil.rmtree(doc_dir)
 
         # Delete all documents from database
-        self.db.query(Document).delete()
+        # synchronize_session=False required because objects are already loaded
+        # in the session above — without it the bulk delete silently fails.
+        self.db.query(Document).delete(synchronize_session=False)
         self.db.commit()
+
+        # Post-deletion verification
+        remaining = self.db.query(Document).count()
+        if remaining > 0:
+            logger.error(
+                f"delete_all_documents: {remaining} rows remain after deletion — "
+                "attempting per-object fallback"
+            )
+            for doc in self.db.query(Document).all():
+                self.db.delete(doc)
+            self.db.commit()
+            remaining = self.db.query(Document).count()
+            if remaining > 0:
+                logger.error(f"delete_all_documents: fallback failed, {remaining} rows remain")
 
         return count

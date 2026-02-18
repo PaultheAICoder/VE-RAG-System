@@ -92,9 +92,21 @@ async def process_document(
                 settings=settings,
             )
 
-            result = await processing_service.process_document(
-                document, db, processing_options=processing_options
-            )
+            try:
+                result = await asyncio.wait_for(
+                    processing_service.process_document(
+                        document, db, processing_options=processing_options
+                    ),
+                    timeout=600,  # 10 minute max per document
+                )
+            except TimeoutError:
+                logger.error(f"[ARQ] Document {document_id} processing timed out after 10 minutes")
+                document = db.query(Document).filter(Document.id == document_id).first()
+                if document:
+                    document.status = "failed"
+                    document.error_message = "Processing timed out after 10 minutes"
+                    db.commit()
+                return {"success": False, "error": "Processing timed out after 10 minutes"}
 
             if result.success:
                 logger.info(
