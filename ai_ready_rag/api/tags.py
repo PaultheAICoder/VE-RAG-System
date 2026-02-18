@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from ai_ready_rag.core.dependencies import get_current_user, require_admin
 from ai_ready_rag.db.database import get_db
 from ai_ready_rag.db.models import Tag, User
-from ai_ready_rag.schemas.tag import TagCreate, TagFacetItem, TagResponse, TagUpdate
+from ai_ready_rag.schemas.tag import TagCreate, TagFacetsResponse, TagResponse, TagUpdate
 
 router = APIRouter()
 
@@ -40,7 +40,7 @@ async def create_tag(
     return tag
 
 
-@router.get("/facets", response_model=dict[str, list[TagFacetItem]])
+@router.get("/facets", response_model=TagFacetsResponse)
 async def get_tag_facets(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),

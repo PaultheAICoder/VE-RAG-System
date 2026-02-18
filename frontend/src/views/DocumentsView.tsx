@@ -24,6 +24,7 @@ import { useAuthStore } from '../stores/authStore';
 import { useDocumentsStore } from '../stores/documentsStore';
 import type { Document, Tag, TagFacetItem } from '../types';
 
+
 const ITEMS_PER_PAGE = 20;
 const AUTO_REFRESH_INTERVAL_ACTIVE = 3000; // 3 seconds when processing
 
@@ -59,6 +60,7 @@ export function DocumentsView() {
 
   // Facets state (not persisted - fetched fresh)
   const [facets, setFacets] = useState<Record<string, TagFacetItem[]>>({});
+  const [namespaceOrder, setNamespaceOrder] = useState<string[]>([]);
   const [facetsLoading, setFacetsLoading] = useState(false);
 
   // Selection state (not persisted - transient per visit)
@@ -106,7 +108,8 @@ export function DocumentsView() {
       setFacetsLoading(true);
       try {
         const data = await getTagFacets();
-        setFacets(data);
+        setFacets(data.facets);
+        setNamespaceOrder(data.namespace_order);
       } catch (err) {
         console.error('Failed to fetch tag facets:', err);
       } finally {
@@ -368,6 +371,7 @@ export function DocumentsView() {
         activeValue={namespaceFilter?.value ?? null}
         onFilterChange={setNamespaceFilter}
         loading={facetsLoading}
+        namespaceOrder={namespaceOrder}
       />
 
       {/* Bulk Actions (Admin only) */}
@@ -393,6 +397,7 @@ export function DocumentsView() {
         loading={loading}
         suggestionCounts={isAdmin ? suggestionCounts : undefined}
         onSuggestionClick={isAdmin ? handleSuggestionClick : undefined}
+        namespaceOrder={namespaceOrder}
       />
 
       {/* Pagination */}
