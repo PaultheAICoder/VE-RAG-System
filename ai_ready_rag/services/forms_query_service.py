@@ -109,15 +109,17 @@ class FormsQueryService:
         if field_groups is not None and not field_groups:
             return []  # Intent not mapped
 
-        # Find accessible documents with forms data
+        # Find accessible documents with forms data, most recent first
         documents = self._get_accessible_form_documents(user_tags, db)
         if not documents:
             return []
 
+        documents = self._sort_by_recency(documents)
+
         results: list[SearchResult] = []
         chunk_index = 0
 
-        for doc in documents:
+        for doc_rank, doc in enumerate(documents):
             if chunk_index >= max_results:
                 break
 
@@ -134,11 +136,14 @@ class FormsQueryService:
             # Read fields from forms_data.db
             grouped_fields = self._read_form_fields(table_names[0], ingest_key, field_groups)
 
+            # Most recent doc (rank 0) gets 0.97, older docs get 0.93
+            score = 0.97 if doc_rank == 0 else 0.93
+
             for group_name, fields in grouped_fields.items():
                 if not fields or chunk_index >= max_results:
                     continue
 
-                result = self._format_as_search_result(doc, group_name, fields, chunk_index)
+                result = self._format_as_search_result(doc, group_name, fields, chunk_index, score)
                 results.append(result)
                 chunk_index += 1
 
@@ -165,6 +170,18 @@ class FormsQueryService:
             )
 
         return list(db.scalars(stmt).all())
+
+    @staticmethod
+    def _sort_by_recency(documents: list[Document]) -> list[Document]:
+        """Sort documents by year tag descending (most recent first)."""
+
+        def _year_key(doc: Document) -> str:
+            for tag in doc.tags:
+                if tag.name.startswith("year:"):
+                    return tag.name
+            return "year:0000"
+
+        return sorted(documents, key=_year_key, reverse=True)
 
     def _get_field_groups(self, intent) -> list[str] | None:
         """Map intent labels to relevant ACORD 25 field groups.
@@ -270,6 +287,7 @@ class FormsQueryService:
         group_name: str,
         fields: list[tuple[str, str]],
         chunk_index: int,
+        score: float = 0.95,
     ) -> SearchResult:
         """Format grouped form fields as a synthetic SearchResult."""
         header = "ACORD 25 - Certificate of Liability Insurance\n"
@@ -293,7 +311,7 @@ class FormsQueryService:
             document_name=document.original_filename,
             chunk_text=text,
             chunk_index=9000 + chunk_index,
-            score=0.95,
+            score=score,
             page_number=1,
             section=group_name,
             tags=doc_tags,

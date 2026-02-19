@@ -196,7 +196,7 @@ class TestFormsQueryService:
         assert len(results) > 0
 
         result = results[0]
-        assert result.score == 0.95
+        assert result.score >= 0.93  # 0.97 for most recent, 0.93 for older
         assert result.chunk_index >= 9000
         assert result.document_id == doc_with_forms.id
         assert result.document_name == doc_with_forms.original_filename
