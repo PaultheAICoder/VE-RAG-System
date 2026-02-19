@@ -44,7 +44,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # SourceId extraction pattern: [SourceId: {uuid}:{index}]
-SOURCEID_PATTERN = r"\[SourceId:\s*([a-f0-9-]{36}:\d+)\]"
+# Accept [SourceId: uuid:chunk] or (SourceId: uuid:chunk) - LLMs sometimes use parens
+SOURCEID_PATTERN = r"[\[\(]SourceId:\s*([a-f0-9-]{36}:\d+)[\]\)]"
+# Fallback: LLM sometimes omits chunk index, writing just the UUID
+SOURCEID_PATTERN_DOCONLY = r"[\[\(]SourceId:\s*([a-f0-9-]{36})[\]\)]"
 
 
 # -----------------------------------------------------------------------------
@@ -52,25 +55,20 @@ SOURCEID_PATTERN = r"\[SourceId:\s*([a-f0-9-]{36}:\d+)\]"
 # -----------------------------------------------------------------------------
 
 RAG_SYSTEM_PROMPT = """You are an Enterprise Knowledge Assistant. /no_think
-Answer ONLY using the provided CONTEXT below. Do not guess. Do not use outside knowledge.
+You answer questions using ONLY the provided context documents. Never use outside knowledge.
+Every factual statement MUST include a citation: [SourceId: <id>:<chunk>]
+Copy the SourceId exactly from each context block header.
+If the context does not contain the answer, respond: NOT FOUND IN PROVIDED DOCUMENTS"""
 
-If the context does not contain the answer, respond exactly:
-NOT FOUND IN PROVIDED DOCUMENTS
-
-Every factual statement MUST include a citation [SourceId: ...].
-
-WRONG (using general knowledge):
-"Vacation policies typically include... eligibility... accrual rates..."
-
-CORRECT (using context):
-"Example Dental provides a combined PTO bank [SourceId: xxx]. PTO requests must be submitted through the HR portal [SourceId: yyy]."
-
-CONTEXT:
+RAG_USER_TEMPLATE = """CONTEXT DOCUMENTS:
 {context}
 
 PREVIOUS CONVERSATION:
 {chat_history}
-"""
+
+Based ONLY on the context documents above, answer this question. Include [SourceId: ...] citations for every fact.
+
+Question: {query}"""
 
 CONFIDENCE_PROMPT = """Evaluate how well this answer is supported by the provided context. /no_think
 
@@ -1338,22 +1336,27 @@ class RAGService:
             return 50  # Default neutral score
 
         try:
-            llm = ChatOllama(
-                base_url=self.ollama_url,
-                model=model,
-                temperature=0.0,  # Deterministic for evaluation
-                timeout=10,  # Shorter timeout for eval
-                num_predict=16,  # Only needs a number 0-100
-            )
-
             prompt = CONFIDENCE_PROMPT.format(
                 context_summary=context_summary[:4000],  # Reasonable limit for eval
                 query=query,
                 answer=answer[:2000],  # Reasonable limit for eval
             )
 
-            response = await llm.ainvoke([("human", prompt)])
-            score_text = response.content.strip()
+            # Use raw Ollama API instead of ChatOllama to avoid
+            # thinking-token stripping bug in langchain-ollama
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{self.ollama_url}/api/chat",
+                    json={
+                        "model": model,
+                        "stream": False,
+                        "options": {"temperature": 0, "num_predict": 2048},
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                    timeout=60.0,
+                )
+                resp.raise_for_status()
+                score_text = resp.json()["message"]["content"].strip()
 
             # Extract numeric score
             match = re.search(r"\d+", score_text)
@@ -1451,11 +1454,22 @@ class RAGService:
         """
         source_ids = re.findall(SOURCEID_PATTERN, answer)
 
-        # Build lookup map from chunks
+        # Build lookup maps from chunks
         chunk_map: dict[str, SearchResult] = {}
+        doc_map: dict[str, SearchResult] = {}  # doc_id -> first (highest-scored) chunk
         for chunk in chunks:
             sid = f"{chunk.document_id}:{chunk.chunk_index}"
             chunk_map[sid] = chunk
+            if chunk.document_id not in doc_map:
+                doc_map[chunk.document_id] = chunk
+
+        # Fallback: if LLM used doc-only IDs (no :chunk), find them too
+        if not source_ids:
+            doc_only_ids = re.findall(SOURCEID_PATTERN_DOCONLY, answer)
+            for doc_id in doc_only_ids:
+                if doc_id in doc_map:
+                    chunk = doc_map[doc_id]
+                    source_ids.append(f"{doc_id}:{chunk.chunk_index}")
 
         citations: list[Citation] = []
         seen_ids: set[str] = set()
@@ -1624,17 +1638,22 @@ class RAGService:
             ROUTING_RETRIEVE or ROUTING_DIRECT
         """
         try:
-            llm = ChatOllama(
-                base_url=self.ollama_url,
-                model=model,
-                temperature=0.0,  # Deterministic for routing
-                timeout=10,  # Short timeout for routing
-                num_predict=16,  # Only needs RETRIEVE or DIRECT
-            )
-
             prompt = ROUTER_PROMPT.format(question=query)
-            response = await llm.ainvoke([("human", prompt)])
-            decision = response.content.strip().upper()
+
+            # Use raw Ollama API to avoid ChatOllama thinking-token bug
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{self.ollama_url}/api/chat",
+                    json={
+                        "model": model,
+                        "stream": False,
+                        "options": {"temperature": 0, "num_predict": 256},
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                    timeout=30.0,
+                )
+                resp.raise_for_status()
+                decision = resp.json()["message"]["content"].strip().upper()
 
             # Parse response - look for DIRECT or RETRIEVE
             if ROUTING_DIRECT in decision:
@@ -1931,17 +1950,7 @@ class RAGService:
 
         # 3. Apply token budget
         chat_history = request.chat_history or []
-        context_str = self._build_context_prompt(context_chunks)
-        history_str = (
-            "\n".join(f"{m.role}: {m.content}" for m in chat_history)
-            if chat_history
-            else "No previous conversation."
-        )
-
-        system_prompt = RAG_SYSTEM_PROMPT.format(
-            context=context_str,
-            chat_history=history_str,
-        )
+        system_prompt = RAG_SYSTEM_PROMPT
 
         token_budget = TokenBudget(model, self.settings)
 
@@ -1959,14 +1968,28 @@ class RAGService:
         except TokenBudgetExceededError:
             raise
 
+        # Build prompts AFTER token budget allocation (uses trimmed chunks)
+        context_str = self._build_context_prompt(final_chunks)
+        history_str = truncated_history if truncated_history else "No previous conversation."
+        user_prompt = RAG_USER_TEMPLATE.format(
+            context=context_str,
+            chat_history=history_str,
+            query=request.query,
+        )
+
         # 4-5. Generate response
-        # Debug logging: capture prompt details for diagnosis
         logger.debug(
-            f"[RAG] Query: {request.query[:100]}... | "
+            f"[RAG] Query: {request.query[:100]} | "
             f"Context chunks: {len(final_chunks)} | "
             f"Context chars: {len(context_str)} | "
             f"History entries: {len(chat_history)}"
         )
+        for i, c in enumerate(final_chunks):
+            logger.debug(
+                f"[RAG] Chunk {i}: doc={c.document_name} "
+                f"sid={c.document_id}:{c.chunk_index} "
+                f"score={c.score:.3f} tags={c.tags}"
+            )
 
         try:
             llm = ChatOllama(
@@ -1978,16 +2001,14 @@ class RAGService:
 
             messages = [
                 ("system", system_prompt),
-                ("human", request.query),
+                ("human", user_prompt),
             ]
 
             response = await llm.ainvoke(messages)
             answer = response.content
 
-            # Debug logging: capture LLM response
             logger.debug(
-                f"[RAG] LLM response length: {len(answer)} chars | "
-                f"First 200 chars: {answer[:200]}..."
+                f"[RAG] LLM response length: {len(answer)} chars | First 200 chars: {answer[:200]}"
             )
 
         except Exception as e:
