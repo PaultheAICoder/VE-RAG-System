@@ -33,7 +33,7 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "vector_backend": "qdrant",
         "chunker_backend": "docling",
         "enable_ocr": True,
-        "chat_model": "qwen3:8b",
+        "chat_model": "qwen3-rag",
         "embedding_model": "nomic-embed-text",
         "rag_max_context_tokens": 6000,
         "rag_max_history_tokens": 1500,
@@ -271,7 +271,7 @@ class Settings(BaseSettings):
     auto_tagging_strategy: str = "generic"
     auto_tagging_path_enabled: bool = True
     auto_tagging_llm_enabled: bool = True
-    auto_tagging_llm_model: str = "qwen3:8b"
+    auto_tagging_llm_model: str | None = None  # None = use chat_model at runtime
     auto_tagging_require_approval: bool = False
     auto_tagging_create_missing_tags: bool = True
     auto_tagging_confidence_threshold: float = 0.7

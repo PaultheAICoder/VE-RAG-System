@@ -339,6 +339,7 @@ class LLMSettingsRequest(BaseModel):
     llm_temperature: float | None = None
     llm_max_response_tokens: int | None = None
     llm_confidence_threshold: int | None = None
+    auto_tagging_llm_model: str | None = None  # None = leave unchanged; "" = clear override
 
 
 class LLMSettingsResponse(BaseModel):
@@ -347,6 +348,8 @@ class LLMSettingsResponse(BaseModel):
     llm_temperature: float
     llm_max_response_tokens: int
     llm_confidence_threshold: int
+    auto_tagging_llm_model: str | None  # None = inheriting from chat_model
+    auto_tagging_llm_model_effective: str  # resolved model name (never null)
 
 
 class SettingsAuditEntry(BaseModel):

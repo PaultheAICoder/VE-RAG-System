@@ -1198,6 +1198,7 @@ LLM_DEFAULTS = {
     "llm_temperature": 0.1,  # LLM temperature (0.0-1.0)
     "llm_max_response_tokens": 2048,  # Max tokens in response
     "llm_confidence_threshold": 40,  # Confidence threshold (0-100)
+    "auto_tagging_llm_model": None,  # None = inherit from chat_model
 }
 
 
@@ -1423,6 +1424,16 @@ async def get_llm_settings(
     Admin only.
     """
     service = SettingsService(db)
+    settings = get_settings()
+
+    _auto_tagging_llm_model = service.get_with_env_fallback(
+        "auto_tagging_llm_model",
+        "AUTO_TAGGING_LLM_MODEL",
+        LLM_DEFAULTS["auto_tagging_llm_model"],
+    )
+    # Normalize empty string or falsy value stored in DB to None
+    if not _auto_tagging_llm_model:
+        _auto_tagging_llm_model = None
 
     return LLMSettingsResponse(
         llm_temperature=service.get_with_env_fallback(
@@ -1440,6 +1451,8 @@ async def get_llm_settings(
             "RAG_CONFIDENCE_THRESHOLD",
             LLM_DEFAULTS["llm_confidence_threshold"],
         ),
+        auto_tagging_llm_model=_auto_tagging_llm_model,
+        auto_tagging_llm_model_effective=_auto_tagging_llm_model or settings.chat_model,
     )
 
 
@@ -1497,11 +1510,31 @@ async def update_llm_settings(
             reason="Updated via admin settings",
         )
 
+    if request.auto_tagging_llm_model is not None:
+        # Empty string from frontend = clear override (store as None/null)
+        model_value = request.auto_tagging_llm_model.strip() or None
+        service.set_with_audit(
+            "auto_tagging_llm_model",
+            model_value,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
     logger.info(
         f"Admin {current_user.email} updated LLM settings: {request.model_dump(exclude_none=True)}"
     )
 
     # Return current state
+    settings = get_settings()
+    _auto_tagging_llm_model = service.get_with_env_fallback(
+        "auto_tagging_llm_model",
+        "AUTO_TAGGING_LLM_MODEL",
+        LLM_DEFAULTS["auto_tagging_llm_model"],
+    )
+    # Normalize empty string or falsy value stored in DB to None
+    if not _auto_tagging_llm_model:
+        _auto_tagging_llm_model = None
+
     return LLMSettingsResponse(
         llm_temperature=service.get_with_env_fallback(
             "llm_temperature",
@@ -1518,6 +1551,8 @@ async def update_llm_settings(
             "RAG_CONFIDENCE_THRESHOLD",
             LLM_DEFAULTS["llm_confidence_threshold"],
         ),
+        auto_tagging_llm_model=_auto_tagging_llm_model,
+        auto_tagging_llm_model_effective=_auto_tagging_llm_model or settings.chat_model,
     )
 
 

@@ -55,7 +55,7 @@ class TestProfileSettings:
             assert settings.vector_backend == "qdrant"
             assert settings.chunker_backend == "docling"
             assert settings.enable_ocr is True
-            assert settings.chat_model == "qwen3:8b"
+            assert settings.chat_model == "qwen3-rag"
 
     def test_env_overrides_profile_default(self):
         """Individual env vars override profile defaults."""

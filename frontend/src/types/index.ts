@@ -346,6 +346,8 @@ export interface LLMSettings {
   llm_temperature: number;
   llm_max_response_tokens: number;
   llm_confidence_threshold: number;
+  auto_tagging_llm_model: string | null;       // null = inherit from chat_model
+  auto_tagging_llm_model_effective: string;    // resolved model name, always present
 }
 
 export interface SettingsAuditEntry {
