@@ -293,6 +293,19 @@ INTENT_PATTERNS: list[tuple[re.Pattern, list[str], str]] = [
         ["topic:umbrella"],
         "umbrella",
     ),
+    (
+        re.compile(r"\b(?:premium|pricing|cost|rate)\b", re.IGNORECASE),
+        ["doctype:coverage_summary"],
+        "premium",
+    ),
+    (
+        re.compile(
+            r"\b(?:insurer|carrier|underwriter|underwritten|issued\s+by)\b",
+            re.IGNORECASE,
+        ),
+        ["doctype:policy"],
+        "insurer",
+    ),
 ]
 
 
