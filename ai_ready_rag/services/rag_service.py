@@ -333,6 +333,71 @@ def detect_query_intent(query: str) -> QueryIntent:
     )
 
 
+_TAG_CACHE: dict[str, list[tuple[str, str, re.Pattern]]] = {}
+_TAG_CACHE_TIME: float = 0.0
+TAG_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_tag_patterns(db: Session) -> list[tuple[str, str, re.Pattern]]:
+    """Load tags from DB and build regex patterns. Cached 5 min."""
+    global _TAG_CACHE_TIME
+    now = time.time()
+    cache_key = "all"
+    if cache_key in _TAG_CACHE and (now - _TAG_CACHE_TIME) < TAG_CACHE_TTL:
+        return _TAG_CACHE[cache_key]
+
+    from ai_ready_rag.db.models.user import Tag
+
+    tags = db.query(Tag).all()
+
+    patterns: list[tuple[str, str, re.Pattern]] = []
+    for tag in tags:
+        namespace, _, value = tag.name.partition(":")
+
+        match_terms: set[str] = set()
+        if tag.display_name:
+            match_terms.add(tag.display_name.lower())
+        if value:
+            match_terms.add(value.replace("-", " ").replace("_", " ").lower())
+
+        # For year tags like "2025-2026", also match individual years
+        if namespace == "year" and "-" in value:
+            for part in value.split("-"):
+                if len(part) == 4 and part.isdigit():
+                    match_terms.add(part)
+
+        for term in match_terms:
+            if len(term) < 2:
+                continue
+            escaped = re.escape(term)
+            pattern = re.compile(rf"\b{escaped}\b", re.IGNORECASE)
+            patterns.append((tag.name, namespace, pattern))
+
+    _TAG_CACHE[cache_key] = patterns
+    _TAG_CACHE_TIME = now
+    return patterns
+
+
+def enrich_intent_with_tags(intent: QueryIntent, query: str, db: Session) -> QueryIntent:
+    """Add preferred_tags by matching query text against DB tags.
+
+    Scans all tags' display_name/value against query using word-boundary
+    regex. Matched tags are added to intent.preferred_tags (deduped).
+    Does not remove existing preferred_tags from regex detection.
+    """
+    patterns = _get_tag_patterns(db)
+    seen = set(intent.preferred_tags)
+
+    for tag_name, _namespace, pattern in patterns:
+        if tag_name in seen:
+            continue
+        if pattern.search(query):
+            intent.preferred_tags.append(tag_name)
+            seen.add(tag_name)
+
+    return intent
+
+
 def extract_key_terms(text: str) -> set[str]:
     """Extract significant terms from text.
 
@@ -1092,8 +1157,6 @@ class RAGService:
         """
         # 0. Detect intent (fast regex, no LLM)
         intent = detect_query_intent(query)
-        if intent.preferred_tags:
-            logger.info(f"Intent: {intent.intent_label} -> {intent.preferred_tags}")
 
         # 1. Expand query if enabled + forms lookup (share DB session)
         from ai_ready_rag.db.database import SessionLocal
@@ -1101,6 +1164,11 @@ class RAGService:
         forms_results: list[SearchResult] = []
         db_session = SessionLocal()
         try:
+            # Enrich intent with dynamic tag matching from DB
+            intent = enrich_intent_with_tags(intent, query, db_session)
+            if intent.preferred_tags:
+                logger.info(f"Intent: {intent.intent_label} -> {intent.preferred_tags}")
+
             if self.enable_query_expansion:
                 queries = expand_query(query, db=db_session)
                 logger.debug(f"Query expansion: {len(queries)} variants")
