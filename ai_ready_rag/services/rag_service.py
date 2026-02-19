@@ -1453,7 +1453,7 @@ class RAGService:
                         json={
                             "model": model,
                             "stream": False,
-                            # Only need a short response (a number 0-100)
+                            "think": False,  # Disable thinking for fast numeric response
                             "options": {"temperature": 0, "num_predict": 16},
                             "messages": [{"role": "user", "content": prompt}],
                         },
@@ -1772,7 +1772,8 @@ class RAGService:
                     json={
                         "model": model,
                         "stream": False,
-                        "options": {"temperature": 0, "num_predict": 256},
+                        "think": False,  # Disable thinking for fast classification
+                        "options": {"temperature": 0, "num_predict": 16},
                         "messages": [{"role": "user", "content": prompt}],
                     },
                     timeout=30.0,
