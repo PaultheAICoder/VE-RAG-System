@@ -166,7 +166,7 @@ class TestApplyIntentBoost:
         settings.rag_recency_weight = 0.0
         settings.ollama_base_url = "http://localhost:11434"
         settings.chat_model = "test"
-        settings.rag_max_chunks_per_doc = 3
+        settings.rag_max_chunks_per_doc = 5
         settings.rag_chunk_overlap_threshold = 0.9
         settings.rag_dedup_candidates_cap = 15
         settings.rag_enable_hallucination_check = False
