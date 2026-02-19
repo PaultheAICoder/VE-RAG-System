@@ -167,16 +167,35 @@ class FormsQueryService:
         return list(db.scalars(stmt).all())
 
     def _get_field_groups(self, intent) -> list[str] | None:
-        """Map intent label to relevant ACORD 25 field groups.
+        """Map intent labels to relevant ACORD 25 field groups.
+
+        When multiple intents match (e.g. active_policy + gl), prefer the
+        most specific one (non-None groups) over broad ones (None = all).
 
         Returns:
             list of group names, or None for all groups.
             Empty list if intent is not forms-eligible.
         """
-        label = intent.intent_label
-        if label is None or label not in INTENT_TO_GROUPS:
-            return []
-        return INTENT_TO_GROUPS[label]
+        labels = getattr(intent, "intent_labels", None) or (
+            [intent.intent_label] if intent.intent_label else []
+        )
+
+        # Collect groups from all matched labels, preferring specific over broad
+        specific_groups: list[str] = []
+        has_broad = False
+
+        for label in labels:
+            groups = INTENT_TO_GROUPS.get(label)
+            if groups is None and label in INTENT_TO_GROUPS:
+                has_broad = True  # Label maps to all groups
+            elif groups:
+                specific_groups.extend(g for g in groups if g not in specific_groups)
+
+        if specific_groups:
+            return specific_groups
+        if has_broad:
+            return None
+        return []
 
     def _read_form_fields(
         self,

@@ -187,6 +187,7 @@ class QueryIntent:
     intent_label: str | None  # For logging e.g. "active_policy"
     confidence: float  # 0.0-1.0
     forms_eligible: bool = False  # True when intent matches structured form data
+    intent_labels: list[str] | None = None  # All matched labels e.g. ["active_policy", "gl"]
 
 
 # Insurance domain intent patterns: (compiled_regex, preferred_tags, label)
@@ -328,6 +329,7 @@ def detect_query_intent(query: str) -> QueryIntent:
         intent_label=labels[0] if labels else None,
         confidence=min(1.0, len(labels) * 0.5) if labels else 0.0,
         forms_eligible=forms_eligible,
+        intent_labels=labels if labels else None,
     )
 
 
