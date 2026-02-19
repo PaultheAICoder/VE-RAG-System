@@ -18,7 +18,7 @@ class TestAutoTaggingConfig:
         assert settings.auto_tagging_strategy == "generic"
         assert settings.auto_tagging_path_enabled is True
         assert settings.auto_tagging_llm_enabled is True
-        assert settings.auto_tagging_llm_model == "qwen3:8b"
+        assert settings.auto_tagging_llm_model is None
         assert settings.auto_tagging_require_approval is False
         assert settings.auto_tagging_create_missing_tags is True
         assert settings.auto_tagging_confidence_threshold == 0.7

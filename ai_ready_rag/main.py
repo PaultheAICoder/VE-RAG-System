@@ -6,6 +6,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -180,6 +181,23 @@ async def lifespan(app: FastAPI):
     await vector_service.initialize()
     app.state.vector_service = vector_service
     logger.info("VectorService initialized (singleton)")
+
+    # Preload chat_model into Ollama VRAM at startup (prevents cold-start eviction)
+    # Non-fatal: if Ollama is not yet ready, the first real query will load the model.
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as _preload_client:
+            await _preload_client.post(
+                f"{settings.ollama_base_url}/api/generate",
+                json={
+                    "model": settings.chat_model,
+                    "prompt": "",
+                    "keep_alive": "24h",
+                    "stream": False,
+                },
+            )
+        logger.info(f"Preloaded chat_model into VRAM: {settings.chat_model}")
+    except Exception as _preload_err:
+        logger.warning(f"Chat model preload failed (non-fatal): {_preload_err}")
 
     # Initialize Redis connection pool (None if unavailable — degraded mode)
     redis_pool = await get_redis_pool()
