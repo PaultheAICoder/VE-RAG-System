@@ -185,6 +185,152 @@ class EvalRAGResult:
 # -----------------------------------------------------------------------------
 
 
+@dataclass
+class QueryIntent:
+    """Detected intent from user query for tag-based boosting."""
+
+    preferred_tags: list[str]  # Tags to boost e.g. ["stage:policy"]
+    intent_label: str | None  # For logging e.g. "active_policy"
+    confidence: float  # 0.0-1.0
+
+
+# Insurance domain intent patterns: (compiled_regex, preferred_tags, label)
+# Checked in order; multiple can match and accumulate tags.
+INTENT_PATTERNS: list[tuple[re.Pattern, list[str], str]] = [
+    # Stage patterns
+    (
+        re.compile(
+            r"(?:current|active|bound|in[- ]?force)\b.*?"
+            r"(?:polic|coverage|limit|deductible|premium)",
+            re.IGNORECASE,
+        ),
+        ["stage:policy", "doctype:policy"],
+        "active_policy",
+    ),
+    (
+        re.compile(
+            r"(?:policy)\s+(?:limit|deductible|premium|number|period|effective)",
+            re.IGNORECASE,
+        ),
+        ["stage:policy", "doctype:policy"],
+        "policy_detail",
+    ),
+    (
+        re.compile(r"\b(?:quote[ds]?|proposal[s]?|proposed)\b", re.IGNORECASE),
+        ["stage:quote", "doctype:quote"],
+        "quote",
+    ),
+    (
+        re.compile(r"\b(?:bind|binder|bound|binding)\b", re.IGNORECASE),
+        ["stage:bind"],
+        "bind",
+    ),
+    (
+        re.compile(r"\b(?:submit|submission|application)\b", re.IGNORECASE),
+        ["stage:submission"],
+        "submission",
+    ),
+    (
+        re.compile(r"\b(?:renewal|renew)\b", re.IGNORECASE),
+        ["stage:quote"],
+        "renewal",
+    ),
+    # Doctype patterns
+    (
+        re.compile(r"\b(?:endorsement|rider|amendment)\b", re.IGNORECASE),
+        ["doctype:endorsement"],
+        "endorsement",
+    ),
+    (
+        re.compile(r"\b(?:certificate|cert|coi)\b", re.IGNORECASE),
+        ["doctype:certificate"],
+        "certificate",
+    ),
+    (
+        re.compile(r"(?:loss\s+run|claims\s+history)", re.IGNORECASE),
+        ["doctype:loss_run"],
+        "loss_run",
+    ),
+    (
+        re.compile(r"(?:declaration|dec\s+page)", re.IGNORECASE),
+        ["doctype:coverage_summary"],
+        "dec_page",
+    ),
+    # Topic patterns
+    (
+        re.compile(r"\b(?:earthquake|quake|seismic)\b", re.IGNORECASE),
+        ["topic:earthquake"],
+        "earthquake",
+    ),
+    (
+        re.compile(r"\b(?:property|building|structure)\b", re.IGNORECASE),
+        ["topic:property"],
+        "property",
+    ),
+    (
+        re.compile(r"(?:general\s+liab|(?<!\w)gl(?!\w)|commercial\s+general)", re.IGNORECASE),
+        ["topic:gl"],
+        "gl",
+    ),
+    (
+        re.compile(r"(?:workers?\s+comp|(?<!\w)wc(?!\w))", re.IGNORECASE),
+        ["topic:wc"],
+        "workers_comp",
+    ),
+    (
+        re.compile(r"(?:d\s*&\s*o|directors\s+and\s+officers)", re.IGNORECASE),
+        ["topic:do"],
+        "do",
+    ),
+    (
+        re.compile(r"(?:crime|fidelity|employee\s+dishonesty)", re.IGNORECASE),
+        ["topic:crime"],
+        "crime",
+    ),
+    (
+        re.compile(r"(?:epli|employment\s+practices)", re.IGNORECASE),
+        ["topic:epli"],
+        "epli",
+    ),
+    (
+        re.compile(r"\b(?:umbrella|excess)\b", re.IGNORECASE),
+        ["topic:umbrella"],
+        "umbrella",
+    ),
+]
+
+
+def detect_query_intent(query: str) -> QueryIntent:
+    """Detect intent from user query using regex patterns.
+
+    Scans query against INTENT_PATTERNS. Multiple patterns can match,
+    accumulating preferred_tags (deduplicated). Fast regex-only, no LLM.
+
+    Args:
+        query: User's natural language query.
+
+    Returns:
+        QueryIntent with accumulated preferred_tags and primary label.
+    """
+    preferred_tags: list[str] = []
+    labels: list[str] = []
+    seen_tags: set[str] = set()
+
+    for pattern, tags, label in INTENT_PATTERNS:
+        if pattern.search(query):
+            for tag in tags:
+                if tag not in seen_tags:
+                    seen_tags.add(tag)
+                    preferred_tags.append(tag)
+            labels.append(label)
+
+    return QueryIntent(
+        preferred_tags=preferred_tags,
+        intent_label=labels[0] if labels else None,
+        confidence=min(1.0, len(labels) * 0.5) if labels else 0.0,
+    )
+
+
 def extract_key_terms(text: str) -> set[str]:
     """Extract significant terms from text.
 
@@ -935,6 +1081,11 @@ class RAGService:
         Returns:
             List of quality-filtered search results
         """
+        # 0. Detect intent (fast regex, no LLM)
+        intent = detect_query_intent(query)
+        if intent.preferred_tags:
+            logger.info(f"Intent: {intent.intent_label} -> {intent.preferred_tags}")
+
         # 1. Expand query if enabled
         if self.enable_query_expansion:
             # Get db session for synonym lookup (create temporary if needed)
@@ -960,6 +1111,7 @@ class RAGService:
                 tenant_id=tenant_id,
                 limit=candidate_limit,
                 score_threshold=0.0,  # Filter later for more control
+                preferred_tags=intent.preferred_tags or None,
             )
             if candidates:
                 query_results.append(candidates)
@@ -985,6 +1137,10 @@ class RAGService:
         # 3.5 Apply recency boost (before score filter so boosted scores are filtered correctly)
         if self.recency_weight > 0:
             all_candidates = self._apply_recency_boost(all_candidates)
+
+        # 3.6 Apply intent boost (after recency, before score filter)
+        if self.intent_boost_weight > 0 and intent.preferred_tags:
+            all_candidates = self._apply_intent_boost(all_candidates, intent)
 
         # 4. Filter by minimum similarity (Qdrant cosine is 0-1)
         filtered = [c for c in all_candidates if c.score >= self.min_similarity_score]
@@ -1061,6 +1217,13 @@ class RAGService:
         """Get recency boost weight from settings."""
         return self.settings.rag_recency_weight
 
+    @property
+    def intent_boost_weight(self) -> float:
+        """Get intent boost weight from database settings."""
+        return get_rag_setting(
+            "retrieval_intent_boost_weight", self.settings.rag_intent_boost_weight
+        )
+
     def _apply_recency_boost(self, chunks: list[SearchResult]) -> list[SearchResult]:
         """Boost scores of newer documents using year tags + content dates.
 
@@ -1120,6 +1283,36 @@ class RAGService:
             return max(int(y) for y in years)
 
         return None
+
+    def _apply_intent_boost(
+        self, chunks: list[SearchResult], intent: QueryIntent
+    ) -> list[SearchResult]:
+        """Boost scores of chunks whose tags match detected intent.
+
+        Follows the same pattern as _apply_recency_boost. Blends original
+        score with tag-overlap score using configurable weight.
+
+        Args:
+            chunks: List of search results to rerank.
+            intent: Detected query intent with preferred_tags.
+
+        Returns:
+            Reranked list with intent-boosted scores.
+        """
+        weight = self.intent_boost_weight
+        preferred_set = set(intent.preferred_tags)
+        num_preferred = len(preferred_set)
+
+        if num_preferred == 0:
+            return chunks
+
+        for chunk in chunks:
+            chunk_tags = set(chunk.tags or [])
+            overlap = len(chunk_tags & preferred_set) / num_preferred
+            chunk.score = (1 - weight) * chunk.score + weight * overlap
+
+        chunks.sort(key=lambda c: c.score, reverse=True)
+        return chunks
 
     async def evaluate_hallucination(
         self,

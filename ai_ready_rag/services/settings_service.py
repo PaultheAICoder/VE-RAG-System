@@ -23,6 +23,7 @@ RAG_SETTINGS_DEFAULTS = {
     "retrieval_prefetch_multiplier": 3,
     "retrieval_min_score_dense": 0.3,
     "retrieval_min_score_hybrid": 0.05,
+    "retrieval_intent_boost_weight": 0.20,
 }
 
 # Default values for security settings

@@ -737,6 +737,7 @@ class VectorService:
         limit: int = 5,
         score_threshold: float = 0.0,
         tenant_id: str | None = None,
+        preferred_tags: list[str] | None = None,
     ) -> list[SearchResult]:
         """Semantic search with access control filtering.
 
@@ -752,6 +753,8 @@ class VectorService:
             limit: Maximum results to return (1-100, default: 5).
             score_threshold: Minimum similarity score (0.0-1.0, default: 0.0).
             tenant_id: Tenant to search within (defaults to service's tenant_id).
+            preferred_tags: Optional tags for intent-based soft boost. Added as
+                Qdrant ``should`` conditions — they never bypass ``must`` access filters.
 
         Returns:
             List of SearchResult, ordered by relevance (highest score first).
@@ -774,9 +777,17 @@ class VectorService:
         except EmbeddingError as e:
             raise SearchError(f"Failed to embed query: {e}") from e
 
-        # 2. Access filter (unchanged)
+        # 2. Access filter
         if user_tags is None:
             # System admin: no tag filtering, tenant only
+            should_conditions = None
+            if preferred_tags:
+                should_conditions = [
+                    models.FieldCondition(
+                        key="tags",
+                        match=models.MatchAny(any=preferred_tags),
+                    )
+                ]
             access_filter = models.Filter(
                 must=[
                     models.FieldCondition(
@@ -784,9 +795,10 @@ class VectorService:
                         match=models.MatchValue(value=tenant),
                     ),
                 ],
+                should=should_conditions,
             )
         else:
-            access_filter = self._build_access_filter(user_tags, tenant)
+            access_filter = self._build_access_filter(user_tags, tenant, preferred_tags)
 
         # 3. Execute search
         degraded = False
@@ -899,14 +911,17 @@ class VectorService:
 
         return search_results
 
-    def _build_access_filter(self, user_tags: list[str], tenant_id: str) -> models.Filter:
+    def _build_access_filter(
+        self,
+        user_tags: list[str],
+        tenant_id: str,
+        preferred_tags: list[str] | None = None,
+    ) -> models.Filter:
         """Build Qdrant filter for access-controlled search.
 
         Logic:
-            (tenant_id matches) AND (
-                "public" in tags
-                OR any(user_tags) in tags
-            )
+            must: (tenant_id matches) AND ("public" in tags OR any(user_tags) in tags)
+            should: preferred_tags (soft boost, never bypasses must)
         """
         # Tag conditions: public OR any user tag
         tag_conditions = [
@@ -924,6 +939,16 @@ class VectorService:
                 )
             )
 
+        # Optional: preferred_tags as should conditions (soft boost)
+        should_conditions = None
+        if preferred_tags:
+            should_conditions = [
+                models.FieldCondition(
+                    key="tags",
+                    match=models.MatchAny(any=preferred_tags),
+                )
+            ]
+
         # Combine tenant filter with tag filter using nested must
         # Structure: must[tenant_id] AND must[should[public OR user_tags]]
         return models.Filter(
@@ -935,6 +960,7 @@ class VectorService:
                 # Nested filter: at least one tag condition must match
                 models.Filter(should=tag_conditions),
             ],
+            should=should_conditions,
         )
 
     def _normalize_scores(self, points: list) -> list:
