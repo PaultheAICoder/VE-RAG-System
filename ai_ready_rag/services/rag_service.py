@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import httpx
@@ -185,6 +186,7 @@ class QueryIntent:
     preferred_tags: list[str]  # Tags to boost e.g. ["stage:policy"]
     intent_label: str | None  # For logging e.g. "active_policy"
     confidence: float  # 0.0-1.0
+    forms_eligible: bool = False  # True when intent matches structured form data
 
 
 # Insurance domain intent patterns: (compiled_regex, preferred_tags, label)
@@ -317,10 +319,15 @@ def detect_query_intent(query: str) -> QueryIntent:
                     preferred_tags.append(tag)
             labels.append(label)
 
+    from ai_ready_rag.services.forms_query_service import FORMS_ELIGIBLE_INTENTS
+
+    forms_eligible = any(label in FORMS_ELIGIBLE_INTENTS for label in labels)
+
     return QueryIntent(
         preferred_tags=preferred_tags,
         intent_label=labels[0] if labels else None,
         confidence=min(1.0, len(labels) * 0.5) if labels else 0.0,
+        forms_eligible=forms_eligible,
     )
 
 
@@ -811,6 +818,13 @@ class RAGService:
         self._cache_service: CacheService | None = cache_service
         # Live evaluation queue (injected post-construction from main.py)
         self._live_eval_queue = None
+        # Forms query service (lazy — only if forms DB exists)
+        self._forms_query_service = None
+        forms_db = getattr(settings, "forms_db_path", None)
+        if forms_db and Path(forms_db).exists():
+            from ai_ready_rag.services.forms_query_service import FormsQueryService
+
+            self._forms_query_service = FormsQueryService(settings)
 
     # -------------------------------------------------------------------------
     # Dynamic settings from database (single source of truth)
@@ -1079,19 +1093,36 @@ class RAGService:
         if intent.preferred_tags:
             logger.info(f"Intent: {intent.intent_label} -> {intent.preferred_tags}")
 
-        # 1. Expand query if enabled
-        if self.enable_query_expansion:
-            # Get db session for synonym lookup (create temporary if needed)
-            from ai_ready_rag.db.database import SessionLocal
+        # 1. Expand query if enabled + forms lookup (share DB session)
+        from ai_ready_rag.db.database import SessionLocal
 
-            db_session = SessionLocal()
-            try:
+        forms_results: list[SearchResult] = []
+        db_session = SessionLocal()
+        try:
+            if self.enable_query_expansion:
                 queries = expand_query(query, db=db_session)
-            finally:
-                db_session.close()
-            logger.debug(f"Query expansion: {len(queries)} variants")
-        else:
-            queries = [query]
+                logger.debug(f"Query expansion: {len(queries)} variants")
+            else:
+                queries = [query]
+
+            # 1.5 Query forms DB for structured context
+            if intent.forms_eligible and self._forms_query_service:
+                try:
+                    forms_results = self._forms_query_service.query_forms(
+                        intent=intent,
+                        user_tags=user_tags,
+                        db=db_session,
+                        max_results=min(4, max_chunks // 2),
+                    )
+                    if forms_results:
+                        logger.info(
+                            f"Forms query: {len(forms_results)} results "
+                            f"for intent={intent.intent_label}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Forms query failed, continuing with vector only: {e}")
+        finally:
+            db_session.close()
 
         candidate_limit = min(max_chunks * 3, self.dedup_candidates_cap)
 
@@ -1109,8 +1140,8 @@ class RAGService:
             if candidates:
                 query_results.append(candidates)
 
-        # Early exit: no results from any query
-        if not query_results:
+        # Early exit: no results from any query (unless forms provided results)
+        if not query_results and not forms_results:
             return []
 
         # 3. Interleave results for diversity (Spark pattern)
@@ -1126,6 +1157,10 @@ class RAGService:
                     if content_hash not in seen_content:
                         seen_content.add(content_hash)
                         all_candidates.append(chunk)
+
+        # 3.1 Prepend forms results (structured data ranks above vector results)
+        if forms_results:
+            all_candidates = forms_results + all_candidates
 
         # 3.5 Apply recency boost (before score filter so boosted scores are filtered correctly)
         if self.recency_weight > 0:
