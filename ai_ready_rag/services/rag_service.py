@@ -70,23 +70,18 @@ Based ONLY on the context documents above, answer this question. Include [Source
 
 Question: {query}"""
 
-CONFIDENCE_PROMPT = """Evaluate how well this answer is supported by the provided context. /no_think
+CONFIDENCE_PROMPT = """Rate how well this answer is grounded in the context. /no_think
 
-CONTEXT SUMMARY:
+CONTEXT:
 {context_summary}
 
 QUESTION: {query}
 
 ANSWER: {answer}
 
-Rate the support level from 0-100:
-- 90-100: Answer is fully and directly supported by context
-- 70-89: Answer is mostly supported, minor inferences made
-- 50-69: Answer is partially supported, some gaps filled
-- 30-49: Answer has weak support, significant assumptions
-- 0-29: Answer is not supported by context
+Score 0-100. If the answer references specific facts, names, or numbers that appear in the context, score 70+. Only score below 30 if the answer is completely fabricated with no basis in the context.
 
-Respond with ONLY a number between 0 and 100."""
+Respond with ONLY a number."""
 
 
 # -----------------------------------------------------------------------------
@@ -1337,7 +1332,7 @@ class RAGService:
 
         try:
             prompt = CONFIDENCE_PROMPT.format(
-                context_summary=context_summary[:4000],  # Reasonable limit for eval
+                context_summary=context_summary[:8000],  # Enough to cover most retrieved chunks
                 query=query,
                 answer=answer[:2000],  # Reasonable limit for eval
             )
@@ -1369,11 +1364,9 @@ class RAGService:
             score = int(match.group())
             score = min(100, max(0, score))
 
-            # Log low scores for diagnosis (debug level)
-            if score <= 20:
-                logger.debug(
-                    f"[RAG] Low LLM self-assessment: {score}% | Raw response: '{score_text[:50]}'"
-                )
+            logger.info(
+                f"[RAG] Hallucination check: score={score} | Raw response: '{score_text[:200]}'"
+            )
 
             return score
 
@@ -2023,10 +2016,14 @@ class RAGService:
         # 7. Calculate hybrid confidence with LLM self-assessment
         context_for_coverage = "\n".join(c.chunk_text for c in final_chunks)
 
+        # Strip any leaked thinking artifacts from the answer before evaluation
+        # qwen3 sometimes leaks thinking into visible content
+        clean_answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
+
         # Evaluate hallucination (Spark feature)
         llm_score = await self.evaluate_hallucination(
             query=request.query,
-            answer=answer,
+            answer=clean_answer,
             context_summary=context_for_coverage,
             model=model,
         )
