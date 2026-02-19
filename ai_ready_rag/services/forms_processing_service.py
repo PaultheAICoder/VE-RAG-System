@@ -348,7 +348,8 @@ class FormsProcessingService:
                         },
                     )
             except Exception as e:
-                # Rechunking is best-effort — original chunks still exist if this fails
+                # Rechunking is best-effort — original chunks are preserved on failure
+                # (deletion now happens AFTER successful upsert of new chunks)
                 logger.warning(
                     "forms.rechunk.failed",
                     extra={"document_id": document.id, "error": str(e)},
@@ -388,8 +389,10 @@ class FormsProcessingService:
         """Split form mega-chunk into logical field-group chunks.
 
         Reads extracted fields from the forms SQLite DB, groups them by
-        ACORD section, deletes the original mega-chunk from Qdrant,
-        formats each group as natural text, embeds, and writes back.
+        ACORD section, formats each group as natural text, embeds, and
+        writes back. The original mega-chunk is deleted only AFTER the
+        new chunks are successfully upserted (atomic swap to prevent
+        data loss).
 
         Returns the number of new chunks created (0 if rechunking was skipped).
         """
@@ -489,22 +492,7 @@ class FormsProcessingService:
         if not chunk_texts:
             return 0
 
-        # 6. Delete original mega-chunk from Qdrant by ingest_key
-        if result.ingest_key:
-            try:
-                vector_store.delete_by_filter(
-                    settings.qdrant_collection,
-                    "ingestkit_ingest_key",
-                    result.ingest_key,
-                )
-            except Exception as e:
-                logger.warning(
-                    "forms.rechunk.delete_original_failed",
-                    extra={"document_id": document.id, "error": str(e)},
-                )
-                # Continue anyway — we'll have duplicates rather than missing data
-
-        # 7. Embed each chunk via the ingestkit embedder
+        # 6. Embed each chunk via the ingestkit embedder
         from ingestkit_core.models import ChunkMetadata, ChunkPayload
 
         chunks_to_upsert: list[ChunkPayload] = []
@@ -532,8 +520,26 @@ class FormsProcessingService:
                 )
             )
 
-        # 8. Write new chunks to Qdrant via the adapter
+        # 7. Write new chunks to Qdrant via the adapter
         count = vector_store.upsert_chunks(settings.qdrant_collection, chunks_to_upsert)
+
+        # 8. Delete original mega-chunk AFTER successful upsert of new chunks.
+        #    This ordering prevents data loss: if embedding or upsert fails above,
+        #    the exception propagates and original chunks are preserved.
+        if result.ingest_key:
+            try:
+                vector_store.delete_by_filter(
+                    settings.qdrant_collection,
+                    "ingestkit_ingest_key",
+                    result.ingest_key,
+                )
+            except Exception as e:
+                logger.warning(
+                    "forms.rechunk.delete_original_failed",
+                    extra={"document_id": document.id, "error": str(e)},
+                )
+                # Continue anyway — we'll have duplicates rather than missing data
+
         return count
 
     @staticmethod
