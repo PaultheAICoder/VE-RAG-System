@@ -1435,49 +1435,64 @@ class RAGService:
         if not self.enable_hallucination_check:
             return 50  # Default neutral score
 
-        try:
-            prompt = CONFIDENCE_PROMPT.format(
-                context_summary=context_summary[:8000],  # Enough to cover most retrieved chunks
-                query=query,
-                answer=answer[:2000],  # Reasonable limit for eval
-            )
+        prompt = CONFIDENCE_PROMPT.format(
+            context_summary=context_summary[:8000],  # Enough to cover most retrieved chunks
+            query=query,
+            answer=answer[:2000],  # Reasonable limit for eval
+        )
 
-            # Use raw Ollama API instead of ChatOllama to avoid
-            # thinking-token stripping bug in langchain-ollama
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"{self.ollama_url}/api/chat",
-                    json={
-                        "model": model,
-                        "stream": False,
-                        "options": {"temperature": 0, "num_predict": 2048},
-                        "messages": [{"role": "user", "content": prompt}],
-                    },
-                    timeout=60.0,
+        # Retry once on transient failures (Ollama busy/timeout)
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                # Use raw Ollama API instead of ChatOllama to avoid
+                # thinking-token stripping bug in langchain-ollama
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        f"{self.ollama_url}/api/chat",
+                        json={
+                            "model": model,
+                            "stream": False,
+                            # Only need a short response (a number 0-100)
+                            "options": {"temperature": 0, "num_predict": 16},
+                            "messages": [{"role": "user", "content": prompt}],
+                        },
+                        timeout=60.0,
+                    )
+                    resp.raise_for_status()
+                    score_text = resp.json()["message"]["content"].strip()
+
+                # Extract numeric score
+                match = re.search(r"\d+", score_text)
+                if not match:
+                    logger.warning(
+                        f"[RAG] LLM self-assessment returned non-numeric: '{score_text[:100]}'"
+                    )
+                    return 50  # Fallback to neutral
+
+                score = int(match.group())
+                score = min(100, max(0, score))
+
+                logger.info(
+                    f"[RAG] Hallucination check: score={score} | Raw response: '{score_text[:200]}'"
                 )
-                resp.raise_for_status()
-                score_text = resp.json()["message"]["content"].strip()
 
-            # Extract numeric score
-            match = re.search(r"\d+", score_text)
-            if not match:
-                logger.warning(
-                    f"[RAG] LLM self-assessment returned non-numeric: '{score_text[:100]}'"
-                )
-                return 50  # Fallback to neutral
+                return score
 
-            score = int(match.group())
-            score = min(100, max(0, score))
+            except Exception as e:
+                last_error = e
+                if attempt == 0:
+                    logger.info(
+                        f"[RAG] Hallucination check attempt 1 failed "
+                        f"({type(e).__name__}: {e}), retrying..."
+                    )
+                    continue
 
-            logger.info(
-                f"[RAG] Hallucination check: score={score} | Raw response: '{score_text[:200]}'"
-            )
-
-            return score
-
-        except Exception as e:
-            logger.warning(f"Hallucination check failed: {e}")
-            return 50  # Fallback to neutral
+        logger.warning(
+            f"Hallucination check failed after 2 attempts "
+            f"({type(last_error).__name__}: {last_error})"
+        )
+        return 50  # Fallback to neutral
 
     async def count_tokens_ollama(self, text: str, model: str) -> int:
         """Count tokens using Ollama's native tokenizer.
