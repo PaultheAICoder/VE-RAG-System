@@ -57,8 +57,8 @@ SOURCEID_PATTERN_DOCONLY = r"[\[\(]SourceId:\s*([a-f0-9-]{36})[\]\)]"
 
 RAG_SYSTEM_PROMPT = """You are an Enterprise Knowledge Assistant. /no_think
 You answer questions using ONLY the provided context documents. Never use outside knowledge.
-Every factual statement MUST include a citation: [SourceId: <id>:<chunk>]
-Copy the SourceId exactly from each context block header.
+Every factual statement MUST include a citation copied exactly from the context block header.
+Example: "The policy limit is $1,000,000 [SourceId: a1b2c3d4-e5f6-7890-abcd-ef1234567890:5]"
 If the context does not contain the answer, respond: NOT FOUND IN PROVIDED DOCUMENTS"""
 
 RAG_USER_TEMPLATE = """CONTEXT DOCUMENTS:
