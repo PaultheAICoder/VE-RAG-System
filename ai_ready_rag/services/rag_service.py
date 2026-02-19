@@ -51,7 +51,7 @@ SOURCEID_PATTERN = r"\[SourceId:\s*([a-f0-9-]{36}:\d+)\]"
 # Prompt Templates
 # -----------------------------------------------------------------------------
 
-RAG_SYSTEM_PROMPT = """You are an Enterprise Knowledge Assistant.
+RAG_SYSTEM_PROMPT = """You are an Enterprise Knowledge Assistant. /no_think
 Answer ONLY using the provided CONTEXT below. Do not guess. Do not use outside knowledge.
 
 If the context does not contain the answer, respond exactly:
@@ -72,7 +72,7 @@ PREVIOUS CONVERSATION:
 {chat_history}
 """
 
-CONFIDENCE_PROMPT = """Evaluate how well this answer is supported by the provided context.
+CONFIDENCE_PROMPT = """Evaluate how well this answer is supported by the provided context. /no_think
 
 CONTEXT SUMMARY:
 {context_summary}
@@ -1343,6 +1343,7 @@ class RAGService:
                 model=model,
                 temperature=0.0,  # Deterministic for evaluation
                 timeout=10,  # Shorter timeout for eval
+                num_predict=16,  # Only needs a number 0-100
             )
 
             prompt = CONFIDENCE_PROMPT.format(
@@ -1628,6 +1629,7 @@ class RAGService:
                 model=model,
                 temperature=0.0,  # Deterministic for routing
                 timeout=10,  # Short timeout for routing
+                num_predict=16,  # Only needs RETRIEVE or DIRECT
             )
 
             prompt = ROUTER_PROMPT.format(question=query)
