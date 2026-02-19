@@ -204,7 +204,9 @@ async def check_duplicates(
     settings = get_settings()
     service = DocumentService(db, settings)
 
-    duplicates, unique = service.check_duplicates_by_filename(request.filenames)
+    duplicates, unique = service.check_duplicates_by_filename(
+        request.filenames, source_paths=request.source_paths
+    )
 
     return CheckDuplicatesResponse(
         duplicates=[DuplicateInfo(**d) for d in duplicates],

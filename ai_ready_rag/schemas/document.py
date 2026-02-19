@@ -70,6 +70,7 @@ class CheckDuplicatesRequest(BaseModel):
     """Request for pre-upload duplicate check."""
 
     filenames: list[str]
+    source_paths: list[str] | None = None
 
     @property
     def validated_filenames(self) -> list[str]:

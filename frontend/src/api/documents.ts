@@ -73,15 +73,20 @@ export async function getDocument(id: string): Promise<Document> {
  * Check for duplicate files before upload.
  */
 export async function checkDuplicates(
-  filenames: string[]
+  filenames: string[],
+  sourcePaths?: string[]
 ): Promise<CheckDuplicatesResponse> {
+  const body: { filenames: string[]; source_paths?: string[] } = { filenames };
+  if (sourcePaths && sourcePaths.length > 0) {
+    body.source_paths = sourcePaths;
+  }
   const response = await fetch('/api/documents/check-duplicates', {
     method: 'POST',
     headers: {
       ...getAuthHeaders(),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ filenames }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
