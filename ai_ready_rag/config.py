@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     rag_enable_query_expansion: bool = True  # Expand queries for better recall
     rag_enable_hallucination_check: bool | None = None  # None = use profile default
     rag_recency_weight: float = 0.15  # 0=disabled, blend weight for recency boost
-    rag_intent_boost_weight: float = 0.20  # 0=disabled, blend weight for intent tag boost
+    rag_intent_boost_weight: float = 0.35  # 0=disabled, blend weight for intent tag boost
 
     # Cache Warming - Core settings
     warming_delay_seconds: float = 2.0  # Delay between warming queries to reduce Ollama contention
