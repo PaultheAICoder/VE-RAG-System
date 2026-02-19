@@ -2181,23 +2181,64 @@ class RAGService:
             llm_score=llm_score,
         )
 
-        # Citation guard: If context was provided but LLM cited nothing, cap confidence
-        # and replace answer with standard message (don't show generic responses)
+        # Citation guard: If context was provided but LLM cited nothing
         if len(final_chunks) > 0 and len(citations) == 0:
-            logger.warning(
-                f"[RAG] No citations despite {len(final_chunks)} context chunks - "
-                f"replacing generic answer and capping confidence to 30%"
-            )
-            answer = (
-                "I found relevant documents but was unable to extract a specific answer. "
-                "Please try rephrasing your question or contact your administrator for assistance."
-            )
-            confidence = ConfidenceScore(
-                overall=min(confidence.overall, 30),
-                retrieval_score=confidence.retrieval_score,
-                coverage_score=confidence.coverage_score,
-                llm_score=confidence.llm_score,
-            )
+            if llm_score >= 70:
+                # LLM answer is well-grounded but just missing SourceId markers —
+                # synthesize citations from top chunks instead of discarding the answer
+                logger.info(
+                    f"[RAG] No citations but hallucination score={llm_score} — "
+                    f"synthesizing citations from top {min(3, len(final_chunks))} chunks"
+                )
+                seen_doc_ids: set[str] = set()
+                for chunk in final_chunks[:3]:
+                    if chunk.document_id in seen_doc_ids:
+                        continue
+                    seen_doc_ids.add(chunk.document_id)
+                    snippet = chunk.chunk_text[:200]
+                    if len(chunk.chunk_text) > 200:
+                        snippet += "..."
+                    snippet_full = chunk.chunk_text[:1000]
+                    if len(chunk.chunk_text) > 1000:
+                        snippet_full += "..."
+                    citations.append(
+                        Citation(
+                            source_id=f"{chunk.document_id}:{chunk.chunk_index}",
+                            document_id=chunk.document_id,
+                            document_name=chunk.document_name,
+                            chunk_index=chunk.chunk_index,
+                            page_number=chunk.page_number,
+                            section=chunk.section,
+                            relevance_score=chunk.score,
+                            snippet=snippet,
+                            snippet_full=snippet_full,
+                        )
+                    )
+                grounded = len(citations) > 0
+                # Cap confidence slightly since citations were inferred
+                confidence = ConfidenceScore(
+                    overall=min(confidence.overall, 50),
+                    retrieval_score=confidence.retrieval_score,
+                    coverage_score=confidence.coverage_score,
+                    llm_score=confidence.llm_score,
+                )
+            else:
+                # LLM answer is poorly grounded AND has no citations — replace it
+                logger.warning(
+                    f"[RAG] No citations despite {len(final_chunks)} context chunks "
+                    f"(hallucination score={llm_score}) - replacing with fallback"
+                )
+                answer = (
+                    "I found relevant documents but was unable to extract a specific answer. "
+                    "Please try rephrasing your question or contact your administrator "
+                    "for assistance."
+                )
+                confidence = ConfidenceScore(
+                    overall=min(confidence.overall, 30),
+                    retrieval_score=confidence.retrieval_score,
+                    coverage_score=confidence.coverage_score,
+                    llm_score=confidence.llm_score,
+                )
 
         # 8. Determine action based on confidence threshold
         if confidence.overall >= self.confidence_threshold:
