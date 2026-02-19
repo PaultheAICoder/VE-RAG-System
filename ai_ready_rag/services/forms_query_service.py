@@ -23,7 +23,10 @@ from ai_ready_rag.services.vector_service import SearchResult
 
 logger = logging.getLogger(__name__)
 
-# Intent labels that should trigger forms DB lookup
+# Intent labels that should trigger forms DB lookup.
+# Only intents with well-structured ACORD 25 field groups are included.
+# crime/do/epli are excluded — their ACORD 25 "Other" section is too sparse;
+# those queries rely on vector search against full policy documents.
 FORMS_ELIGIBLE_INTENTS: set[str] = {
     "certificate",
     "active_policy",
@@ -31,13 +34,13 @@ FORMS_ELIGIBLE_INTENTS: set[str] = {
     "gl",
     "workers_comp",
     "umbrella",
-    "crime",
-    "do",
-    "epli",
 }
 
 # Maps intent labels to which ACORD_25_GROUPS to return.
 # None means all groups.
+# Note: crime/do/epli are NOT mapped here — the ACORD 25 "Other" section
+# only has brief mentions, not actual policy details. Those queries should
+# rely on vector search against the full policy documents instead.
 INTENT_TO_GROUPS: dict[str, list[str] | None] = {
     "certificate": None,
     "active_policy": None,
@@ -45,9 +48,6 @@ INTENT_TO_GROUPS: dict[str, list[str] | None] = {
     "gl": ["General Liability"],
     "workers_comp": ["Workers Comp"],
     "umbrella": ["Umbrella/Excess"],
-    "crime": ["Other"],
-    "do": ["Other"],
-    "epli": ["Other"],
 }
 
 
