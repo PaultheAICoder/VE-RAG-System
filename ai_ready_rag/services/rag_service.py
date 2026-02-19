@@ -1503,17 +1503,29 @@ class RAGService:
 
         citations: list[Citation] = []
         seen_ids: set[str] = set()
+        seen_doc_ids: set[str] = set()
 
         for source_id in source_ids:
             if source_id in seen_ids:
                 continue
             seen_ids.add(source_id)
 
-            if source_id not in chunk_map:
-                logger.warning(f"Unknown SourceId in answer: {source_id}")
-                continue
+            if source_id in chunk_map:
+                chunk = chunk_map[source_id]
+            else:
+                # Fallback: LLM cited correct doc but wrong chunk index
+                doc_id = source_id.split(":")[0] if ":" in source_id else source_id
+                if doc_id in doc_map and doc_id not in seen_doc_ids:
+                    chunk = doc_map[doc_id]
+                    logger.info(f"Citation fallback: {source_id} -> {doc_id}:{chunk.chunk_index}")
+                else:
+                    logger.warning(f"Unknown SourceId in answer: {source_id}")
+                    continue
 
-            chunk = chunk_map[source_id]
+            # Deduplicate by document to avoid multiple citations to same doc
+            if chunk.document_id in seen_doc_ids:
+                continue
+            seen_doc_ids.add(chunk.document_id)
 
             # Create snippet (first 200 chars)
             snippet = chunk.chunk_text[:200]
@@ -2081,7 +2093,7 @@ class RAGService:
             )
             answer = (
                 "I found relevant documents but was unable to extract a specific answer. "
-                "Please contact your HR department or refer to the employee handbook for assistance."
+                "Please try rephrasing your question or contact your administrator for assistance."
             )
             confidence = ConfidenceScore(
                 overall=min(confidence.overall, 30),
