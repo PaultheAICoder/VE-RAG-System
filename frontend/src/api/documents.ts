@@ -301,6 +301,33 @@ export async function reprocessDocument(documentId: string): Promise<Document> {
   return response.json();
 }
 
+/**
+ * Delete ALL documents (admin only). Requires confirmation.
+ */
+export async function deleteAllDocuments(): Promise<{
+  deleted_count: number;
+  success: boolean;
+}> {
+  const response = await fetch('/api/documents', {
+    method: 'DELETE',
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ confirm: true }),
+  });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      useAuthStore.getState().logout();
+    }
+    const error = await response.json().catch(() => ({ detail: 'Failed to delete all documents' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
 export interface BulkReprocessResponse {
   queued: number;
   skipped: number;

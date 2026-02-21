@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Plus, Pencil, Trash2 } from 'lucide-react';
 import { Button, Alert, Card } from '../components/ui';
 import { TagForm, ConfirmModal } from '../components/features/admin';
-import { listTags, createTag, updateTag, deleteTag } from '../api/tags';
+import { listTags, createTag, updateTag, deleteTag, deleteAllTags } from '../api/tags';
 import type { TagCreate, TagUpdate } from '../api/tags';
 import type { Tag } from '../types';
 
@@ -16,6 +16,7 @@ export function TagsView() {
   const [showTagForm, setShowTagForm] = useState(false);
   const [editingTag, setEditingTag] = useState<Tag | null>(null);
   const [deletingTag, setDeletingTag] = useState<Tag | null>(null);
+  const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
   // Fetch tags
@@ -66,6 +67,23 @@ export function TagsView() {
     }
   };
 
+  // Handle delete all tags
+  const handleDeleteAllTags = async () => {
+    setActionLoading(true);
+    try {
+      const result = await deleteAllTags();
+      await fetchTags();
+      setShowDeleteAllConfirm(false);
+      if (result.skipped_system_count > 0) {
+        setError(`Deleted ${result.deleted_count} tags. ${result.skipped_system_count} system tag(s) preserved.`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete all tags');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   // Handle delete tag
   const handleDelete = (tag: Tag) => {
     setDeletingTag(tag);
@@ -95,9 +113,14 @@ export function TagsView() {
             Manage tags for document access control
           </p>
         </div>
-        <Button icon={Plus} onClick={handleCreate}>
-          Add Tag
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="danger" icon={Trash2} onClick={() => setShowDeleteAllConfirm(true)}>
+            Delete All Tags
+          </Button>
+          <Button icon={Plus} onClick={handleCreate}>
+            Add Tag
+          </Button>
+        </div>
       </div>
 
       {/* Error Alert */}
@@ -215,6 +238,18 @@ export function TagsView() {
         title="Delete Tag"
         message={`Are you sure you want to delete the tag "${deletingTag?.display_name}"? This will remove access control for any documents and users using this tag.`}
         confirmLabel="Delete"
+        isLoading={actionLoading}
+        variant="danger"
+      />
+
+      {/* Delete All Tags Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showDeleteAllConfirm}
+        onClose={() => setShowDeleteAllConfirm(false)}
+        onConfirm={handleDeleteAllTags}
+        title="Delete All Tags"
+        message="This will permanently delete ALL non-system tags. Documents will lose their tag associations and may become inaccessible to non-admin users."
+        confirmLabel="Delete All Tags"
         isLoading={actionLoading}
         variant="danger"
       />

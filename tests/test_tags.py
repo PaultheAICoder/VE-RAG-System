@@ -149,3 +149,55 @@ class TestDeleteTag:
         response = client.delete(f"/api/tags/{system_tag.id}", headers=admin_headers)
         assert response.status_code == 400
         assert "system" in response.json()["detail"].lower()
+
+
+class TestDeleteAllTags:
+    """Tests for delete-all-tags endpoint."""
+
+    def test_delete_all_requires_admin(self, client, user_headers):
+        """Non-admin cannot delete all tags."""
+        response = client.request(
+            "DELETE",
+            "/api/tags",
+            json={"confirm": True},
+            headers=user_headers,
+        )
+        assert response.status_code == 403
+
+    def test_delete_all_requires_confirm(self, client, admin_headers):
+        """Must confirm to delete all."""
+        response = client.request(
+            "DELETE",
+            "/api/tags",
+            json={"confirm": False},
+            headers=admin_headers,
+        )
+        assert response.status_code == 400
+
+    def test_delete_all_preserves_system_tags(self, client, admin_headers, db):
+        """System tags are not deleted."""
+        from ai_ready_rag.db.models import Tag
+
+        system_tag = Tag(name="system_keep", display_name="System Keep", is_system=True)
+        normal_tag = Tag(name="test_bulk", display_name="Test Bulk")
+        db.add_all([system_tag, normal_tag])
+        db.commit()
+
+        response = client.request(
+            "DELETE",
+            "/api/tags",
+            json={"confirm": True},
+            headers=admin_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["skipped_system_count"] >= 1
+
+        # System tag still exists
+        remaining = db.query(Tag).filter(Tag.is_system == True).count()  # noqa: E712
+        assert remaining >= 1
+
+        # Non-system tags are gone
+        non_system = db.query(Tag).filter(Tag.is_system == False).count()  # noqa: E712
+        assert non_system == 0
