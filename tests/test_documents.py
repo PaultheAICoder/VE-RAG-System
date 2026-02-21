@@ -1483,6 +1483,53 @@ class TestBatchUpload:
         assert "tag" in response.json()["detail"].lower()
 
 
+class TestDeleteAllDocuments:
+    """Tests for delete-all-documents endpoint."""
+
+    def test_delete_all_requires_admin(self, client, user_headers):
+        """Non-admin cannot delete all documents."""
+        response = client.request(
+            "DELETE",
+            "/api/documents",
+            json={"confirm": True},
+            headers=user_headers,
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_delete_all_requires_confirm(self, client, admin_headers):
+        """Must confirm to delete all."""
+        response = client.request(
+            "DELETE",
+            "/api/documents",
+            json={"confirm": False},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    @patch("ai_ready_rag.services.factory.get_vector_service")
+    def test_delete_all_documents(self, mock_vs, client, admin_headers, test_document, db):
+        """Admin can delete all documents."""
+        mock_service = AsyncMock()
+        mock_service.initialize = AsyncMock()
+        mock_service.clear_collection = AsyncMock(return_value=True)
+        mock_vs.return_value = mock_service
+
+        response = client.request(
+            "DELETE",
+            "/api/documents",
+            json={"confirm": True},
+            headers=admin_headers,
+        )
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["success"] is True
+        assert data["deleted_count"] >= 1
+
+        # Verify documents are gone from database
+        remaining = db.query(Document).count()
+        assert remaining == 0
+
+
 class TestAccessControlIntegration:
     """Integration tests for tag-based access control with auto-tagging (spec Section 10.5)."""
 

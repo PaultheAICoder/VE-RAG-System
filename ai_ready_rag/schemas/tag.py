@@ -44,3 +44,17 @@ class TagResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class DeleteAllTagsRequest(BaseModel):
+    """Request to delete all tags."""
+
+    confirm: bool
+
+
+class DeleteAllTagsResponse(BaseModel):
+    """Response after deleting all tags."""
+
+    deleted_count: int
+    skipped_system_count: int
+    success: bool

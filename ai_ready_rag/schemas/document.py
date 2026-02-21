@@ -142,6 +142,19 @@ class BulkReprocessResponse(BaseModel):
     skipped_ids: list[str]
 
 
+class DeleteAllDocumentsRequest(BaseModel):
+    """Request to delete all documents."""
+
+    confirm: bool
+
+
+class DeleteAllDocumentsResponse(BaseModel):
+    """Response after deleting all documents."""
+
+    deleted_count: int
+    success: bool
+
+
 class BatchFileResult(BaseModel):
     """Result for a single file in a batch upload."""
 
