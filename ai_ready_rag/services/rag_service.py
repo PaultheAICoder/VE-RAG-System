@@ -44,6 +44,54 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Terms that indicate data absence in answers — should not penalize coverage
+DATA_GAP_TERMS = frozenset(
+    {
+        "specified",
+        "offered",
+        "available",
+        "listed",
+        "included",
+        "provided",
+        "found",
+        "mentioned",
+        "shown",
+        "indicated",
+        "disclosed",
+        "reported",
+        "stated",
+        "defined",
+        "documented",
+        "unavailable",
+        "blank",
+        "options",
+        "applicable",
+    }
+)
+
+# Comparison query detection pattern
+COMPARISON_PATTERN = re.compile(
+    r"(?:compar|versus|\bvs\b|difference between|"
+    r"how does .+ (?:differ|compare)|"
+    r".+ compared to .+|"
+    r".+ vs\.? .+)",
+    re.IGNORECASE,
+)
+
+# Regex for detecting data-gap language in answers
+_DATA_GAP_ANSWER_PATTERN = re.compile(
+    r"not specif|not offered|not available|not found|not listed|"
+    r"see options|N/A|not included|no information|not mentioned|"
+    r"does not include|does not have|no .{0,20} data",
+    re.IGNORECASE,
+)
+
+
+def is_comparison_query(query: str) -> bool:
+    """Detect cross-document comparison queries."""
+    return bool(COMPARISON_PATTERN.search(query))
+
+
 # SourceId extraction pattern: [SourceId: {uuid}:{index}]
 # Accept [SourceId: uuid:chunk] or (SourceId: uuid:chunk) - LLMs sometimes use parens
 SOURCEID_PATTERN = r"[\[\(]SourceId:\s*([a-f0-9-]{36}:\d+)[\]\)]"
@@ -81,6 +129,7 @@ QUESTION: {query}
 ANSWER: {answer}
 
 Score 0-100. If the answer references specific facts, names, or numbers that appear in the context, score 70+. Only score below 30 if the answer is completely fabricated with no basis in the context.
+If the answer correctly states that certain information is not found, not specified, or not available in the context, and the context indeed lacks that information, this is a well-grounded response. Score it 70+.
 
 Respond with ONLY a number."""
 
@@ -509,6 +558,9 @@ def calculate_coverage(answer: str, context: str) -> float:
     """Estimate how much of the answer is grounded in context.
 
     Returns 0.0-1.0 representing fraction of answer terms found in context.
+    Data-gap indicator terms (e.g. "specified", "available") are excluded
+    from the denominator so that reporting absent data does not penalize
+    the coverage score.
     """
     answer_terms = extract_key_terms(answer)
     context_terms = extract_key_terms(context)
@@ -516,8 +568,16 @@ def calculate_coverage(answer: str, context: str) -> float:
     if not answer_terms:
         return 0.0
 
-    matches = answer_terms & context_terms
-    return len(matches) / len(answer_terms)
+    # Remove data-gap indicator terms from the scoring denominator
+    gap_terms = answer_terms & DATA_GAP_TERMS
+    effective_terms = answer_terms - gap_terms
+
+    # If the answer is entirely gap language, return a floor value
+    if not effective_terms:
+        return 0.7
+
+    matches = effective_terms & context_terms
+    return len(matches) / len(effective_terms)
 
 
 # -----------------------------------------------------------------------------
@@ -1655,6 +1715,7 @@ class RAGService:
         answer: str,
         context: str,
         llm_score: int,
+        query: str = "",
     ) -> ConfidenceScore:
         """Combine multiple signals for robust confidence.
 
@@ -1663,6 +1724,7 @@ class RAGService:
             answer: LLM-generated answer
             context: Combined context text
             llm_score: LLM self-assessment (0-100)
+            query: Original user query (used for comparison detection)
 
         Returns:
             ConfidenceScore with breakdown
@@ -1678,6 +1740,11 @@ class RAGService:
 
         retrieval_score = sum(r.score for r in retrieval_results) / len(retrieval_results)
         coverage_score = calculate_coverage(answer, context)
+
+        # Apply coverage floor for comparison queries with data gaps
+        if query and is_comparison_query(query) and _DATA_GAP_ANSWER_PATTERN.search(answer):
+            coverage_score = max(coverage_score, 0.65)
+
         llm_normalized = llm_score / 100
 
         # Weighted combination: retrieval (30%) + coverage (40%) + LLM (30%)
@@ -2179,6 +2246,7 @@ class RAGService:
             answer=answer,
             context=context_for_coverage,
             llm_score=llm_score,
+            query=request.query,
         )
 
         # Citation guard: If context was provided but LLM cited nothing

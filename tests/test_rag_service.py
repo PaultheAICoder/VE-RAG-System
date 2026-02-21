@@ -23,6 +23,7 @@ from ai_ready_rag.services.rag_constants import (
     ROUTING_RETRIEVE,
 )
 from ai_ready_rag.services.rag_service import (
+    DATA_GAP_TERMS,
     SOURCEID_PATTERN,
     ChatMessage,
     RAGRequest,
@@ -31,6 +32,7 @@ from ai_ready_rag.services.rag_service import (
     TokenBudget,
     calculate_coverage,
     extract_key_terms,
+    is_comparison_query,
 )
 from ai_ready_rag.services.vector_service import SearchResult, VectorService
 
@@ -223,6 +225,58 @@ class TestCalculateCoverage:
         assert calculate_coverage("", "Some context text") == 0.0
         assert calculate_coverage("   ", "Some context text") == 0.0
 
+    def test_coverage_not_penalized_for_data_gap_terms(self):
+        """Answer with 'not specified' language should not drag coverage below 0.5."""
+        answer = "Walnut Creek does not specify a D&O limit in the documents."
+        context = "Walnut Creek coverage includes general liability. D&O limit field is blank."
+        score = calculate_coverage(answer, context)
+        # Data-gap terms like "specified" are excluded from denominator
+        assert score >= 0.5, f"Coverage {score} should not be penalized for gap language"
+
+    def test_coverage_pure_gap_answer_gets_floor(self):
+        """Answer that is entirely gap language gets floor value (0.7)."""
+        answer = "Not specified or listed as available."
+        context = "Some policy document with unrelated content here."
+        score = calculate_coverage(answer, context)
+        assert score == 0.7, f"Pure gap answer should get floor 0.7, got {score}"
+
+
+class TestDataGapTermsConstant:
+    """Test DATA_GAP_TERMS constant."""
+
+    def test_data_gap_terms_is_frozenset(self):
+        """DATA_GAP_TERMS is a frozenset."""
+        assert isinstance(DATA_GAP_TERMS, frozenset)
+
+    def test_data_gap_terms_has_expected_members(self):
+        """DATA_GAP_TERMS contains key absence-reporting terms."""
+        expected = {"specified", "available", "found", "listed", "unavailable"}
+        assert expected.issubset(DATA_GAP_TERMS)
+
+
+class TestIsComparisonQuery:
+    """Test comparison query detection."""
+
+    def test_compared_to_pattern(self):
+        """Detects 'compared to' phrasing."""
+        assert is_comparison_query("D&O limits for Bethany Terrace compared to Walnut Creek")
+
+    def test_vs_pattern(self):
+        """Detects 'vs' phrasing."""
+        assert is_comparison_query("Bethany Terrace vs Walnut Creek D&O limits")
+
+    def test_difference_between_pattern(self):
+        """Detects 'difference between' phrasing."""
+        assert is_comparison_query("What is the difference between the two policies?")
+
+    def test_non_comparison_query(self):
+        """Non-comparison queries return False."""
+        assert not is_comparison_query("What is the D&O limit for Bethany Terrace?")
+
+    def test_how_does_compare_pattern(self):
+        """Detects 'how does X compare' phrasing."""
+        assert is_comparison_query("How does Bethany Terrace compare to Walnut Creek?")
+
 
 class TestCalculateConfidence:
     """Test hybrid confidence scoring."""
@@ -274,6 +328,29 @@ class TestCalculateConfidence:
             (confidence.retrieval_score * 30) + (confidence.coverage_score * 40) + (80 / 100 * 30)
         )
         assert confidence.overall == min(100, max(0, expected_overall))
+
+    def test_confidence_comparison_query_with_data_gap(self, mock_settings, sample_search_results):
+        """Comparison query with gap language gets coverage floor applied."""
+        service = RAGService(vector_service=AsyncMock(), settings=mock_settings)
+        context = "\n".join(r.chunk_text for r in sample_search_results)
+        # Answer reports data absence for one entity
+        answer = "Bethany Terrace has a $1M D&O limit. Walnut Creek does not specify a D&O limit."
+        query = "D&O limits for Bethany Terrace compared to Walnut Creek"
+
+        confidence = service._calculate_confidence(
+            retrieval_results=sample_search_results,
+            answer=answer,
+            context=context,
+            llm_score=80,
+            query=query,
+        )
+
+        # Coverage floor of 0.65 should be applied
+        assert confidence.coverage_score >= 0.65, (
+            f"Coverage {confidence.coverage_score} should be >= 0.65 for comparison with data gap"
+        )
+        # Overall should be above 60 with decent retrieval and LLM scores
+        assert confidence.overall >= 60
 
 
 class TestTruncateHistory:
