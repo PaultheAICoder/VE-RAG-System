@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Save, AlertTriangle, RefreshCw } from 'lucide-react';
-import { Button, Alert, Card, Select, Checkbox, Slider } from '../components/ui';
+import { Button, Alert, Card, Input, Select, Checkbox, Slider } from '../components/ui';
 import {
   ConfirmModal,
   ReindexStatusCard,
@@ -188,7 +188,8 @@ export function SettingsView() {
       llmSettings &&
       (floatsDiffer(formLlmSettings.llm_temperature, llmSettings.llm_temperature) ||
         formLlmSettings.llm_max_response_tokens !== llmSettings.llm_max_response_tokens ||
-        formLlmSettings.llm_confidence_threshold !== llmSettings.llm_confidence_threshold);
+        formLlmSettings.llm_confidence_threshold !== llmSettings.llm_confidence_threshold ||
+        formLlmSettings.auto_tagging_llm_model !== llmSettings.auto_tagging_llm_model);
 
     const chunkingDirty =
       advancedSettings &&
@@ -355,7 +356,8 @@ export function SettingsView() {
         llmSettings &&
         (floatsDiffer(formLlmSettings.llm_temperature, llmSettings.llm_temperature) ||
           formLlmSettings.llm_max_response_tokens !== llmSettings.llm_max_response_tokens ||
-          formLlmSettings.llm_confidence_threshold !== llmSettings.llm_confidence_threshold)
+          formLlmSettings.llm_confidence_threshold !== llmSettings.llm_confidence_threshold ||
+          formLlmSettings.auto_tagging_llm_model !== llmSettings.auto_tagging_llm_model)
       ) {
         await updateLLMSettings(formLlmSettings);
       }
@@ -798,6 +800,21 @@ export function SettingsView() {
               })
             }
           />
+          {/* Auto-Tagging Model Override */}
+          <Input
+            label="Auto-Tagging Model Override"
+            placeholder={`Use chat model (${formLlmSettings.auto_tagging_llm_model_effective})`}
+            value={formLlmSettings.auto_tagging_llm_model ?? ''}
+            onChange={(e) =>
+              setFormLlmSettings({
+                ...formLlmSettings,
+                auto_tagging_llm_model: e.target.value || null,
+              })
+            }
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Model used for auto-tagging classification. Leave blank to use the chat model.
+          </p>
         </div>
       </Card>
 

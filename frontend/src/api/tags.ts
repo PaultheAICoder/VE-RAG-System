@@ -52,6 +52,21 @@ export async function deleteTag(id: string): Promise<{ message: string }> {
 }
 
 /**
+ * Delete ALL non-system tags (admin only). Requires confirmation.
+ */
+export async function deleteAllTags(): Promise<{
+  deleted_count: number;
+  skipped_system_count: number;
+  success: boolean;
+}> {
+  return apiClient.delete<{
+    deleted_count: number;
+    skipped_system_count: number;
+    success: boolean;
+  }>('/api/tags', { confirm: true });
+}
+
+/**
  * Get tag facets grouped by namespace.
  */
 export async function getTagFacets(): Promise<TagFacetsResponse> {

@@ -339,6 +339,7 @@ class LLMSettingsRequest(BaseModel):
     llm_temperature: float | None = None
     llm_max_response_tokens: int | None = None
     llm_confidence_threshold: int | None = None
+    auto_tagging_llm_model: str | None = None  # None = leave unchanged; "" = clear override
 
 
 class LLMSettingsResponse(BaseModel):
@@ -347,6 +348,8 @@ class LLMSettingsResponse(BaseModel):
     llm_temperature: float
     llm_max_response_tokens: int
     llm_confidence_threshold: int
+    auto_tagging_llm_model: str | None  # None = inheriting from chat_model
+    auto_tagging_llm_model_effective: str  # resolved model name (never null)
 
 
 class SettingsAuditEntry(BaseModel):
@@ -475,6 +478,7 @@ class StartReindexRequest(BaseModel):
     """Request to start reindex operation."""
 
     confirm: bool = False
+    mode: Literal["all", "ready", "failed"] = "all"
 
 
 class ResumeReindexRequest(BaseModel):
@@ -887,3 +891,43 @@ class SwitchActiveStrategyRequest(BaseModel):
     """Request to switch the active strategy."""
 
     strategy_id: str
+
+
+# =============================================================================
+# Reconciliation
+# =============================================================================
+
+
+class ReconcileRequest(BaseModel):
+    """Request to reconcile SQLite ↔ Qdrant state."""
+
+    dry_run: bool = True
+
+
+class ReconcileIssue(BaseModel):
+    """Single reconciliation issue."""
+
+    document_id: str
+    filename: str | None = None
+    issue: str
+    detail: str
+    sqlite_chunks: int | None = None
+    qdrant_chunks: int | None = None
+
+
+class ReconcileRepair(BaseModel):
+    """Single repair action taken."""
+
+    document_id: str
+    action: str
+
+
+class ReconcileResponse(BaseModel):
+    """Response from reconciliation endpoint."""
+
+    total_documents: int
+    total_qdrant_documents: int
+    synced: int
+    issues: list[ReconcileIssue]
+    repairs: list[ReconcileRepair]
+    dry_run: bool

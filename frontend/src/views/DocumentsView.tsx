@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import { Button, Pagination, Alert } from '../components/ui';
 import {
   DocumentTable,
@@ -14,6 +14,7 @@ import {
 import {
   listDocuments,
   bulkDeleteDocuments,
+  deleteAllDocuments,
   updateDocumentTags,
   bulkReprocessDocuments,
 } from '../api/documents';
@@ -70,6 +71,7 @@ export function DocumentsView() {
   const [showUpload, setShowUpload] = useState(false);
   const [showTagEdit, setShowTagEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedDocForSuggestions, setSelectedDocForSuggestions] = useState<Document | null>(null);
   const [suggestionCounts, setSuggestionCounts] = useState<Map<string, number>>(new Map());
@@ -272,6 +274,21 @@ export function DocumentsView() {
     fetchDocuments();
   };
 
+  // Handle delete all documents
+  const handleDeleteAll = async () => {
+    setActionLoading(true);
+    try {
+      await deleteAllDocuments();
+      setShowDeleteAllConfirm(false);
+      setSelectedIds(new Set());
+      fetchDocuments();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete all documents');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   // Handle bulk delete
   const handleBulkDelete = async () => {
     setActionLoading(true);
@@ -340,9 +357,14 @@ export function DocumentsView() {
         </div>
 
         {isAdmin && (
-          <Button icon={Plus} onClick={() => setShowUpload(true)}>
-            Upload
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="danger" icon={Trash2} onClick={() => setShowDeleteAllConfirm(true)}>
+              Delete All
+            </Button>
+            <Button icon={Plus} onClick={() => setShowUpload(true)}>
+              Upload
+            </Button>
+          </div>
         )}
       </div>
 
@@ -437,6 +459,18 @@ export function DocumentsView() {
         title="Delete Documents"
         message={`Are you sure you want to delete ${selectedIds.size} document${selectedIds.size !== 1 ? 's' : ''}? This action cannot be undone.`}
         confirmLabel="Delete"
+        isLoading={actionLoading}
+        variant="danger"
+      />
+
+      {/* Delete All Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showDeleteAllConfirm}
+        onClose={() => setShowDeleteAllConfirm(false)}
+        onConfirm={handleDeleteAll}
+        title="Delete All Documents"
+        message="This will permanently delete ALL documents, their files, and their vector embeddings. This cannot be undone."
+        confirmLabel="Delete All"
         isLoading={actionLoading}
         variant="danger"
       />

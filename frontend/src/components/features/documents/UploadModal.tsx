@@ -149,9 +149,14 @@ export function UploadModal({
     setError(null);
 
     try {
-      // Pre-upload duplicate check
+      // Pre-upload duplicate check using source_path when available
       const filenames = filesToUpload.map((f) => f.file.name);
-      const checkResult = await checkDuplicates(filenames);
+      const sourcePaths = filesToUpload.map((f) => f.file.webkitRelativePath || '');
+      const hasSourcePaths = sourcePaths.some((p) => p.length > 0);
+      const checkResult = await checkDuplicates(
+        filenames,
+        hasSourcePaths ? sourcePaths : undefined
+      );
 
       if (checkResult.duplicates.length > 0) {
         setDuplicateCheck(checkResult);

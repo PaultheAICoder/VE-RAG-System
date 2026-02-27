@@ -18,7 +18,8 @@ def mock_settings():
     """Settings mock with auto-tagging defaults."""
     settings = MagicMock()
     settings.ollama_base_url = "http://localhost:11434"
-    settings.auto_tagging_llm_model = "qwen3:8b"
+    settings.auto_tagging_llm_model = None  # None = use chat_model (new default)
+    settings.chat_model = "qwen3:8b"  # Fallback model
     settings.auto_tagging_llm_timeout_seconds = 30
     settings.auto_tagging_llm_max_retries = 1
     settings.auto_tagging_confidence_threshold = 0.7
@@ -31,6 +32,22 @@ def mock_settings():
 def classifier(mock_settings):
     """DocumentClassifier with mocked settings."""
     return DocumentClassifier(mock_settings)
+
+
+def test_classifier_uses_chat_model_when_auto_tagging_model_is_none(mock_settings):
+    """classifier.model falls back to chat_model when auto_tagging_llm_model is None."""
+    mock_settings.auto_tagging_llm_model = None
+    mock_settings.chat_model = "qwen3-rag"
+    c = DocumentClassifier(mock_settings)
+    assert c.model == "qwen3-rag"
+
+
+def test_classifier_uses_override_when_auto_tagging_model_is_set(mock_settings):
+    """classifier.model uses auto_tagging_llm_model when explicitly set."""
+    mock_settings.auto_tagging_llm_model = "llama3.2"
+    mock_settings.chat_model = "qwen3-rag"
+    c = DocumentClassifier(mock_settings)
+    assert c.model == "llama3.2"
 
 
 @pytest.fixture

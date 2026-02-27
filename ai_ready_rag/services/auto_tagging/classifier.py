@@ -37,7 +37,7 @@ class DocumentClassifier:
 
     def __init__(self, settings: Settings) -> None:
         self.ollama_url = settings.ollama_base_url
-        self.model = settings.auto_tagging_llm_model
+        self.model = settings.auto_tagging_llm_model or settings.chat_model
         self.timeout = settings.auto_tagging_llm_timeout_seconds
         self.max_retries = settings.auto_tagging_llm_max_retries
         self.confidence_threshold = settings.auto_tagging_confidence_threshold

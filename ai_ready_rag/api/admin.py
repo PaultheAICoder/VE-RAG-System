@@ -98,6 +98,8 @@ from ai_ready_rag.schemas.admin import (
     ProcessingQueueStatus,
     QueryRetryResponse,
     RAGPipelineStatus,
+    ReconcileRequest,
+    ReconcileResponse,
     RecoverResponse,
     ReindexEstimate,
     ReindexFailureInfo,
@@ -1209,6 +1211,7 @@ LLM_DEFAULTS = {
     "llm_temperature": 0.1,  # LLM temperature (0.0-1.0)
     "llm_max_response_tokens": 2048,  # Max tokens in response
     "llm_confidence_threshold": 40,  # Confidence threshold (0-100)
+    "auto_tagging_llm_model": None,  # None = inherit from chat_model
 }
 
 
@@ -1434,6 +1437,16 @@ async def get_llm_settings(
     Admin only.
     """
     service = SettingsService(db)
+    settings = get_settings()
+
+    _auto_tagging_llm_model = service.get_with_env_fallback(
+        "auto_tagging_llm_model",
+        "AUTO_TAGGING_LLM_MODEL",
+        LLM_DEFAULTS["auto_tagging_llm_model"],
+    )
+    # Normalize empty string or falsy value stored in DB to None
+    if not _auto_tagging_llm_model:
+        _auto_tagging_llm_model = None
 
     return LLMSettingsResponse(
         llm_temperature=service.get_with_env_fallback(
@@ -1451,6 +1464,8 @@ async def get_llm_settings(
             "RAG_CONFIDENCE_THRESHOLD",
             LLM_DEFAULTS["llm_confidence_threshold"],
         ),
+        auto_tagging_llm_model=_auto_tagging_llm_model,
+        auto_tagging_llm_model_effective=_auto_tagging_llm_model or settings.chat_model,
     )
 
 
@@ -1508,11 +1523,31 @@ async def update_llm_settings(
             reason="Updated via admin settings",
         )
 
+    if request.auto_tagging_llm_model is not None:
+        # Empty string from frontend = clear override (store as None/null)
+        model_value = request.auto_tagging_llm_model.strip() or None
+        service.set_with_audit(
+            "auto_tagging_llm_model",
+            model_value,
+            changed_by=current_user.id,
+            reason="Updated via admin settings",
+        )
+
     logger.info(
         f"Admin {current_user.email} updated LLM settings: {request.model_dump(exclude_none=True)}"
     )
 
     # Return current state
+    settings = get_settings()
+    _auto_tagging_llm_model = service.get_with_env_fallback(
+        "auto_tagging_llm_model",
+        "AUTO_TAGGING_LLM_MODEL",
+        LLM_DEFAULTS["auto_tagging_llm_model"],
+    )
+    # Normalize empty string or falsy value stored in DB to None
+    if not _auto_tagging_llm_model:
+        _auto_tagging_llm_model = None
+
     return LLMSettingsResponse(
         llm_temperature=service.get_with_env_fallback(
             "llm_temperature",
@@ -1529,6 +1564,8 @@ async def update_llm_settings(
             "RAG_CONFIDENCE_THRESHOLD",
             LLM_DEFAULTS["llm_confidence_threshold"],
         ),
+        auto_tagging_llm_model=_auto_tagging_llm_model,
+        auto_tagging_llm_model_effective=_auto_tagging_llm_model or settings.chat_model,
     )
 
 
@@ -2031,26 +2068,26 @@ async def start_reindex(
 
     # Create new job
     try:
-        job = service.create_job(triggered_by=current_user.id)
+        job = service.create_job(triggered_by=current_user.id, mode=request.mode)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
         ) from e
 
-    logger.info(f"Admin {current_user.email} started reindex job {job.id}")
+    logger.info(f"Admin {current_user.email} started reindex job {job.id} (mode={request.mode})")
 
     # Enqueue via ARQ if Redis available, otherwise fall back to BackgroundTasks
     redis = await get_redis_pool()
     if redis:
         try:
-            await redis.enqueue_job("reindex_knowledge_base", job.id)
+            await redis.enqueue_job("reindex_knowledge_base", job.id, request.mode)
             logger.info(f"Reindex job {job.id} enqueued via ARQ")
         except Exception as e:
             logger.warning(f"ARQ enqueue failed for reindex, falling back: {e}")
-            background_tasks.add_task(run_reindex_job, job.id)
+            background_tasks.add_task(run_reindex_job, job.id, request.mode)
     else:
-        background_tasks.add_task(run_reindex_job, job.id)
+        background_tasks.add_task(run_reindex_job, job.id, request.mode)
 
     return _reindex_job_to_response(job)
 
@@ -4611,3 +4648,45 @@ async def switch_active_strategy(
         strategy_name=strategy.name,
         strategy_version=strategy.version,
     )
+
+
+# =============================================================================
+# Reconciliation (Issue #309)
+# =============================================================================
+
+
+@router.post("/reconcile", response_model=ReconcileResponse)
+async def reconcile_stores(
+    request: ReconcileRequest,
+    api_request: Request,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Detect and optionally repair SQLite ↔ Qdrant drift.
+
+    Use dry_run=true (default) to detect issues without making changes.
+    Set dry_run=false to auto-repair detected issues.
+
+    Admin only.
+    """
+    from ai_ready_rag.services.reconciliation_service import reconcile
+
+    vector_service = getattr(api_request.app.state, "vector_service", None)
+    if not vector_service:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Vector service not initialized",
+        )
+
+    logger.info(f"Admin {current_user.email} initiated reconciliation (dry_run={request.dry_run})")
+
+    result = await reconcile(db, vector_service, dry_run=request.dry_run)
+
+    if result["issues"]:
+        logger.warning(
+            f"Reconciliation found {len(result['issues'])} issues (dry_run={request.dry_run})"
+        )
+    else:
+        logger.info("Reconciliation complete: no issues found")
+
+    return ReconcileResponse(**result)

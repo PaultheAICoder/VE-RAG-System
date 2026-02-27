@@ -14,7 +14,7 @@ from ai_ready_rag.services.reindex_service import ReindexService
 logger = logging.getLogger(__name__)
 
 
-async def run_reindex_job(job_id: str) -> None:
+async def run_reindex_job(job_id: str, mode: str = "all") -> None:
     """Background task to process all documents for a reindex job.
 
     Creates its own db session to avoid session lifecycle issues.
@@ -22,6 +22,7 @@ async def run_reindex_job(job_id: str) -> None:
 
     Args:
         job_id: The reindex job ID to process.
+        mode: Document selection — "all", "ready", or "failed".
     """
     from ai_ready_rag.services.factory import get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingService
@@ -43,13 +44,24 @@ async def run_reindex_job(job_id: str) -> None:
         # Update status to running
         reindex_service.update_job_status(job_id, "running")
 
-        # Get all ready documents
-        documents = (
-            db.query(Document)
-            .filter(Document.status == "ready")
-            .order_by(Document.uploaded_at)
-            .all()
-        )
+        # Select documents based on mode
+        doc_query = db.query(Document)
+        if mode == "ready":
+            doc_query = doc_query.filter(Document.status == "ready")
+        elif mode == "failed":
+            doc_query = doc_query.filter(Document.status.in_(["failed", "processing"]))
+        # else mode == "all" — no filter, process everything
+
+        documents = doc_query.order_by(Document.uploaded_at).all()
+
+        # Reset non-ready documents to pending before reprocessing
+        if mode != "ready":
+            for doc in documents:
+                if doc.status != "ready":
+                    doc.status = "pending"
+                    doc.chunk_count = None
+                    doc.error_message = None
+            db.commit()
 
         total_docs = len(documents)
         processed = 0

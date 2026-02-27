@@ -120,8 +120,17 @@ def get_chunks_via_qdrant(qdrant_url: str, document_id: str) -> list[dict]:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
         qdrant = QdrantClient(url=qdrant_url)
+        # Try hybrid collection first (Spark), fall back to documents
+        for coll in ("documents_hybrid", "documents"):
+            try:
+                qdrant.get_collection(coll)
+                break
+            except Exception:
+                continue
+        else:
+            coll = "documents"
         points, _ = qdrant.scroll(
-            collection_name="documents",
+            collection_name=coll,
             scroll_filter=Filter(
                 must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]
             ),

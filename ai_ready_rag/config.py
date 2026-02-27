@@ -33,7 +33,7 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "vector_backend": "qdrant",
         "chunker_backend": "docling",
         "enable_ocr": True,
-        "chat_model": "qwen3:8b",
+        "chat_model": "qwen3-rag",
         "embedding_model": "nomic-embed-text",
         "rag_max_context_tokens": 6000,
         "rag_max_history_tokens": 1500,
@@ -147,13 +147,14 @@ class Settings(BaseSettings):
 
     # Retrieval Quality
     rag_min_similarity_score: float = 0.3
-    rag_max_chunks_per_doc: int = 3
+    rag_max_chunks_per_doc: int = 5
     rag_total_context_chunks: int = 8  # Increased from 5 per Spark config
     rag_dedup_candidates_cap: int = 15
     rag_chunk_overlap_threshold: float = 0.9
     rag_enable_query_expansion: bool = True  # Expand queries for better recall
     rag_enable_hallucination_check: bool | None = None  # None = use profile default
     rag_recency_weight: float = 0.15  # 0=disabled, blend weight for recency boost
+    rag_intent_boost_weight: float = 0.35  # 0=disabled, blend weight for intent tag boost
 
     # Cache Warming - Core settings
     warming_delay_seconds: float = 2.0  # Delay between warming queries to reduce Ollama contention
@@ -270,7 +271,7 @@ class Settings(BaseSettings):
     auto_tagging_strategy: str = "generic"
     auto_tagging_path_enabled: bool = True
     auto_tagging_llm_enabled: bool = True
-    auto_tagging_llm_model: str = "qwen3:8b"
+    auto_tagging_llm_model: str | None = None  # None = use chat_model at runtime
     auto_tagging_require_approval: bool = False
     auto_tagging_create_missing_tags: bool = True
     auto_tagging_confidence_threshold: float = 0.7
