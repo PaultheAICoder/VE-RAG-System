@@ -5,7 +5,7 @@ class TestGetRetrievalSettings:
     """Tests for GET /api/admin/settings/retrieval."""
 
     def test_get_retrieval_settings_returns_defaults(self, client, admin_headers):
-        """GET returns all 7 fields with correct default values."""
+        """GET returns all 8 fields with correct default values."""
         response = client.get("/api/admin/settings/retrieval", headers=admin_headers)
 
         assert response.status_code == 200
@@ -17,6 +17,7 @@ class TestGetRetrievalSettings:
         assert data["retrieval_prefetch_multiplier"] == 3
         assert data["retrieval_min_score_dense"] == 0.3
         assert data["retrieval_min_score_hybrid"] == 0.05
+        assert data["retrieval_recency_weight"] == 0.15
 
     def test_get_retrieval_settings_requires_admin(self, client, user_headers):
         """Regular user gets 403."""
@@ -120,6 +121,46 @@ class TestUpdateRetrievalSettings:
             "/api/admin/settings/retrieval",
             headers=admin_headers,
             json={"retrieval_min_score_hybrid": 0.6},
+        )
+        assert response.status_code == 400
+
+    def test_update_recency_weight_valid(self, client, admin_headers):
+        """PUT with retrieval_recency_weight: 0.25 succeeds."""
+        response = client.put(
+            "/api/admin/settings/retrieval",
+            headers=admin_headers,
+            json={"retrieval_recency_weight": 0.25},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["retrieval_recency_weight"] == 0.25
+
+    def test_update_recency_weight_zero_disables(self, client, admin_headers):
+        """PUT with retrieval_recency_weight: 0.0 disables recency boost."""
+        response = client.put(
+            "/api/admin/settings/retrieval",
+            headers=admin_headers,
+            json={"retrieval_recency_weight": 0.0},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["retrieval_recency_weight"] == 0.0
+
+    def test_update_recency_weight_out_of_range(self, client, admin_headers):
+        """PUT with value > 0.5 or < 0 returns 400."""
+        response = client.put(
+            "/api/admin/settings/retrieval",
+            headers=admin_headers,
+            json={"retrieval_recency_weight": 0.6},
+        )
+        assert response.status_code == 400
+
+        response = client.put(
+            "/api/admin/settings/retrieval",
+            headers=admin_headers,
+            json={"retrieval_recency_weight": -0.1},
         )
         assert response.status_code == 400
 

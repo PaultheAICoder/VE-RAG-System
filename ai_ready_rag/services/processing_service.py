@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
-from ai_ready_rag.config import Settings
+from ai_ready_rag.config import CHUNK_SIZE_BY_TAG, Settings
 from ai_ready_rag.db.models import Document
 from ai_ready_rag.services.factory import get_chunker, get_vector_service
 
@@ -40,6 +40,7 @@ class ChunkInfo:
     page_number: int | None
     section: str | None
     token_count: int
+    heading_breadcrumb: str | None = None
 
 
 @dataclass
@@ -230,9 +231,23 @@ class ProcessingService:
                 # else: fallback to standard chunker pipeline below
                 logger.info("Falling back to standard chunker for %s", document.id)
 
-            # Get chunker - use per-upload options if provided, otherwise use cached
-            if processing_options:
-                chunker = get_chunker(self.settings, processing_options)
+            # Resolve per-document chunk size based on tags
+            chunk_size_override: int | None = None
+            doc_tag_names = [tag.name.lower() for tag in document.tags]
+            for tag_name in doc_tag_names:
+                if tag_name in CHUNK_SIZE_BY_TAG:
+                    chunk_size_override = CHUNK_SIZE_BY_TAG[tag_name]
+                    logger.info(
+                        "Tag-based chunk size: tag=%s size=%d for doc=%s",
+                        tag_name,
+                        chunk_size_override,
+                        document.id,
+                    )
+                    break  # Use first matching tag (highest priority)
+
+            # Get chunker - use per-upload options or tag override if provided
+            if processing_options or chunk_size_override:
+                chunker = get_chunker(self.settings, processing_options, chunk_size_override)
             else:
                 chunker = self.chunker
 
@@ -268,6 +283,7 @@ class ProcessingService:
                     page_number=cd.get("page_number"),
                     section=cd.get("section"),
                     token_count=len(cd["text"]) // 4,  # Estimate
+                    heading_breadcrumb=cd.get("heading_breadcrumb"),
                 )
                 for i, cd in enumerate(chunk_dicts)
             ]
@@ -319,6 +335,7 @@ class ProcessingService:
                 {
                     "page_number": chunk.page_number,
                     "section": chunk.section,
+                    "heading_breadcrumb": chunk.heading_breadcrumb,
                 }
                 for chunk in chunks
             ]
@@ -336,6 +353,29 @@ class ProcessingService:
                 uploaded_by=document.uploaded_by,
                 chunk_metadata=chunk_metadata,
             )
+
+            # Post-process: rechunk Coverage Summary xlsx files
+            if file_path.suffix.lower() == ".xlsx" and self.settings.coverage_rechunk_enabled:
+                try:
+                    from ai_ready_rag.services.coverage_rechunker import (
+                        is_coverage_summary,
+                        rechunk_coverage_summary,
+                    )
+
+                    if is_coverage_summary(document):
+                        rechunk_count = await rechunk_coverage_summary(document, db, self.settings)
+                        if rechunk_count > 0:
+                            logger.info(
+                                "Coverage rechunk replaced chunks: doc=%s new_count=%d",
+                                document.id,
+                                rechunk_count,
+                            )
+                except Exception as e:
+                    logger.warning(
+                        "Coverage rechunk failed for %s, keeping original chunks: %s",
+                        document.id,
+                        e,
+                    )
 
             # Calculate processing time
             processing_time_ms = int((time.perf_counter() - start_time) * 1000)

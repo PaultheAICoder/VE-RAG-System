@@ -199,17 +199,21 @@ class DoclingChunker:
             # Extract metadata from chunk
             page_number = None
             section = None
+            heading_breadcrumb = None
             if hasattr(chunk, "meta") and chunk.meta:
                 # DocMeta is an object, not a dict - use getattr
                 page_number = getattr(chunk.meta, "page_number", None)
                 headings = getattr(chunk.meta, "headings", []) or []
                 section = headings[-1] if headings else None
+                if headings:
+                    heading_breadcrumb = " > ".join(headings)
 
             chunk_dict = {
                 "text": chunk.text,
                 "chunk_index": i,
                 "page_number": page_number,
                 "section": section,
+                "heading_breadcrumb": heading_breadcrumb,
                 "source": path.name,
             }
 

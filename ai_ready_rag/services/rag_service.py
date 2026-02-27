@@ -1385,8 +1385,8 @@ class RAGService:
 
     @property
     def recency_weight(self) -> float:
-        """Get recency boost weight from settings."""
-        return self.settings.rag_recency_weight
+        """Get recency boost weight from database setting."""
+        return get_rag_setting("retrieval_recency_weight", self.settings.rag_recency_weight)
 
     @property
     def intent_boost_weight(self) -> float:

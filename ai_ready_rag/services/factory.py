@@ -69,6 +69,7 @@ def get_vector_service(settings: Settings) -> VectorServiceProtocol:
 def get_chunker(
     settings: Settings,
     processing_options: ProcessingOptions | None = None,
+    chunk_size_override: int | None = None,
 ) -> ChunkerProtocol:
     """Factory that returns the appropriate chunker.
 
@@ -117,11 +118,14 @@ def get_chunker(
             else settings.include_image_descriptions
         )
 
-        logger.info("Creating DoclingChunker with OCR=%s", enable_ocr)
+        effective_chunk_size = chunk_size_override or settings.chunk_size
+        logger.info(
+            "Creating DoclingChunker with OCR=%s chunk_size=%d", enable_ocr, effective_chunk_size
+        )
         return DoclingChunker(
             enable_ocr=enable_ocr,
             ocr_language=ocr_language,
-            max_tokens=settings.chunk_size,
+            max_tokens=effective_chunk_size,
             force_full_page_ocr=force_full_page_ocr,
             table_extraction_mode=table_extraction_mode,
             include_image_descriptions=include_image_descriptions,
@@ -140,9 +144,12 @@ def get_chunker(
             else settings.ocr_language
         )
 
-        logger.info("Creating SimpleChunker with OCR=%s", enable_ocr)
+        effective_chunk_size = chunk_size_override or settings.chunk_size
+        logger.info(
+            "Creating SimpleChunker with OCR=%s chunk_size=%d", enable_ocr, effective_chunk_size
+        )
         return SimpleChunker(
-            chunk_size=settings.chunk_size * 4,  # Characters, not tokens
+            chunk_size=effective_chunk_size * 4,  # Characters, not tokens
             chunk_overlap=settings.chunk_overlap * 4,
             enable_ocr=enable_ocr,
             ocr_language=ocr_language,

@@ -340,6 +340,7 @@ export interface RetrievalSettings {
   retrieval_prefetch_multiplier: number;
   retrieval_min_score_dense: number;
   retrieval_min_score_hybrid: number;
+  retrieval_recency_weight: number;
 }
 
 export interface LLMSettings {
