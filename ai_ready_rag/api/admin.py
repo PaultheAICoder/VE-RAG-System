@@ -27,7 +27,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
-from sqlalchemy import case, func, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
 from ai_ready_rag.config import get_settings
@@ -44,10 +44,12 @@ from ai_ready_rag.db.models import (
     CuratedQAKeyword,
     Document,
     QuerySynonym,
+    TagSuggestion,
     User,
     WarmingBatch,
     WarmingQuery,
 )
+from ai_ready_rag.db.models.base import document_tags
 from ai_ready_rag.schemas.admin import (
     ActiveStrategyResponse,
     AdvancedSettingsRequest,
@@ -402,6 +404,17 @@ async def clear_knowledge_base(
         document_service = DocumentService(db, settings)
         deleted_files = document_service.delete_all_documents()
         logger.warning(f"Deleted {deleted_files} documents from database")
+
+        # Post-deletion verification
+        remaining_docs = db.query(Document).count()
+        remaining_doc_tags = db.execute(select(func.count()).select_from(document_tags)).scalar()
+        remaining_suggestions = db.query(TagSuggestion).count()
+        if remaining_docs > 0 or remaining_doc_tags > 0 or remaining_suggestions > 0:
+            logger.error(
+                "Post-deletion verification failed: "
+                f"documents={remaining_docs}, document_tags={remaining_doc_tags}, "
+                f"tag_suggestions={remaining_suggestions}"
+            )
     elif success:
         # Reset all documents to pending status (ready for reprocessing)
         # This ensures Processing Queue shows correct state after KB clear

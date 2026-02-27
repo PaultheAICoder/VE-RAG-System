@@ -934,19 +934,29 @@ class DocumentService:
         Warning:
             This is a destructive operation. Intended for knowledge base reset.
         """
+        from ai_ready_rag.db.models import TagSuggestion
+        from ai_ready_rag.db.models.base import document_tags
+
         # Get all documents
         documents = self.db.query(Document).all()
         count = len(documents)
 
-        # Delete files from storage
+        # Delete files from storage and clean up ingestkit tables
         for doc in documents:
             doc_dir = self.storage_path / doc.id
             if doc_dir.exists():
                 shutil.rmtree(doc_dir)
+            # Clean up ingestkit Excel tables
+            if getattr(doc, "excel_db_table_names", None):
+                self._cleanup_excel_tables(doc.excel_db_table_names)
+            # Clean up ingestkit Forms tables
+            if doc.forms_db_table_names:
+                self._cleanup_forms_tables(doc.forms_db_table_names)
 
-        # Delete all documents from database
-        # synchronize_session=False required because objects are already loaded
-        # in the session above — without it the bulk delete silently fails.
+        # Explicitly delete from association/child tables first
+        # (SQLite does not enforce ON DELETE CASCADE by default)
+        self.db.query(TagSuggestion).delete()
+        self.db.execute(document_tags.delete())
         self.db.query(Document).delete(synchronize_session=False)
         self.db.commit()
 
