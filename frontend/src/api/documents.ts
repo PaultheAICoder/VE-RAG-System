@@ -73,15 +73,20 @@ export async function getDocument(id: string): Promise<Document> {
  * Check for duplicate files before upload.
  */
 export async function checkDuplicates(
-  filenames: string[]
+  filenames: string[],
+  sourcePaths?: string[]
 ): Promise<CheckDuplicatesResponse> {
+  const body: { filenames: string[]; source_paths?: string[] } = { filenames };
+  if (sourcePaths && sourcePaths.length > 0) {
+    body.source_paths = sourcePaths;
+  }
   const response = await fetch('/api/documents/check-duplicates', {
     method: 'POST',
     headers: {
       ...getAuthHeaders(),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ filenames }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -290,6 +295,33 @@ export async function reprocessDocument(documentId: string): Promise<Document> {
       useAuthStore.getState().logout();
     }
     const error = await response.json().catch(() => ({ detail: 'Failed to reprocess document' }));
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Delete ALL documents (admin only). Requires confirmation.
+ */
+export async function deleteAllDocuments(): Promise<{
+  deleted_count: number;
+  success: boolean;
+}> {
+  const response = await fetch('/api/documents', {
+    method: 'DELETE',
+    headers: {
+      ...getAuthHeaders(),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ confirm: true }),
+  });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      useAuthStore.getState().logout();
+    }
+    const error = await response.json().catch(() => ({ detail: 'Failed to delete all documents' }));
     throw new Error(error.detail || `HTTP ${response.status}`);
   }
 

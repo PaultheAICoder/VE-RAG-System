@@ -30,6 +30,8 @@ from ai_ready_rag.schemas.document import (
     BulkReprocessResponse,
     CheckDuplicatesRequest,
     CheckDuplicatesResponse,
+    DeleteAllDocumentsRequest,
+    DeleteAllDocumentsResponse,
     DocumentListResponse,
     DocumentResponse,
     DuplicateInfo,
@@ -204,7 +206,9 @@ async def check_duplicates(
     settings = get_settings()
     service = DocumentService(db, settings)
 
-    duplicates, unique = service.check_duplicates_by_filename(request.filenames)
+    duplicates, unique = service.check_duplicates_by_filename(
+        request.filenames, source_paths=request.source_paths
+    )
 
     return CheckDuplicatesResponse(
         duplicates=[DuplicateInfo(**d) for d in duplicates],
@@ -545,6 +549,55 @@ async def bulk_delete_documents(
     )
 
 
+@router.delete("", response_model=DeleteAllDocumentsResponse)
+async def delete_all_documents(
+    request: DeleteAllDocumentsRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Delete ALL documents (admin only).
+
+    Cascade delete: vectors from vector store, files from storage, records from database.
+    Requires confirm: true in request body.
+    """
+    from ai_ready_rag.services.factory import get_vector_service
+
+    if not request.confirm:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Confirmation required. Set 'confirm: true' to proceed.",
+        )
+
+    settings = get_settings()
+    service = DocumentService(db, settings)
+
+    try:
+        # Clear all vectors from vector store
+        vector_service = get_vector_service(settings)
+        await vector_service.initialize()
+        await vector_service.clear_collection()
+        logger.info(f"Cleared vector collection (admin: {current_user.email})")
+    except Exception as e:
+        logger.error(f"Failed to clear vector collection: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete all documents: {e}",
+        ) from e
+
+    try:
+        # Delete all files and database records
+        deleted_count = service.delete_all_documents()
+        logger.info(f"Deleted all documents (count={deleted_count}, admin={current_user.email})")
+    except Exception as e:
+        logger.error(f"Failed to delete all documents: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete all documents: {e}",
+        ) from e
+
+    return DeleteAllDocumentsResponse(deleted_count=deleted_count, success=True)
+
+
 @router.patch("/{document_id}/tags", response_model=DocumentResponse)
 async def update_document_tags(
     document_id: str,
@@ -711,8 +764,8 @@ async def bulk_reprocess_documents(
             skipped_ids.append(doc_id)
             continue
 
-        # Skip only if currently processing (to avoid double-processing)
-        if document.status == "processing":
+        # Skip if already queued or actively processing (to avoid double-queueing)
+        if document.status in ("processing", "pending"):
             logger.debug(
                 "bulk_reprocess_skip",
                 extra={"document_id": doc_id, "reason": "already_processing"},
@@ -733,7 +786,7 @@ async def bulk_reprocess_documents(
         )
 
         # Reset document state
-        document.status = "processing"
+        document.status = "pending"
         document.chunk_count = None
         document.processed_at = None
         document.error_message = None

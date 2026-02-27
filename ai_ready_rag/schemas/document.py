@@ -70,6 +70,7 @@ class CheckDuplicatesRequest(BaseModel):
     """Request for pre-upload duplicate check."""
 
     filenames: list[str]
+    source_paths: list[str] | None = None
 
     @property
     def validated_filenames(self) -> list[str]:
@@ -139,6 +140,19 @@ class BulkReprocessResponse(BaseModel):
     queued: int
     skipped: int
     skipped_ids: list[str]
+
+
+class DeleteAllDocumentsRequest(BaseModel):
+    """Request to delete all documents."""
+
+    confirm: bool
+
+
+class DeleteAllDocumentsResponse(BaseModel):
+    """Response after deleting all documents."""
+
+    deleted_count: int
+    success: bool
 
 
 class BatchFileResult(BaseModel):

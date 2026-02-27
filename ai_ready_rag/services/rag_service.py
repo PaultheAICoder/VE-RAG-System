@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import httpx
@@ -43,52 +44,94 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Terms that indicate data absence in answers — should not penalize coverage
+DATA_GAP_TERMS = frozenset(
+    {
+        "specified",
+        "offered",
+        "available",
+        "listed",
+        "included",
+        "provided",
+        "found",
+        "mentioned",
+        "shown",
+        "indicated",
+        "disclosed",
+        "reported",
+        "stated",
+        "defined",
+        "documented",
+        "unavailable",
+        "blank",
+        "options",
+        "applicable",
+    }
+)
+
+# Comparison query detection pattern
+COMPARISON_PATTERN = re.compile(
+    r"(?:compar|versus|\bvs\b|difference between|"
+    r"how does .+ (?:differ|compare)|"
+    r".+ compared to .+|"
+    r".+ vs\.? .+)",
+    re.IGNORECASE,
+)
+
+# Regex for detecting data-gap language in answers
+_DATA_GAP_ANSWER_PATTERN = re.compile(
+    r"not specif|not offered|not available|not found|not listed|"
+    r"see options|N/A|not included|no information|not mentioned|"
+    r"does not include|does not have|no .{0,20} data",
+    re.IGNORECASE,
+)
+
+
+def is_comparison_query(query: str) -> bool:
+    """Detect cross-document comparison queries."""
+    return bool(COMPARISON_PATTERN.search(query))
+
+
 # SourceId extraction pattern: [SourceId: {uuid}:{index}]
-SOURCEID_PATTERN = r"\[SourceId:\s*([a-f0-9-]{36}:\d+)\]"
+# Accept [SourceId: uuid:chunk] or (SourceId: uuid:chunk) - LLMs sometimes use parens
+SOURCEID_PATTERN = r"[\[\(]SourceId:\s*([a-f0-9-]{36}:\d+)[\]\)]"
+# Fallback: LLM sometimes omits chunk index, writing just the UUID
+SOURCEID_PATTERN_DOCONLY = r"[\[\(]SourceId:\s*([a-f0-9-]{36})[\]\)]"
 
 
 # -----------------------------------------------------------------------------
 # Prompt Templates
 # -----------------------------------------------------------------------------
 
-RAG_SYSTEM_PROMPT = """You are an Enterprise Knowledge Assistant.
-Answer ONLY using the provided CONTEXT below. Do not guess. Do not use outside knowledge.
+RAG_SYSTEM_PROMPT = """You are an Enterprise Knowledge Assistant. /no_think
+You answer questions using ONLY the provided context documents. Never use outside knowledge.
+Every factual statement MUST include a citation copied exactly from the context block header.
+Example: "The policy limit is $1,000,000 [SourceId: a1b2c3d4-e5f6-7890-abcd-ef1234567890:5]"
+If the context does not contain the answer, respond: NOT FOUND IN PROVIDED DOCUMENTS"""
 
-If the context does not contain the answer, respond exactly:
-NOT FOUND IN PROVIDED DOCUMENTS
-
-Every factual statement MUST include a citation [SourceId: ...].
-
-WRONG (using general knowledge):
-"Vacation policies typically include... eligibility... accrual rates..."
-
-CORRECT (using context):
-"Example Dental provides a combined PTO bank [SourceId: xxx]. PTO requests must be submitted through the HR portal [SourceId: yyy]."
-
-CONTEXT:
+RAG_USER_TEMPLATE = """CONTEXT DOCUMENTS:
 {context}
 
 PREVIOUS CONVERSATION:
 {chat_history}
-"""
 
-CONFIDENCE_PROMPT = """Evaluate how well this answer is supported by the provided context.
+Based ONLY on the context documents above, answer this question. Include [SourceId: ...] citations for every fact.
 
-CONTEXT SUMMARY:
+Question: {query}"""
+
+CONFIDENCE_PROMPT = """Rate how well this answer is grounded in the context. /no_think
+
+CONTEXT:
 {context_summary}
 
 QUESTION: {query}
 
 ANSWER: {answer}
 
-Rate the support level from 0-100:
-- 90-100: Answer is fully and directly supported by context
-- 70-89: Answer is mostly supported, minor inferences made
-- 50-69: Answer is partially supported, some gaps filled
-- 30-49: Answer has weak support, significant assumptions
-- 0-29: Answer is not supported by context
+Score 0-100. If the answer references specific facts, names, or numbers that appear in the context, score 70+. Only score below 30 if the answer is completely fabricated with no basis in the context.
+If the answer correctly states that certain information is not found, not specified, or not available in the context, and the context indeed lacks that information, this is a well-grounded response. Score it 70+.
 
-Respond with ONLY a number between 0 and 100."""
+Respond with ONLY a number."""
 
 
 # -----------------------------------------------------------------------------
@@ -183,6 +226,238 @@ class EvalRAGResult:
 # -----------------------------------------------------------------------------
 # Helper Functions
 # -----------------------------------------------------------------------------
+
+
+@dataclass
+class QueryIntent:
+    """Detected intent from user query for tag-based boosting."""
+
+    preferred_tags: list[str]  # Tags to boost e.g. ["stage:policy"]
+    intent_label: str | None  # For logging e.g. "active_policy"
+    confidence: float  # 0.0-1.0
+    forms_eligible: bool = False  # True when intent matches structured form data
+    intent_labels: list[str] | None = None  # All matched labels e.g. ["active_policy", "gl"]
+
+
+# Insurance domain intent patterns: (compiled_regex, preferred_tags, label)
+# Checked in order; multiple can match and accumulate tags.
+INTENT_PATTERNS: list[tuple[re.Pattern, list[str], str]] = [
+    # Stage patterns
+    (
+        re.compile(
+            r"(?:current|active|bound|in[- ]?force)\b.*?"
+            r"(?:polic|coverage|limit|deductible|premium)",
+            re.IGNORECASE,
+        ),
+        ["stage:policy", "doctype:policy"],
+        "active_policy",
+    ),
+    (
+        re.compile(
+            r"(?:policy)\s+(?:limit|deductible|premium|number|period|effective)",
+            re.IGNORECASE,
+        ),
+        ["stage:policy", "doctype:policy"],
+        "policy_detail",
+    ),
+    (
+        re.compile(r"\b(?:quote[ds]?|proposal[s]?|proposed)\b", re.IGNORECASE),
+        ["stage:quote", "doctype:quote"],
+        "quote",
+    ),
+    (
+        re.compile(r"\b(?:bind|binder|bound|binding)\b", re.IGNORECASE),
+        ["stage:bind"],
+        "bind",
+    ),
+    (
+        re.compile(r"\b(?:submit|submission|application)\b", re.IGNORECASE),
+        ["stage:submission"],
+        "submission",
+    ),
+    (
+        re.compile(r"\b(?:renewal|renew)\b", re.IGNORECASE),
+        ["stage:quote"],
+        "renewal",
+    ),
+    # Doctype patterns
+    (
+        re.compile(r"\b(?:endorsement|rider|amendment)\b", re.IGNORECASE),
+        ["doctype:endorsement"],
+        "endorsement",
+    ),
+    (
+        re.compile(r"\b(?:certificate|cert|coi)\b", re.IGNORECASE),
+        ["doctype:certificate"],
+        "certificate",
+    ),
+    (
+        re.compile(r"(?:loss\s+run|claims\s+history)", re.IGNORECASE),
+        ["doctype:loss_run"],
+        "loss_run",
+    ),
+    (
+        re.compile(r"(?:declaration|dec\s+page)", re.IGNORECASE),
+        ["doctype:coverage_summary"],
+        "dec_page",
+    ),
+    # Topic patterns
+    (
+        re.compile(r"\b(?:earthquake|quake|seismic)\b", re.IGNORECASE),
+        ["topic:earthquake"],
+        "earthquake",
+    ),
+    (
+        re.compile(r"\b(?:property|building|structure)\b", re.IGNORECASE),
+        ["topic:property"],
+        "property",
+    ),
+    (
+        re.compile(r"(?:general\s+liab|(?<!\w)gl(?!\w)|commercial\s+general)", re.IGNORECASE),
+        ["topic:gl"],
+        "gl",
+    ),
+    (
+        re.compile(r"(?:workers?\s+comp|(?<!\w)wc(?!\w))", re.IGNORECASE),
+        ["topic:wc"],
+        "workers_comp",
+    ),
+    (
+        re.compile(r"(?:d\s*&\s*o|directors\s+and\s+officers)", re.IGNORECASE),
+        ["topic:do"],
+        "do",
+    ),
+    (
+        re.compile(r"(?:crime|fidelity|employee\s+dishonesty)", re.IGNORECASE),
+        ["topic:crime"],
+        "crime",
+    ),
+    (
+        re.compile(r"(?:epli|employment\s+practices)", re.IGNORECASE),
+        ["topic:epli"],
+        "epli",
+    ),
+    (
+        re.compile(r"\b(?:umbrella|excess)\b", re.IGNORECASE),
+        ["topic:umbrella"],
+        "umbrella",
+    ),
+    (
+        re.compile(r"\b(?:premium|pricing|cost|rate)\b", re.IGNORECASE),
+        ["doctype:coverage_summary"],
+        "premium",
+    ),
+    (
+        re.compile(
+            r"\b(?:insurer|carrier|underwriter|underwritten|issued\s+by)\b",
+            re.IGNORECASE,
+        ),
+        ["doctype:policy"],
+        "insurer",
+    ),
+]
+
+
+def detect_query_intent(query: str) -> QueryIntent:
+    """Detect intent from user query using regex patterns.
+
+    Scans query against INTENT_PATTERNS. Multiple patterns can match,
+    accumulating preferred_tags (deduplicated). Fast regex-only, no LLM.
+
+    Args:
+        query: User's natural language query.
+
+    Returns:
+        QueryIntent with accumulated preferred_tags and primary label.
+    """
+    preferred_tags: list[str] = []
+    labels: list[str] = []
+    seen_tags: set[str] = set()
+
+    for pattern, tags, label in INTENT_PATTERNS:
+        if pattern.search(query):
+            for tag in tags:
+                if tag not in seen_tags:
+                    seen_tags.add(tag)
+                    preferred_tags.append(tag)
+            labels.append(label)
+
+    from ai_ready_rag.services.forms_query_service import FORMS_ELIGIBLE_INTENTS
+
+    forms_eligible = any(label in FORMS_ELIGIBLE_INTENTS for label in labels)
+
+    return QueryIntent(
+        preferred_tags=preferred_tags,
+        intent_label=labels[0] if labels else None,
+        confidence=min(1.0, len(labels) * 0.5) if labels else 0.0,
+        forms_eligible=forms_eligible,
+        intent_labels=labels if labels else None,
+    )
+
+
+_TAG_CACHE: dict[str, list[tuple[str, str, re.Pattern]]] = {}
+_TAG_CACHE_TIME: float = 0.0
+TAG_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_tag_patterns(db: Session) -> list[tuple[str, str, re.Pattern]]:
+    """Load tags from DB and build regex patterns. Cached 5 min."""
+    global _TAG_CACHE_TIME
+    now = time.time()
+    cache_key = "all"
+    if cache_key in _TAG_CACHE and (now - _TAG_CACHE_TIME) < TAG_CACHE_TTL:
+        return _TAG_CACHE[cache_key]
+
+    from ai_ready_rag.db.models.user import Tag
+
+    tags = db.query(Tag).all()
+
+    patterns: list[tuple[str, str, re.Pattern]] = []
+    for tag in tags:
+        namespace, _, value = tag.name.partition(":")
+
+        match_terms: set[str] = set()
+        if tag.display_name:
+            match_terms.add(tag.display_name.lower())
+        if value:
+            match_terms.add(value.replace("-", " ").replace("_", " ").lower())
+
+        # For year tags like "2025-2026", also match individual years
+        if namespace == "year" and "-" in value:
+            for part in value.split("-"):
+                if len(part) == 4 and part.isdigit():
+                    match_terms.add(part)
+
+        for term in match_terms:
+            if len(term) < 2:
+                continue
+            escaped = re.escape(term)
+            pattern = re.compile(rf"\b{escaped}\b", re.IGNORECASE)
+            patterns.append((tag.name, namespace, pattern))
+
+    _TAG_CACHE[cache_key] = patterns
+    _TAG_CACHE_TIME = now
+    return patterns
+
+
+def enrich_intent_with_tags(intent: QueryIntent, query: str, db: Session) -> QueryIntent:
+    """Add preferred_tags by matching query text against DB tags.
+
+    Scans all tags' display_name/value against query using word-boundary
+    regex. Matched tags are added to intent.preferred_tags (deduped).
+    Does not remove existing preferred_tags from regex detection.
+    """
+    patterns = _get_tag_patterns(db)
+    seen = set(intent.preferred_tags)
+
+    for tag_name, _namespace, pattern in patterns:
+        if tag_name in seen:
+            continue
+        if pattern.search(query):
+            intent.preferred_tags.append(tag_name)
+            seen.add(tag_name)
+
+    return intent
 
 
 def extract_key_terms(text: str) -> set[str]:
@@ -283,6 +558,9 @@ def calculate_coverage(answer: str, context: str) -> float:
     """Estimate how much of the answer is grounded in context.
 
     Returns 0.0-1.0 representing fraction of answer terms found in context.
+    Data-gap indicator terms (e.g. "specified", "available") are excluded
+    from the denominator so that reporting absent data does not penalize
+    the coverage score.
     """
     answer_terms = extract_key_terms(answer)
     context_terms = extract_key_terms(context)
@@ -290,8 +568,16 @@ def calculate_coverage(answer: str, context: str) -> float:
     if not answer_terms:
         return 0.0
 
-    matches = answer_terms & context_terms
-    return len(matches) / len(answer_terms)
+    # Remove data-gap indicator terms from the scoring denominator
+    gap_terms = answer_terms & DATA_GAP_TERMS
+    effective_terms = answer_terms - gap_terms
+
+    # If the answer is entirely gap language, return a floor value
+    if not effective_terms:
+        return 0.7
+
+    matches = effective_terms & context_terms
+    return len(matches) / len(effective_terms)
 
 
 # -----------------------------------------------------------------------------
@@ -672,6 +958,13 @@ class RAGService:
         self._cache_service: CacheService | None = cache_service
         # Live evaluation queue (injected post-construction from main.py)
         self._live_eval_queue = None
+        # Forms query service (lazy — only if forms DB exists)
+        self._forms_query_service = None
+        forms_db = getattr(settings, "forms_db_path", None)
+        if forms_db and Path(forms_db).exists():
+            from ai_ready_rag.services.forms_query_service import FormsQueryService
+
+            self._forms_query_service = FormsQueryService(settings)
 
     # -------------------------------------------------------------------------
     # Dynamic settings from database (single source of truth)
@@ -935,19 +1228,44 @@ class RAGService:
         Returns:
             List of quality-filtered search results
         """
-        # 1. Expand query if enabled
-        if self.enable_query_expansion:
-            # Get db session for synonym lookup (create temporary if needed)
-            from ai_ready_rag.db.database import SessionLocal
+        # 0. Detect intent (fast regex, no LLM)
+        intent = detect_query_intent(query)
 
-            db_session = SessionLocal()
-            try:
+        # 1. Expand query if enabled + forms lookup (share DB session)
+        from ai_ready_rag.db.database import SessionLocal
+
+        forms_results: list[SearchResult] = []
+        db_session = SessionLocal()
+        try:
+            # Enrich intent with dynamic tag matching from DB
+            intent = enrich_intent_with_tags(intent, query, db_session)
+            if intent.preferred_tags:
+                logger.info(f"Intent: {intent.intent_label} -> {intent.preferred_tags}")
+
+            if self.enable_query_expansion:
                 queries = expand_query(query, db=db_session)
-            finally:
-                db_session.close()
-            logger.debug(f"Query expansion: {len(queries)} variants")
-        else:
-            queries = [query]
+                logger.debug(f"Query expansion: {len(queries)} variants")
+            else:
+                queries = [query]
+
+            # 1.5 Query forms DB for structured context
+            if intent.forms_eligible and self._forms_query_service:
+                try:
+                    forms_results = self._forms_query_service.query_forms(
+                        intent=intent,
+                        user_tags=user_tags,
+                        db=db_session,
+                        max_results=min(4, max_chunks // 2),
+                    )
+                    if forms_results:
+                        logger.info(
+                            f"Forms query: {len(forms_results)} results "
+                            f"for intent={intent.intent_label}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Forms query failed, continuing with vector only: {e}")
+        finally:
+            db_session.close()
 
         candidate_limit = min(max_chunks * 3, self.dedup_candidates_cap)
 
@@ -960,12 +1278,13 @@ class RAGService:
                 tenant_id=tenant_id,
                 limit=candidate_limit,
                 score_threshold=0.0,  # Filter later for more control
+                preferred_tags=intent.preferred_tags or None,
             )
             if candidates:
                 query_results.append(candidates)
 
-        # Early exit: no results from any query
-        if not query_results:
+        # Early exit: no results from any query (unless forms provided results)
+        if not query_results and not forms_results:
             return []
 
         # 3. Interleave results for diversity (Spark pattern)
@@ -982,9 +1301,17 @@ class RAGService:
                         seen_content.add(content_hash)
                         all_candidates.append(chunk)
 
+        # 3.1 Prepend forms results (structured data ranks above vector results)
+        if forms_results:
+            all_candidates = forms_results + all_candidates
+
         # 3.5 Apply recency boost (before score filter so boosted scores are filtered correctly)
         if self.recency_weight > 0:
             all_candidates = self._apply_recency_boost(all_candidates)
+
+        # 3.6 Apply intent boost (after recency, before score filter)
+        if self.intent_boost_weight > 0 and intent.preferred_tags:
+            all_candidates = self._apply_intent_boost(all_candidates, intent)
 
         # 4. Filter by minimum similarity (Qdrant cosine is 0-1)
         filtered = [c for c in all_candidates if c.score >= self.min_similarity_score]
@@ -1061,6 +1388,13 @@ class RAGService:
         """Get recency boost weight from database setting."""
         return get_rag_setting("retrieval_recency_weight", self.settings.rag_recency_weight)
 
+    @property
+    def intent_boost_weight(self) -> float:
+        """Get intent boost weight from database settings."""
+        return get_rag_setting(
+            "retrieval_intent_boost_weight", self.settings.rag_intent_boost_weight
+        )
+
     def _apply_recency_boost(self, chunks: list[SearchResult]) -> list[SearchResult]:
         """Boost scores of newer documents using year tags + content dates.
 
@@ -1121,6 +1455,36 @@ class RAGService:
 
         return None
 
+    def _apply_intent_boost(
+        self, chunks: list[SearchResult], intent: QueryIntent
+    ) -> list[SearchResult]:
+        """Boost scores of chunks whose tags match detected intent.
+
+        Follows the same pattern as _apply_recency_boost. Blends original
+        score with tag-overlap score using configurable weight.
+
+        Args:
+            chunks: List of search results to rerank.
+            intent: Detected query intent with preferred_tags.
+
+        Returns:
+            Reranked list with intent-boosted scores.
+        """
+        weight = self.intent_boost_weight
+        preferred_set = set(intent.preferred_tags)
+        num_preferred = len(preferred_set)
+
+        if num_preferred == 0:
+            return chunks
+
+        for chunk in chunks:
+            chunk_tags = set(chunk.tags or [])
+            overlap = len(chunk_tags & preferred_set) / num_preferred
+            chunk.score = (1 - weight) * chunk.score + weight * overlap
+
+        chunks.sort(key=lambda c: c.score, reverse=True)
+        return chunks
+
     async def evaluate_hallucination(
         self,
         query: str,
@@ -1144,45 +1508,64 @@ class RAGService:
         if not self.enable_hallucination_check:
             return 50  # Default neutral score
 
-        try:
-            llm = ChatOllama(
-                base_url=self.ollama_url,
-                model=model,
-                temperature=0.0,  # Deterministic for evaluation
-                timeout=10,  # Shorter timeout for eval
-            )
+        prompt = CONFIDENCE_PROMPT.format(
+            context_summary=context_summary[:8000],  # Enough to cover most retrieved chunks
+            query=query,
+            answer=answer[:2000],  # Reasonable limit for eval
+        )
 
-            prompt = CONFIDENCE_PROMPT.format(
-                context_summary=context_summary[:4000],  # Reasonable limit for eval
-                query=query,
-                answer=answer[:2000],  # Reasonable limit for eval
-            )
+        # Retry once on transient failures (Ollama busy/timeout)
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                # Use raw Ollama API instead of ChatOllama to avoid
+                # thinking-token stripping bug in langchain-ollama
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        f"{self.ollama_url}/api/chat",
+                        json={
+                            "model": model,
+                            "stream": False,
+                            "think": False,  # Disable thinking for fast numeric response
+                            "options": {"temperature": 0, "num_predict": 16},
+                            "messages": [{"role": "user", "content": prompt}],
+                        },
+                        timeout=60.0,
+                    )
+                    resp.raise_for_status()
+                    score_text = resp.json()["message"]["content"].strip()
 
-            response = await llm.ainvoke([("human", prompt)])
-            score_text = response.content.strip()
+                # Extract numeric score
+                match = re.search(r"\d+", score_text)
+                if not match:
+                    logger.warning(
+                        f"[RAG] LLM self-assessment returned non-numeric: '{score_text[:100]}'"
+                    )
+                    return 50  # Fallback to neutral
 
-            # Extract numeric score
-            match = re.search(r"\d+", score_text)
-            if not match:
-                logger.warning(
-                    f"[RAG] LLM self-assessment returned non-numeric: '{score_text[:100]}'"
+                score = int(match.group())
+                score = min(100, max(0, score))
+
+                logger.info(
+                    f"[RAG] Hallucination check: score={score} | Raw response: '{score_text[:200]}'"
                 )
-                return 50  # Fallback to neutral
 
-            score = int(match.group())
-            score = min(100, max(0, score))
+                return score
 
-            # Log low scores for diagnosis (debug level)
-            if score <= 20:
-                logger.debug(
-                    f"[RAG] Low LLM self-assessment: {score}% | Raw response: '{score_text[:50]}'"
-                )
+            except Exception as e:
+                last_error = e
+                if attempt == 0:
+                    logger.info(
+                        f"[RAG] Hallucination check attempt 1 failed "
+                        f"({type(e).__name__}: {e}), retrying..."
+                    )
+                    continue
 
-            return score
-
-        except Exception as e:
-            logger.warning(f"Hallucination check failed: {e}")
-            return 50  # Fallback to neutral
+        logger.warning(
+            f"Hallucination check failed after 2 attempts "
+            f"({type(last_error).__name__}: {last_error})"
+        )
+        return 50  # Fallback to neutral
 
     async def count_tokens_ollama(self, text: str, model: str) -> int:
         """Count tokens using Ollama's native tokenizer.
@@ -1257,25 +1640,48 @@ class RAGService:
         """
         source_ids = re.findall(SOURCEID_PATTERN, answer)
 
-        # Build lookup map from chunks
+        # Build lookup maps from chunks
         chunk_map: dict[str, SearchResult] = {}
+        doc_map: dict[str, SearchResult] = {}  # doc_id -> first (highest-scored) chunk
         for chunk in chunks:
             sid = f"{chunk.document_id}:{chunk.chunk_index}"
             chunk_map[sid] = chunk
+            if chunk.document_id not in doc_map:
+                doc_map[chunk.document_id] = chunk
+
+        # Fallback: if LLM used doc-only IDs (no :chunk), find them too
+        if not source_ids:
+            doc_only_ids = re.findall(SOURCEID_PATTERN_DOCONLY, answer)
+            for doc_id in doc_only_ids:
+                if doc_id in doc_map:
+                    chunk = doc_map[doc_id]
+                    source_ids.append(f"{doc_id}:{chunk.chunk_index}")
 
         citations: list[Citation] = []
         seen_ids: set[str] = set()
+        seen_doc_ids: set[str] = set()
 
         for source_id in source_ids:
             if source_id in seen_ids:
                 continue
             seen_ids.add(source_id)
 
-            if source_id not in chunk_map:
-                logger.warning(f"Unknown SourceId in answer: {source_id}")
-                continue
+            if source_id in chunk_map:
+                chunk = chunk_map[source_id]
+            else:
+                # Fallback: LLM cited correct doc but wrong chunk index
+                doc_id = source_id.split(":")[0] if ":" in source_id else source_id
+                if doc_id in doc_map and doc_id not in seen_doc_ids:
+                    chunk = doc_map[doc_id]
+                    logger.info(f"Citation fallback: {source_id} -> {doc_id}:{chunk.chunk_index}")
+                else:
+                    logger.warning(f"Unknown SourceId in answer: {source_id}")
+                    continue
 
-            chunk = chunk_map[source_id]
+            # Deduplicate by document to avoid multiple citations to same doc
+            if chunk.document_id in seen_doc_ids:
+                continue
+            seen_doc_ids.add(chunk.document_id)
 
             # Create snippet (first 200 chars)
             snippet = chunk.chunk_text[:200]
@@ -1309,6 +1715,7 @@ class RAGService:
         answer: str,
         context: str,
         llm_score: int,
+        query: str = "",
     ) -> ConfidenceScore:
         """Combine multiple signals for robust confidence.
 
@@ -1317,6 +1724,7 @@ class RAGService:
             answer: LLM-generated answer
             context: Combined context text
             llm_score: LLM self-assessment (0-100)
+            query: Original user query (used for comparison detection)
 
         Returns:
             ConfidenceScore with breakdown
@@ -1332,6 +1740,11 @@ class RAGService:
 
         retrieval_score = sum(r.score for r in retrieval_results) / len(retrieval_results)
         coverage_score = calculate_coverage(answer, context)
+
+        # Apply coverage floor for comparison queries with data gaps
+        if query and is_comparison_query(query) and _DATA_GAP_ANSWER_PATTERN.search(answer):
+            coverage_score = max(coverage_score, 0.65)
+
         llm_normalized = llm_score / 100
 
         # Weighted combination: retrieval (30%) + coverage (40%) + LLM (30%)
@@ -1430,16 +1843,23 @@ class RAGService:
             ROUTING_RETRIEVE or ROUTING_DIRECT
         """
         try:
-            llm = ChatOllama(
-                base_url=self.ollama_url,
-                model=model,
-                temperature=0.0,  # Deterministic for routing
-                timeout=10,  # Short timeout for routing
-            )
-
             prompt = ROUTER_PROMPT.format(question=query)
-            response = await llm.ainvoke([("human", prompt)])
-            decision = response.content.strip().upper()
+
+            # Use raw Ollama API to avoid ChatOllama thinking-token bug
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{self.ollama_url}/api/chat",
+                    json={
+                        "model": model,
+                        "stream": False,
+                        "think": False,  # Disable thinking for fast classification
+                        "options": {"temperature": 0, "num_predict": 16},
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                    timeout=30.0,
+                )
+                resp.raise_for_status()
+                decision = resp.json()["message"]["content"].strip().upper()
 
             # Parse response - look for DIRECT or RETRIEVE
             if ROUTING_DIRECT in decision:
@@ -1736,17 +2156,7 @@ class RAGService:
 
         # 3. Apply token budget
         chat_history = request.chat_history or []
-        context_str = self._build_context_prompt(context_chunks)
-        history_str = (
-            "\n".join(f"{m.role}: {m.content}" for m in chat_history)
-            if chat_history
-            else "No previous conversation."
-        )
-
-        system_prompt = RAG_SYSTEM_PROMPT.format(
-            context=context_str,
-            chat_history=history_str,
-        )
+        system_prompt = RAG_SYSTEM_PROMPT
 
         token_budget = TokenBudget(model, self.settings)
 
@@ -1764,14 +2174,28 @@ class RAGService:
         except TokenBudgetExceededError:
             raise
 
+        # Build prompts AFTER token budget allocation (uses trimmed chunks)
+        context_str = self._build_context_prompt(final_chunks)
+        history_str = truncated_history if truncated_history else "No previous conversation."
+        user_prompt = RAG_USER_TEMPLATE.format(
+            context=context_str,
+            chat_history=history_str,
+            query=request.query,
+        )
+
         # 4-5. Generate response
-        # Debug logging: capture prompt details for diagnosis
         logger.debug(
-            f"[RAG] Query: {request.query[:100]}... | "
+            f"[RAG] Query: {request.query[:100]} | "
             f"Context chunks: {len(final_chunks)} | "
             f"Context chars: {len(context_str)} | "
             f"History entries: {len(chat_history)}"
         )
+        for i, c in enumerate(final_chunks):
+            logger.debug(
+                f"[RAG] Chunk {i}: doc={c.document_name} "
+                f"sid={c.document_id}:{c.chunk_index} "
+                f"score={c.score:.3f} tags={c.tags}"
+            )
 
         try:
             llm = ChatOllama(
@@ -1783,16 +2207,14 @@ class RAGService:
 
             messages = [
                 ("system", system_prompt),
-                ("human", request.query),
+                ("human", user_prompt),
             ]
 
             response = await llm.ainvoke(messages)
             answer = response.content
 
-            # Debug logging: capture LLM response
             logger.debug(
-                f"[RAG] LLM response length: {len(answer)} chars | "
-                f"First 200 chars: {answer[:200]}..."
+                f"[RAG] LLM response length: {len(answer)} chars | First 200 chars: {answer[:200]}"
             )
 
         except Exception as e:
@@ -1807,10 +2229,14 @@ class RAGService:
         # 7. Calculate hybrid confidence with LLM self-assessment
         context_for_coverage = "\n".join(c.chunk_text for c in final_chunks)
 
+        # Strip any leaked thinking artifacts from the answer before evaluation
+        # qwen3 sometimes leaks thinking into visible content
+        clean_answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
+
         # Evaluate hallucination (Spark feature)
         llm_score = await self.evaluate_hallucination(
             query=request.query,
-            answer=answer,
+            answer=clean_answer,
             context_summary=context_for_coverage,
             model=model,
         )
@@ -1820,25 +2246,67 @@ class RAGService:
             answer=answer,
             context=context_for_coverage,
             llm_score=llm_score,
+            query=request.query,
         )
 
-        # Citation guard: If context was provided but LLM cited nothing, cap confidence
-        # and replace answer with standard message (don't show generic responses)
+        # Citation guard: If context was provided but LLM cited nothing
         if len(final_chunks) > 0 and len(citations) == 0:
-            logger.warning(
-                f"[RAG] No citations despite {len(final_chunks)} context chunks - "
-                f"replacing generic answer and capping confidence to 30%"
-            )
-            answer = (
-                "I found relevant documents but was unable to extract a specific answer. "
-                "Please contact your HR department or refer to the employee handbook for assistance."
-            )
-            confidence = ConfidenceScore(
-                overall=min(confidence.overall, 30),
-                retrieval_score=confidence.retrieval_score,
-                coverage_score=confidence.coverage_score,
-                llm_score=confidence.llm_score,
-            )
+            if llm_score >= 70:
+                # LLM answer is well-grounded but just missing SourceId markers —
+                # synthesize citations from top chunks instead of discarding the answer
+                logger.info(
+                    f"[RAG] No citations but hallucination score={llm_score} — "
+                    f"synthesizing citations from top {min(3, len(final_chunks))} chunks"
+                )
+                seen_doc_ids: set[str] = set()
+                for chunk in final_chunks[:3]:
+                    if chunk.document_id in seen_doc_ids:
+                        continue
+                    seen_doc_ids.add(chunk.document_id)
+                    snippet = chunk.chunk_text[:200]
+                    if len(chunk.chunk_text) > 200:
+                        snippet += "..."
+                    snippet_full = chunk.chunk_text[:1000]
+                    if len(chunk.chunk_text) > 1000:
+                        snippet_full += "..."
+                    citations.append(
+                        Citation(
+                            source_id=f"{chunk.document_id}:{chunk.chunk_index}",
+                            document_id=chunk.document_id,
+                            document_name=chunk.document_name,
+                            chunk_index=chunk.chunk_index,
+                            page_number=chunk.page_number,
+                            section=chunk.section,
+                            relevance_score=chunk.score,
+                            snippet=snippet,
+                            snippet_full=snippet_full,
+                        )
+                    )
+                grounded = len(citations) > 0
+                # Cap confidence slightly since citations were inferred
+                confidence = ConfidenceScore(
+                    overall=min(confidence.overall, 50),
+                    retrieval_score=confidence.retrieval_score,
+                    coverage_score=confidence.coverage_score,
+                    llm_score=confidence.llm_score,
+                )
+            else:
+                # LLM answer is poorly grounded AND has no citations — replace it
+                logger.warning(
+                    f"[RAG] No citations despite {len(final_chunks)} context chunks "
+                    f"(hallucination score={llm_score}) - replacing with fallback"
+                )
+                answer = (
+                    "I found relevant documents but was unable to extract a specific answer. "
+                    "Please try rephrasing your question or contact your administrator "
+                    "for assistance."
+                )
+                confidence = ConfidenceScore(
+                    overall=min(confidence.overall, 30),
+                    retrieval_score=confidence.retrieval_score,
+                    coverage_score=confidence.coverage_score,
+                    llm_score=confidence.llm_score,
+                )
 
         # 8. Determine action based on confidence threshold
         if confidence.overall >= self.confidence_threshold:

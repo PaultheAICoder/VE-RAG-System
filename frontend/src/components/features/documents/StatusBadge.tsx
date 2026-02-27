@@ -13,9 +13,9 @@ const statusConfig = {
     label: 'Ready',
   },
   pending: {
-    variant: 'warning' as const,
+    variant: 'default' as const,
     icon: Clock,
-    label: 'Pending',
+    label: 'Queued',
   },
   processing: {
     variant: 'warning' as const,
@@ -38,7 +38,10 @@ export function StatusBadge({ status }: StatusBadgeProps) {
       <span className="inline-flex items-center gap-1">
         <Icon
           size={12}
-          className={status === 'processing' ? 'animate-spin' : ''}
+          className={
+            status === 'processing' ? 'animate-spin' :
+            status === 'pending' ? 'animate-pulse' : ''
+          }
         />
         {config.label}
       </span>

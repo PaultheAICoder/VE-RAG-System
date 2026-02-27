@@ -41,7 +41,7 @@ def mock_settings():
     settings.rag_max_response_tokens = 1024
     settings.rag_system_prompt_tokens = 500
     settings.rag_min_similarity_score = 0.3
-    settings.rag_max_chunks_per_doc = 3
+    settings.rag_max_chunks_per_doc = 5
     settings.rag_total_context_chunks = 8
     settings.rag_dedup_candidates_cap = 15
     settings.rag_chunk_overlap_threshold = 0.9

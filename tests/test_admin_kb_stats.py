@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, patch
 
 from fastapi import status
+from sqlalchemy import func, select
 
 
 class TestKnowledgeBaseStats:
@@ -215,3 +216,71 @@ class TestClearKnowledgeBase:
         data = response.json()
         assert data["success"] is False
         assert data["deleted_chunks"] == 0
+
+
+class TestClearKnowledgeBaseIntegration:
+    """Integration tests: verify SQLite rows are actually deleted."""
+
+    @patch("ai_ready_rag.api.admin.get_vector_service")
+    def test_delete_removes_all_sqlite_rows(
+        self, mock_get_vs, client, admin_headers, db, sample_tag, admin_user
+    ):
+        """Integration test: documents, document_tags, tag_suggestions are deleted."""
+        from ai_ready_rag.db.models import Document, TagSuggestion
+        from ai_ready_rag.db.models.base import document_tags
+
+        # Create test document with tag association
+        doc = Document(
+            filename="test.pdf",
+            original_filename="test.pdf",
+            file_path="/tmp/test.pdf",
+            file_type="pdf",
+            file_size=1024,
+            status="ready",
+            uploaded_by=admin_user.id,
+        )
+        doc.tags = [sample_tag]
+        db.add(doc)
+        db.flush()
+
+        # Create tag suggestion
+        suggestion = TagSuggestion(
+            document_id=doc.id,
+            tag_name="test:tag",
+            display_name="Test Tag",
+            namespace="test",
+            source="path",
+            strategy_id="default",
+        )
+        db.add(suggestion)
+        db.flush()
+
+        # Verify rows exist before deletion
+        assert db.query(Document).count() == 1
+        assert db.execute(select(func.count()).select_from(document_tags)).scalar() == 1
+        assert db.query(TagSuggestion).count() == 1
+
+        # Mock vector service (no real Qdrant needed)
+        mock_instance = AsyncMock()
+        mock_instance.get_extended_stats = AsyncMock(
+            return_value={"total_chunks": 0, "unique_files": 0}
+        )
+        mock_instance.clear_collection = AsyncMock(return_value=True)
+        mock_get_vs.return_value = mock_instance
+
+        # Call the KB clear endpoint
+        response = client.request(
+            "DELETE",
+            "/api/admin/knowledge-base",
+            json={"confirm": True, "delete_source_files": True},
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+
+        # Verify all SQLite rows are deleted
+        assert db.query(Document).count() == 0
+        assert db.query(TagSuggestion).count() == 0
+        assert db.execute(select(func.count()).select_from(document_tags)).scalar() == 0

@@ -61,12 +61,14 @@ class ReindexService:
         self,
         triggered_by: str,
         settings_changed: dict | None = None,
+        mode: str = "all",
     ) -> ReindexJob:
         """Create new reindex job.
 
         Args:
             triggered_by: User ID who triggered the reindex
             settings_changed: Dict of changed settings (key -> {old, new})
+            mode: Document selection mode — "all", "ready", or "failed"
 
         Returns:
             Created ReindexJob
@@ -79,8 +81,17 @@ class ReindexService:
         if active_job:
             raise ValueError(f"Reindex job {active_job.id} already in progress")
 
-        # Count documents
-        total_docs = self.db.query(Document).filter(Document.status == "ready").count()
+        # Count documents based on mode
+        if mode == "all":
+            total_docs = self.db.query(Document).count()
+        elif mode == "failed":
+            total_docs = (
+                self.db.query(Document)
+                .filter(Document.status.in_(["failed", "processing"]))
+                .count()
+            )
+        else:  # "ready"
+            total_docs = self.db.query(Document).filter(Document.status == "ready").count()
 
         # Generate unique temp collection name
         temp_collection = f"documents_reindex_{uuid.uuid4().hex[:8]}"

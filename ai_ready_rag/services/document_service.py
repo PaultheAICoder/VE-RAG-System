@@ -39,11 +39,18 @@ class DocumentService:
         self.settings = settings
         self.storage_path = Path(settings.upload_dir)
 
-    def check_duplicates_by_filename(self, filenames: list[str]) -> tuple[list[dict], list[str]]:
+    def check_duplicates_by_filename(
+        self, filenames: list[str], source_paths: list[str] | None = None
+    ) -> tuple[list[dict], list[str]]:
         """Check which filenames already exist in the database.
+
+        When source_paths are provided, duplicates are identified by the
+        (original_filename, source_path) composite key so that files with
+        the same name but different folder origins are treated as unique.
 
         Args:
             filenames: List of filenames to check
+            source_paths: Optional parallel list of source paths
 
         Returns:
             Tuple of (duplicates list, unique filenames list)
@@ -52,10 +59,14 @@ class DocumentService:
         duplicates = []
         unique = []
 
-        for filename in filenames:
-            existing = (
-                self.db.query(Document).filter(Document.original_filename == filename).first()
-            )
+        for i, filename in enumerate(filenames):
+            source_path = source_paths[i] if source_paths and i < len(source_paths) else None
+
+            query = self.db.query(Document).filter(Document.original_filename == filename)
+            if source_path:
+                query = query.filter(Document.source_path == source_path)
+
+            existing = query.first()
 
             if existing:
                 duplicates.append(
@@ -186,12 +197,13 @@ class DocumentService:
         # Compute content hash
         content_hash = compute_file_hash(file_path)
 
-        # Check for duplicate
-        existing = (
-            self.db.query(Document)
-            .filter(Document.content_hash == content_hash, Document.id != document.id)
-            .first()
+        # Check for duplicate using content_hash + source_path composite key
+        dup_query = self.db.query(Document).filter(
+            Document.content_hash == content_hash, Document.id != document.id
         )
+        if source_path:
+            dup_query = dup_query.filter(Document.source_path == source_path)
+        existing = dup_query.first()
         if existing:
             if replace and vector_service is not None:
                 # Replace mode: delete existing document atomically
@@ -922,18 +934,44 @@ class DocumentService:
         Warning:
             This is a destructive operation. Intended for knowledge base reset.
         """
+        from ai_ready_rag.db.models import TagSuggestion
+        from ai_ready_rag.db.models.base import document_tags
+
         # Get all documents
         documents = self.db.query(Document).all()
         count = len(documents)
 
-        # Delete files from storage
+        # Delete files from storage and clean up ingestkit tables
         for doc in documents:
             doc_dir = self.storage_path / doc.id
             if doc_dir.exists():
                 shutil.rmtree(doc_dir)
+            # Clean up ingestkit Excel tables
+            if getattr(doc, "excel_db_table_names", None):
+                self._cleanup_excel_tables(doc.excel_db_table_names)
+            # Clean up ingestkit Forms tables
+            if doc.forms_db_table_names:
+                self._cleanup_forms_tables(doc.forms_db_table_names)
 
-        # Delete all documents from database
-        self.db.query(Document).delete()
+        # Explicitly delete from association/child tables first
+        # (SQLite does not enforce ON DELETE CASCADE by default)
+        self.db.query(TagSuggestion).delete()
+        self.db.execute(document_tags.delete())
+        self.db.query(Document).delete(synchronize_session=False)
         self.db.commit()
+
+        # Post-deletion verification
+        remaining = self.db.query(Document).count()
+        if remaining > 0:
+            logger.error(
+                f"delete_all_documents: {remaining} rows remain after deletion — "
+                "attempting per-object fallback"
+            )
+            for doc in self.db.query(Document).all():
+                self.db.delete(doc)
+            self.db.commit()
+            remaining = self.db.query(Document).count()
+            if remaining > 0:
+                logger.error(f"delete_all_documents: fallback failed, {remaining} rows remain")
 
         return count
