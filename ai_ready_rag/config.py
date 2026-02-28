@@ -1,6 +1,8 @@
 """Configuration management using Pydantic settings."""
 
 import logging
+import os
+import warnings
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -465,4 +467,19 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    if os.environ.get("QDRANT_URL"):
+        warnings.warn(
+            "QDRANT_URL env var is set but Qdrant has been removed. "
+            "The system now uses pgvector. This variable has no effect.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if os.environ.get("QDRANT_COLLECTION"):
+        warnings.warn(
+            "QDRANT_COLLECTION env var is set but Qdrant has been removed. "
+            "The system now uses pgvector. This variable has no effect.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    return settings

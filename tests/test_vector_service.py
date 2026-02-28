@@ -9,10 +9,10 @@ import threading
 import unittest.mock
 
 import pytest
-from qdrant_client.http import models
 
 from ai_ready_rag.core.exceptions import EmbeddingError
 from ai_ready_rag.services.vector_service import (
+    QDRANT_AVAILABLE,
     CollectionStats,
     HealthStatus,
     IndexResult,
@@ -20,14 +20,19 @@ from ai_ready_rag.services.vector_service import (
     VectorService,
 )
 
+if QDRANT_AVAILABLE:
+    from qdrant_client.http import models  # type: ignore[import]
+else:
+    models = None  # type: ignore[assignment]
+
 
 class TestVectorServiceInit:
     """Test VectorService initialization (Issue 005)."""
 
+    @pytest.mark.skipif(not QDRANT_AVAILABLE, reason="qdrant-client not installed")
     def test_init_with_defaults(self):
         """VectorService can be instantiated with defaults."""
         vs = VectorService()
-        assert vs.qdrant_url == "http://localhost:6333"
         assert vs.ollama_url == "http://localhost:11434"
         assert vs.collection_name == "documents"
         assert vs.embedding_model == "nomic-embed-text"
@@ -35,6 +40,7 @@ class TestVectorServiceInit:
         assert vs.max_tokens == 8192
         assert vs.tenant_id == "default"
 
+    @pytest.mark.skipif(not QDRANT_AVAILABLE, reason="qdrant-client not installed")
     def test_init_with_custom_params(self):
         """VectorService can be instantiated with custom params."""
         vs = VectorService(
@@ -46,7 +52,6 @@ class TestVectorServiceInit:
             max_tokens=4096,
             tenant_id="test-tenant",
         )
-        assert vs.qdrant_url == "http://custom:9999"
         assert vs.ollama_url == "http://ollama:11111"
         assert vs.collection_name == "test_collection"
         assert vs.embedding_model == "custom-model"
@@ -713,6 +718,7 @@ class TestCollectionManagementIntegration:
         assert "DESTRUCTIVE OPERATION" in caplog.text
 
 
+@pytest.mark.skipif(not QDRANT_AVAILABLE, reason="qdrant-client not installed")
 class TestAccessFilterConstruction:
     """Unit tests for access filter construction logic (Issue 012)."""
 
@@ -955,6 +961,7 @@ class TestIndexingRollback:
         assert stats_after.total_chunks == 0  # Rolled back
 
 
+@pytest.mark.skipif(not QDRANT_AVAILABLE, reason="qdrant-client not installed")
 class TestSparseEmbedding:
     """Tests for sparse embedding methods (Issue #282)."""
 
@@ -1077,6 +1084,7 @@ def _make_service(hybrid=True, has_sparse=True, prefetch_multiplier=3):
     return vs
 
 
+@pytest.mark.skipif(not QDRANT_AVAILABLE, reason="qdrant-client not installed")
 class TestHybridIndexing:
     """Tests for hybrid search indexing (Issue #284)."""
 
@@ -1357,6 +1365,7 @@ class TestNormalizeScores:
             assert p.score == 1.0
 
 
+@pytest.mark.skipif(not QDRANT_AVAILABLE, reason="qdrant-client not installed")
 class TestHybridSearch:
     """Tests for hybrid search execution paths (Issue #285)."""
 
@@ -1569,6 +1578,7 @@ class TestHybridSearch:
         assert results[0].score == 1.0
 
 
+@pytest.mark.skipif(not QDRANT_AVAILABLE, reason="qdrant-client not installed")
 class TestHybridAccessFilterParity:
     """Tests for access filter parity on both prefetch queries (Issue #285)."""
 

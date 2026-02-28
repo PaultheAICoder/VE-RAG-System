@@ -16,7 +16,6 @@ class TestVERagVectorStoreAdapter:
         from ai_ready_rag.services.ingestkit_adapters import VERagVectorStoreAdapter
 
         defaults = {
-            "qdrant_url": "http://localhost:6333",
             "collection_name": "documents",
             "embedding_dimension": 768,
             "document_id": "doc-123",
