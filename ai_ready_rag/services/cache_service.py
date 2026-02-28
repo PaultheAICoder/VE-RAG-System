@@ -61,7 +61,7 @@ class CacheStats:
     enabled: bool
     total_entries: int
     memory_entries: int
-    sqlite_entries: int
+    db_entries: int
     hit_count: int = 0
     miss_count: int = 0
 
@@ -720,13 +720,13 @@ class CacheService:
 
         db = self._get_session()
         try:
-            sqlite_count = db.query(ResponseCache).count()
+            db_count = db.query(ResponseCache).count()
 
             return CacheStats(
                 enabled=self.enabled,
-                total_entries=sqlite_count,  # SQLite is source of truth
+                total_entries=db_count,
                 memory_entries=len(self.memory),
-                sqlite_entries=sqlite_count,
+                db_entries=db_count,
                 hit_count=self._hit_count,
                 miss_count=self._miss_count,
             )

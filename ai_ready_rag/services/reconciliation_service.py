@@ -1,6 +1,6 @@
-"""SQLite ↔ pgvector reconciliation service.
+"""PostgreSQL ↔ pgvector reconciliation service.
 
-Detects and optionally repairs drift between SQLite document metadata
+Detects and optionally repairs drift between PostgreSQL document metadata
 and the pgvector chunk_vectors table.
 """
 
@@ -19,12 +19,12 @@ async def reconcile(
     vector_service,
     dry_run: bool = True,
 ) -> dict:
-    """Detect and optionally repair SQLite ↔ pgvector drift.
+    """Detect and optionally repair PostgreSQL ↔ pgvector drift.
 
     Scenarios detected:
-    - ghost_docs: SQLite status=ready but 0 vectors in chunk_vectors
-    - orphan_vectors: chunk_vectors has rows for document_id not in SQLite
-    - chunk_count_mismatch: SQLite chunk_count != actual vector count
+    - ghost_docs: PostgreSQL status=ready but 0 vectors in chunk_vectors
+    - orphan_vectors: chunk_vectors has rows for document_id not in PostgreSQL
+    - chunk_count_mismatch: PostgreSQL chunk_count != actual vector count
 
     Args:
         db: SQLAlchemy session
@@ -37,9 +37,9 @@ async def reconcile(
     issues: list[dict] = []
     repairs: list[dict] = []
 
-    # 1. Get all documents from SQLite
+    # 1. Get all documents from PostgreSQL
     all_docs = db.query(Document).all()
-    sqlite_doc_ids = {doc.id for doc in all_docs}
+    db_doc_ids = {doc.id for doc in all_docs}
     ready_docs = [d for d in all_docs if d.status == "ready"]
 
     # 2. Get all unique document_ids from chunk_vectors (pgvector SQL)
@@ -62,7 +62,7 @@ async def reconcile(
         vector_doc_ids.add(row[0])
         vector_doc_counts[row[0]] = row[1]
 
-    # 3. Detect ghost docs: ready in SQLite but 0 vectors in chunk_vectors
+    # 3. Detect ghost docs: ready in PostgreSQL but 0 vectors in chunk_vectors
     for doc in ready_docs:
         vector_count = vector_doc_counts.get(doc.id, 0)
         if vector_count == 0:
@@ -71,8 +71,8 @@ async def reconcile(
                     "document_id": doc.id,
                     "filename": doc.original_filename,
                     "issue": "ghost_doc",
-                    "detail": "status=ready in SQLite but 0 vectors in chunk_vectors",
-                    "sqlite_chunks": doc.chunk_count,
+                    "detail": "status=ready in PostgreSQL but 0 vectors in chunk_vectors",
+                    "db_chunks": doc.chunk_count,
                     "vector_chunks": 0,
                 }
             )
@@ -87,16 +87,16 @@ async def reconcile(
                     }
                 )
 
-    # 4. Detect orphan vectors: in chunk_vectors but not in SQLite
-    orphan_ids = vector_doc_ids - sqlite_doc_ids
+    # 4. Detect orphan vectors: in chunk_vectors but not in PostgreSQL
+    orphan_ids = vector_doc_ids - db_doc_ids
     for orphan_id in orphan_ids:
         issues.append(
             {
                 "document_id": orphan_id,
                 "filename": None,
                 "issue": "orphan_vectors",
-                "detail": "Vectors exist in chunk_vectors but no SQLite record",
-                "sqlite_chunks": None,
+                "detail": "Vectors exist in chunk_vectors but no PostgreSQL record",
+                "db_chunks": None,
                 "vector_chunks": vector_doc_counts.get(orphan_id, 0),
             }
         )
@@ -126,8 +126,8 @@ async def reconcile(
                     "document_id": doc.id,
                     "filename": doc.original_filename,
                     "issue": "chunk_count_mismatch",
-                    "detail": f"SQLite chunk_count={doc.chunk_count} != vector chunks={vector_count}",
-                    "sqlite_chunks": doc.chunk_count,
+                    "detail": f"DB chunk_count={doc.chunk_count} != vector chunks={vector_count}",
+                    "db_chunks": doc.chunk_count,
                     "vector_chunks": vector_count,
                 }
             )

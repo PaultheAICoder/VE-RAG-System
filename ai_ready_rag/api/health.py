@@ -156,7 +156,6 @@ def _build_hybrid_search_status(request: Request) -> dict:
 
     collection_has_sparse = getattr(vector_service, "_collection_has_sparse", False)
     checked_at = getattr(vector_service, "_capabilities_checked_at", None)
-    sparse_available = getattr(vector_service, "_sparse_available", False)
 
     active_mode = "hybrid" if (enabled and collection_has_sparse) else "dense_only"
     active_threshold = getattr(vector_service, "min_similarity_score", None)
@@ -165,7 +164,7 @@ def _build_hybrid_search_status(request: Request) -> dict:
         "enabled": enabled,
         "collection_has_sparse": collection_has_sparse,
         "capabilities_checked_at": checked_at.isoformat() if checked_at else None,
-        "sparse_model": "Qdrant/bm25" if sparse_available else None,
+        "sparse_model": None,
         "active_mode": active_mode,
         "active_threshold": active_threshold,
     }

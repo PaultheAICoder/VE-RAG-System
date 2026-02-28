@@ -260,7 +260,7 @@ class TestCacheStats:
         assert "enabled" in data
         assert "total_entries" in data
         assert "memory_entries" in data
-        assert "sqlite_entries" in data
+        assert "db_entries" in data
         assert "hit_count" in data
         assert "miss_count" in data
         assert "hit_rate" in data
@@ -296,7 +296,7 @@ class TestCacheStats:
         # Assert
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert data["sqlite_entries"] == 3
+        assert data["db_entries"] == 3
 
     def test_returns_timestamp_fields(self, client, admin_headers, db):
         """GET /cache/stats returns oldest_entry and newest_entry."""

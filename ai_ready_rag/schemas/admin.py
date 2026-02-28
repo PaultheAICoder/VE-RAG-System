@@ -672,7 +672,7 @@ class CacheStatsResponse(BaseModel):
     enabled: bool
     total_entries: int
     memory_entries: int
-    sqlite_entries: int
+    db_entries: int
     hit_count: int
     miss_count: int
     hit_rate: float
@@ -901,7 +901,7 @@ class SwitchActiveStrategyRequest(BaseModel):
 
 
 class ReconcileRequest(BaseModel):
-    """Request to reconcile SQLite ↔ Qdrant state."""
+    """Request to reconcile PostgreSQL ↔ pgvector state."""
 
     dry_run: bool = True
 
@@ -913,8 +913,8 @@ class ReconcileIssue(BaseModel):
     filename: str | None = None
     issue: str
     detail: str
-    sqlite_chunks: int | None = None
-    qdrant_chunks: int | None = None
+    db_chunks: int | None = None
+    vector_chunks: int | None = None
 
 
 class ReconcileRepair(BaseModel):
