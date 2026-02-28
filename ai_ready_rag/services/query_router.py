@@ -100,13 +100,13 @@ class QueryRouter:
             if not matched:
                 continue
 
-            # Confidence: ratio of matched phrases to total trigger phrases, capped at 1.0
-            total = max(len(template.trigger_phrases), 1)
-            confidence = min(len(matched) / total, 1.0)
-
-            # Bonus for multiple phrase matches
-            if len(matched) >= 2:
-                confidence = min(confidence + 0.1, 1.0)
+            # Presence-based confidence: trigger_phrases are domain vocabulary, not a
+            # checklist.  Any matching phrase means the query is in-domain → base 0.7.
+            # A density bonus (up to 0.3) rewards more matches and is used for template
+            # disambiguation when multiple templates share trigger phrases.
+            n_total = max(len(template.trigger_phrases), 1)
+            density_bonus = min((len(matched) - 1) / max(n_total - 1, 1) * 0.3, 0.3)
+            confidence = 0.7 + density_bonus
 
             if confidence > best_confidence:
                 best_confidence = confidence

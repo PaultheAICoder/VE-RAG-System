@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -68,11 +67,8 @@ class ExcelProcessingService:
         tag_names = [tag.name for tag in document.tags]
         file_path = document.file_path
 
-        # Ensure excel tables DB directory exists
-        db_path = Path(settings.excel_tables_db_path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Create adapter backends
+        # Build all adapters and config here (in the event-loop thread).
+        # PostgreSQL connections are thread-safe so no need to defer to the worker.
         vector_store = VERagVectorStoreAdapter(
             qdrant_url=settings.qdrant_url,
             collection_name=settings.qdrant_collection,
@@ -90,11 +86,6 @@ class ExcelProcessingService:
             embedding_dimension=settings.embedding_dimension,
         )
 
-        llm = create_llm_adapter(ollama_url=settings.ollama_base_url)
-
-        structured_db = create_structured_db(db_path=str(db_path))
-
-        # Build ingestkit config from VE-RAG settings
         config = ExcelProcessorConfig(
             classification_model=settings.excel_classification_model,
             reasoning_model=settings.excel_reasoning_model,
@@ -106,17 +97,19 @@ class ExcelProcessingService:
             tenant_id=settings.default_tenant_id,
         )
 
-        # Create router and process (sync pipeline, run in thread)
         router = ExcelRouter(
             vector_store=vector_store,
-            structured_db=structured_db,
-            llm=llm,
+            structured_db=create_structured_db(database_url=settings.database_url),
+            llm=create_llm_adapter(),
             embedder=embedder,
             config=config,
         )
 
+        def _run_in_thread():
+            return router.process(file_path)
+
         try:
-            result = await asyncio.to_thread(router.process, file_path)
+            result = await asyncio.to_thread(_run_in_thread)
         except Exception as e:
             logger.error("ingestkit-excel processing failed for %s: %s", document.id, e)
             return None, True  # Fallback to SimpleChunker

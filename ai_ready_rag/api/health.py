@@ -27,13 +27,16 @@ def _check_forms_installed() -> bool:
 
 
 def _check_forms_db(app_settings) -> bool:
-    """Return True if the forms SQLite DB path is writable."""
+    """Return True if the forms_data schema is accessible in postgres."""
     try:
-        db_path = Path(app_settings.forms_db_path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        # Try opening the file in append mode to verify writability
-        with open(db_path, "a"):
-            pass
+        import psycopg2
+
+        conn = psycopg2.connect(app_settings.database_url)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM information_schema.schemata WHERE schema_name = 'forms_data'"
+            )
+        conn.close()
         return True
     except Exception:
         return False

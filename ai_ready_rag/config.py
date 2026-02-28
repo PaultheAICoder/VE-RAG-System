@@ -327,9 +327,8 @@ class Settings(BaseSettings):
 
     # ingestkit-excel integration
     use_ingestkit_excel: bool = False  # Feature flag (off by default)
-    excel_classification_model: str = "qwen2.5:7b"
-    excel_reasoning_model: str = "deepseek-r1:14b"
-    excel_tables_db_path: str = "./data/excel_tables.db"
+    excel_classification_model: str = "claude-sonnet-4-6"  # Claude is primary LLM
+    excel_reasoning_model: str = "claude-sonnet-4-6"  # Claude is primary LLM
     excel_enable_tier3: bool = True
     excel_tier2_confidence_threshold: float = 0.6
 
@@ -338,8 +337,7 @@ class Settings(BaseSettings):
     forms_match_confidence_threshold: float = 0.8
     forms_ocr_engine: str = "tesseract"
     forms_vlm_enabled: bool = False
-    forms_vlm_model: str = "qwen2.5-vl:7b"
-    forms_db_path: str = "./data/forms_data.db"
+    forms_vlm_model: str = "claude-sonnet-4-6"  # Claude is primary LLM
     forms_template_storage_path: str = "./data/form_templates"
     forms_redact_high_risk_fields: bool = True  # Redact SSN, tax ID, account numbers
     forms_template_require_approval: bool = True  # Templates must be approved before matching

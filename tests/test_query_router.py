@@ -106,5 +106,5 @@ class TestQueryRouterRouting:
         )
         router = QueryRouter(sql_confidence_threshold=0.9, review_floor=0.1)
         decision = router.route("what is the coverage?", structured_query_enabled=True)
-        # Single phrase match -> confidence ~0.2 -> below 0.9 threshold, above 0.1 floor
+        # Single phrase match -> confidence 0.7 -> below 0.9 threshold, above 0.1 floor
         assert decision.route == RouteType.REVIEW

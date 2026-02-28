@@ -116,6 +116,13 @@ async def lifespan(app: FastAPI):
     registry = init_registry(_active_modules)
     logger.info("module_registry_initialized", extra={"modules": registry.active_modules})
 
+    # Discover excel_tables schema and register SQL templates (no-op if schema is empty)
+    if settings.use_ingestkit_excel and "postgresql" in settings.database_url:
+        from ai_ready_rag.services.excel_tables_service import ExcelTablesService
+
+        n = ExcelTablesService(settings.database_url).discover_and_register()
+        logger.info("excel_tables_service: registered %d year tables", n)
+
     # Verify evaluation tables exist (fail-fast if eval_enabled and tables missing)
     if settings.eval_enabled:
         from sqlalchemy import inspect as sa_inspect
@@ -160,16 +167,6 @@ async def lifespan(app: FastAPI):
                 "Install with: pip install ingestkit-forms"
             ) from exc
 
-        # Validate forms_db_path is under data/
-        db_path = Path(settings.forms_db_path).resolve()
-        data_dir = Path("./data").resolve()
-        if not str(db_path).startswith(str(data_dir)):
-            raise RuntimeError(f"forms_db_path must be under data/: {settings.forms_db_path}")
-        if not db_path.parent.exists():
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-        if not os.access(db_path.parent, os.W_OK):
-            raise RuntimeError(f"forms_db_path parent not writable: {db_path.parent}")
-
         # Validate template storage path
         tmpl_path = Path(settings.forms_template_storage_path).resolve()
         if not tmpl_path.exists():
@@ -177,9 +174,13 @@ async def lifespan(app: FastAPI):
         if not os.access(tmpl_path, os.W_OK):
             raise RuntimeError(f"forms_template_storage_path not writable: {tmpl_path}")
 
+        # Ensure forms_data schema exists in postgres
+        from ai_ready_rag.services.ingestkit_adapters import VERagFormDBAdapter
+
+        VERagFormDBAdapter(database_url=settings.database_url)  # creates schema if needed
+
         logger.info(
-            "ingestkit-forms validated: db=%s, templates=%s",
-            settings.forms_db_path,
+            "ingestkit-forms validated: db=postgres(forms_data), templates=%s",
             settings.forms_template_storage_path,
         )
 
