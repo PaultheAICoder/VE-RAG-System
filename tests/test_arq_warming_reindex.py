@@ -52,6 +52,25 @@ class TestReindexKnowledgeBaseTask:
             assert result["job_id"] == "job-456"
             assert "DB connection lost" in result["error"]
 
+    def test_reindex_task_signature_has_no_mode_param(self):
+        """ARQ task accepts (ctx, job_id) only — no mode parameter.
+
+        Regression test for issue #459: admin.py was passing request.mode as
+        a third positional arg, causing TypeError at runtime.
+        The task signature must remain (ctx, job_id) with no mode parameter.
+        """
+        import inspect
+
+        from ai_ready_rag.workers.tasks.reindex import reindex_knowledge_base
+
+        sig = inspect.signature(reindex_knowledge_base)
+        params = list(sig.parameters.keys())
+
+        assert params == ["ctx", "job_id"], (
+            f"Expected (ctx, job_id) but got {params}. "
+            "If mode was added, update the enqueue call in admin.py too."
+        )
+
 
 class TestWorkerSettingsRegistration:
     """Test tasks are registered in WorkerSettings."""
