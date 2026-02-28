@@ -34,6 +34,7 @@ from ai_ready_rag.core.security import hash_password
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import Document, SystemSetup, User
 from ai_ready_rag.middleware.request_logging import RequestLoggingMiddleware
+from ai_ready_rag.modules.registry import init_registry
 from ai_ready_rag.services.factory import get_vector_service
 from ai_ready_rag.workers.arq_worker import EmbeddedArqWorker
 from ai_ready_rag.workers.warming_cleanup import WarmingCleanupService
@@ -108,6 +109,11 @@ async def lifespan(app: FastAPI):
 
     init_db()
     seed_admin_user()
+
+    # Initialize ModuleRegistry and load active modules
+    _active_modules = getattr(settings, "active_modules", ["core"])
+    registry = init_registry(_active_modules)
+    logger.info("module_registry_initialized", extra={"modules": registry.active_modules})
 
     # Verify evaluation tables exist (fail-fast if eval_enabled and tables missing)
     if settings.eval_enabled:
@@ -300,6 +306,29 @@ async def lifespan(app: FastAPI):
     warming_cleanup = WarmingCleanupService(settings)
     await warming_cleanup.start()
     logger.info("WarmingCleanupService started")
+
+    # Module discovery — load registered modules
+    from ai_ready_rag.core.module_registry import ModuleRegistry
+
+    registry = ModuleRegistry.get_instance()
+    settings_obj = get_settings()
+    for module_id in settings_obj.active_modules:
+        if module_id == "core":
+            continue
+        try:
+            mod_path = f"ai_ready_rag.modules.{module_id}.module"
+            import importlib
+
+            mod = importlib.import_module(mod_path)
+            if hasattr(mod, "register"):
+                mod.register(registry)
+            # Mount any routers the module registered
+            for router, prefix in registry.api_routers:
+                app.include_router(router, prefix=prefix)
+        except ImportError as exc:
+            logger.warning("module.load.skipped", extra={"module_id": module_id, "error": str(exc)})
+        except Exception as exc:
+            logger.error("module.load.failed", extra={"module_id": module_id, "error": str(exc)})
 
     # Periodic recovery for stuck processing documents (#308)
     async def _stale_processing_recovery_loop():
