@@ -7,9 +7,7 @@ and returns synthetic SearchResult objects for the RAG pipeline.
 import json
 import logging
 import re
-import sqlite3
 from fnmatch import fnmatch
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -85,7 +83,8 @@ class FormsQueryService:
     """Queries structured form data from forms_data.db for RAG context."""
 
     def __init__(self, settings: Settings):
-        self._forms_db_path = settings.forms_db_path
+        self._database_url = settings.database_url
+        self._forms_schema = "forms_data"
 
     def query_forms(
         self,
@@ -101,7 +100,7 @@ class FormsQueryService:
         3. Read fields from forms_data.db
         4. Format as synthetic SearchResult objects
         """
-        if not Path(self._forms_db_path).exists():
+        if not self._database_url or "sqlite" in self._database_url:
             return []
 
         # Determine which field groups to return
@@ -233,11 +232,15 @@ class FormsQueryService:
         result: dict[str, list[tuple[str, str]]] = {}
 
         try:
-            conn = sqlite3.connect(f"file:{self._forms_db_path}?mode=ro", uri=True)
-            conn.row_factory = sqlite3.Row
+            import psycopg2
+            import psycopg2.extras
+
+            conn = psycopg2.connect(self._database_url)
+            conn.autocommit = True
             try:
-                cursor = conn.execute(
-                    f'SELECT * FROM "{table_name}" WHERE _ingest_key = ?',
+                cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                cursor.execute(
+                    f'SELECT * FROM "{self._forms_schema}"."{table_name}" WHERE _ingest_key = %s',
                     (ingest_key,),
                 )
                 row = cursor.fetchone()
@@ -276,7 +279,7 @@ class FormsQueryService:
                     result[matched_group].append((label, str(value)))
             finally:
                 conn.close()
-        except (sqlite3.Error, OSError) as e:
+        except Exception as e:
             logger.warning(f"Failed to read forms DB: {e}")
 
         return result

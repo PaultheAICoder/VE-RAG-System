@@ -2,14 +2,14 @@
 
 Each adapter satisfies an ingestkit Protocol interface while injecting VE-RAG's
 access-control metadata (tags, document_id, tenant_id) and using VE-RAG's
-configured services (Qdrant collection, Ollama models).
+configured services (Qdrant collection, Claude CLI, PostgreSQL).
 
 Adapters:
-- VERagVectorStoreAdapter: Writes to VE-RAG's Qdrant collection with matching payload schema
+- VERagVectorStoreAdapter: Writes to VE-RAG's Qdrant/pgvector collection
 - VERagEmbeddingAdapter: Delegates to ingestkit's OllamaEmbedding (same Ollama server)
-- VERagLLMAdapter: Delegates to ingestkit's OllamaLLM (same Ollama server)
-- ExcelStructuredDB: Delegates to ingestkit's SQLiteStructuredDB (separate DB file)
-- VERagFormDBAdapter: SQLite wrapper implementing FormDBBackend protocol (ingestkit-forms)
+- VERagClaudeLLM: LLMBackend using Claude CLI (`claude -p`) — primary LLM for all ingestkit
+- VERagPostgresStructuredDB: StructuredDBBackend over PostgreSQL (replaces SQLite for Excel)
+- VERagPostgresFormDB: FormDBBackend over PostgreSQL (replaces SQLite for forms)
 - VERagLayoutFingerprinter: LayoutFingerprinter protocol (ingestkit-forms)
 - VERagOCRAdapter: OCRBackend protocol (Tesseract/PaddleOCR) (ingestkit-forms)
 - VERagVLMAdapter: VLMBackend protocol (Ollama VLM) (ingestkit-forms)
@@ -17,11 +17,11 @@ Adapters:
 
 from __future__ import annotations
 
+import json
 import logging
-import sqlite3
+import subprocess
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from qdrant_client import QdrantClient
@@ -240,31 +240,150 @@ def create_embedding_adapter(
     )
 
 
-def create_llm_adapter(
-    *,
-    ollama_url: str,
-    backend_timeout: float = 30.0,
-):
-    """Create an ingestkit OllamaLLM that uses VE-RAG's Ollama settings.
+def create_llm_adapter():
+    """Return a VERagClaudeLLM — Claude CLI is the primary LLM for all ingestkit pipelines."""
+    return VERagClaudeLLM()
 
-    Returns an OllamaLLM instance (satisfies LLMBackend protocol).
+
+def create_structured_db(*, database_url: str) -> VERagPostgresStructuredDB:
+    """Return a PostgreSQL StructuredDBBackend for ingestkit-excel table storage."""
+    return VERagPostgresStructuredDB(database_url=database_url)
+
+
+# ---------------------------------------------------------------------------
+# Claude CLI LLM adapter (primary LLM for all ingestkit pipelines)
+# ---------------------------------------------------------------------------
+
+
+class VERagClaudeLLM:
+    """LLMBackend implementation that delegates to Claude via `claude -p`.
+
+    Satisfies ingestkit's LLMBackend protocol (classify + generate).
+    The `model` parameter passed by ingestkit is ignored — Claude is always used.
     """
-    from ingestkit_excel.backends.ollama import OllamaLLM
-    from ingestkit_excel.config import ExcelProcessorConfig
 
-    config = ExcelProcessorConfig(backend_timeout_seconds=backend_timeout)
-    return OllamaLLM(base_url=ollama_url, config=config)
+    def classify(
+        self,
+        prompt: str,
+        model: str,
+        temperature: float = 0.1,
+        timeout: float | None = None,
+    ) -> dict:
+        """Run a classification prompt through Claude and return parsed JSON."""
+        system = (
+            "You are a precise JSON classifier. "
+            "Respond with valid JSON only — no markdown, no explanation."
+        )
+        result = self._run(system + "\n\n" + prompt, timeout=timeout)
+        # Strip any accidental markdown fences
+        text = (
+            result.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        )
+        return json.loads(text)
+
+    def generate(
+        self,
+        prompt: str,
+        model: str,
+        temperature: float = 0.7,
+        timeout: float | None = None,
+    ) -> str:
+        """Run a generation prompt through Claude and return the text response."""
+        return self._run(prompt, timeout=timeout)
+
+    def _run(self, prompt: str, *, timeout: float | None = None) -> str:
+        """Invoke `claude -p` as a subprocess and return stdout."""
+        import os
+
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        result = subprocess.run(
+            ["claude", "-p", prompt],
+            capture_output=True,
+            text=True,
+            timeout=timeout or 120,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"claude -p exited {result.returncode}: {result.stderr[:200]}")
+        return result.stdout.strip()
 
 
-def create_structured_db(*, db_path: str):
-    """Create an ingestkit SQLiteStructuredDB for Excel table storage.
+# ---------------------------------------------------------------------------
+# PostgreSQL StructuredDB adapter (ingestkit-excel)
+# ---------------------------------------------------------------------------
 
-    Returns an SQLiteStructuredDB instance (satisfies StructuredDBBackend protocol).
-    Uses a separate SQLite file from VE-RAG's app database.
+
+class VERagPostgresStructuredDB:
+    """PostgreSQL StructuredDBBackend for ingestkit-excel table storage.
+
+    Satisfies ingestkit's StructuredDBBackend protocol via structural subtyping.
+    Uses a dedicated schema (``excel_tables``) to keep extracted spreadsheet
+    tables separate from VE-RAG's application tables.
     """
-    from ingestkit_excel.backends.sqlite import SQLiteStructuredDB
 
-    return SQLiteStructuredDB(db_path=db_path)
+    _SCHEMA = "excel_tables"
+
+    def __init__(self, *, database_url: str) -> None:
+        self._database_url = database_url
+        self._ensure_schema()
+
+    def _connect(self):
+        import psycopg2
+
+        return psycopg2.connect(self._database_url)
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{self._SCHEMA}"')
+            conn.commit()
+
+    def _qualified(self, table_name: str) -> str:
+        return f'"{self._SCHEMA}"."{table_name}"'
+
+    def create_table_from_dataframe(self, table_name: str, df) -> None:
+        """Write a DataFrame as a table in the excel_tables schema."""
+        from sqlalchemy import create_engine
+
+        engine = create_engine(
+            self._database_url,
+            connect_args={"options": f"-csearch_path={self._SCHEMA}"},
+        )
+        try:
+            df.to_sql(table_name, engine, if_exists="replace", index=False, schema=self._SCHEMA)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to write table '{table_name}': {exc}") from exc
+        finally:
+            engine.dispose()
+
+    def drop_table(self, table_name: str) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"DROP TABLE IF EXISTS {self._qualified(table_name)}")
+            conn.commit()
+
+    def table_exists(self, table_name: str) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = %s AND table_name = %s",
+                    (self._SCHEMA, table_name),
+                )
+                return cur.fetchone() is not None
+
+    def get_table_schema(self, table_name: str) -> dict:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name, data_type FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
+                    (self._SCHEMA, table_name),
+                )
+                return {row[0]: row[1] for row in cur.fetchall()}
+
+    def get_connection_uri(self) -> str:
+        return self._database_url
 
 
 # ---------------------------------------------------------------------------
@@ -273,48 +392,33 @@ def create_structured_db(*, db_path: str):
 
 
 class VERagFormDBAdapter:
-    """Thin SQLite wrapper implementing ingestkit_forms.FormDBBackend protocol.
+    """PostgreSQL implementation of ingestkit_forms.FormDBBackend protocol.
 
-    Uses a separate SQLite file (forms_data.db) from VE-RAG's main app DB.
-    All table names are validated through ingestkit-forms' validate_table_name()
-    to avoid regex duplication and drift.
+    All form extraction tables are stored in the ``forms_data`` schema in
+    the shared PostgreSQL database. Table names are validated through
+    ingestkit-forms' validate_table_name() to avoid SQL injection.
     """
 
-    def __init__(self, db_path: str) -> None:
-        self._db_path = self._validate_path(db_path)
-        self._ensure_db()
+    _SCHEMA = "forms_data"
 
-    @staticmethod
-    def _validate_path(db_path: str) -> str:
-        """Normalize and validate DB path is under data/ directory."""
-        resolved = Path(db_path).resolve()
-        allowed_parent = Path("./data").resolve()
-        if not str(resolved).startswith(str(allowed_parent)):
-            raise ValueError(f"forms_db_path must be under data/: {db_path}")
-        return str(resolved)
+    def __init__(self, database_url: str) -> None:
+        self._database_url = database_url
+        self._ensure_schema()
 
-    def _ensure_db(self) -> None:
-        """Create the DB file and parent directories if they don't exist.
+    def _connect(self):
+        import psycopg2
 
-        Sets 0600 permissions (owner-only read/write) for security.
-        """
-        import os
+        return psycopg2.connect(self._database_url)
 
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self._db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.close()
-
-        # Set owner-only permissions (0600) for security
-        os.chmod(self._db_path, 0o600)
+    def _ensure_schema(self) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{self._SCHEMA}"')
+            conn.commit()
 
     @staticmethod
     def check_table_name(name: str) -> None:
-        """Validate table name using ingestkit-forms' validate_table_name.
-
-        Raises ValueError if the name is not a safe SQL identifier.
-        Uses ingestkit-forms' canonical regex to avoid duplication and drift.
-        """
+        """Validate table name using ingestkit-forms' validate_table_name."""
         from ingestkit_forms import validate_table_name
 
         error = validate_table_name(name)
@@ -322,57 +426,61 @@ class VERagFormDBAdapter:
             logger.error("forms.cleanup.unsafe_identifier", extra={"table": name})
             raise ValueError(f"Unsafe table identifier rejected: {name!r} — {error}")
 
+    def _qualified(self, table_name: str) -> str:
+        return f'"{self._SCHEMA}"."{table_name}"'
+
     def execute_sql(self, sql: str, params: tuple | None = None) -> None:
-        """Execute a SQL statement (CREATE TABLE, ALTER TABLE, INSERT OR REPLACE)."""
-        conn = sqlite3.connect(self._db_path)
-        try:
-            conn.execute(sql, params or ())
+        """Execute a SQL statement (CREATE TABLE, ALTER TABLE, INSERT)."""
+        # Translate SQLite-style ? placeholders to psycopg2 %s
+        if params:
+            sql = sql.replace("?", "%s")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params or ())
             conn.commit()
-        finally:
-            conn.close()
 
     def get_table_columns(self, table_name: str) -> list[str]:
         """Return column names of an existing table."""
         self.check_table_name(table_name)
-        conn = sqlite3.connect(self._db_path)
-        try:
-            cursor = conn.execute(f"PRAGMA table_info([{table_name}])")
-            return [row[1] for row in cursor.fetchall()]
-        finally:
-            conn.close()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
+                    (self._SCHEMA, table_name),
+                )
+                return [row[0] for row in cur.fetchall()]
 
     def delete_rows(self, table_name: str, column: str, values: list[str]) -> int:
         """Delete rows where ``column`` IN ``values``. Returns count deleted."""
         self.check_table_name(table_name)
         if not values:
             return 0
-        placeholders = ",".join("?" for _ in values)
-        conn = sqlite3.connect(self._db_path)
-        try:
-            cursor = conn.execute(
-                f"DELETE FROM [{table_name}] WHERE [{column}] IN ({placeholders})",
-                values,
-            )
+        placeholders = ",".join("%s" for _ in values)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f'DELETE FROM {self._qualified(table_name)} WHERE "{column}" IN ({placeholders})',
+                    values,
+                )
+                count = cur.rowcount
             conn.commit()
-            return cursor.rowcount
-        finally:
-            conn.close()
+        return count
 
     def table_exists(self, table_name: str) -> bool:
         """Return True if the table exists in the database."""
-        conn = sqlite3.connect(self._db_path)
-        try:
-            cursor = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                (table_name,),
-            )
-            return cursor.fetchone() is not None
-        finally:
-            conn.close()
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = %s AND table_name = %s",
+                    (self._SCHEMA, table_name),
+                )
+                return cur.fetchone() is not None
 
     def get_connection_uri(self) -> str:
         """Return the database connection URI."""
-        return f"sqlite:///{self._db_path}"
+        return self._database_url
 
 
 class VERagLayoutFingerprinter:

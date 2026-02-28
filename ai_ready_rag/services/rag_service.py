@@ -11,7 +11,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import httpx
@@ -967,10 +966,11 @@ class RAGService:
         self._live_eval_queue = None
         # SQL-first query router (optional — disabled if None)
         self.query_router: QueryRouter | None = query_router
-        # Forms query service (lazy — only if forms DB exists)
+        # Forms query service (enabled when using postgres backend)
         self._forms_query_service = None
-        forms_db = getattr(settings, "forms_db_path", None)
-        if forms_db and Path(forms_db).exists():
+        if getattr(settings, "use_ingestkit_forms", False) and "postgresql" in (
+            settings.database_url or ""
+        ):
             from ai_ready_rag.services.forms_query_service import FormsQueryService
 
             self._forms_query_service = FormsQueryService(settings)
@@ -2005,14 +2005,17 @@ class RAGService:
             )
             return self._insufficient_context_response(self.default_model, elapsed_ms, "SQL")
 
-        # Format rows as a human-readable table
         if not rows:
             answer = "No matching records found in the database for your query."
         else:
+            # Build a compact text table to give Claude as context
             header = " | ".join(columns)
-            separator = "-" * len(header)
-            body_lines = [" | ".join(str(cell) for cell in row) for row in rows[:row_cap]]
-            answer = f"{header}\n{separator}\n" + "\n".join(body_lines)
+            body_lines = [
+                " | ".join(str(cell) if cell is not None else "" for cell in row)
+                for row in rows[:row_cap]
+            ]
+            data_text = f"{header}\n" + "\n".join(body_lines)
+            answer = await self._synthesize_sql_answer(query, data_text)
 
         logger.info(
             "sql_route.success",
@@ -2026,21 +2029,53 @@ class RAGService:
         return RAGResponse(
             answer=answer,
             confidence=ConfidenceScore(
-                overall=100,
+                overall=95,
                 retrieval_score=decision.confidence,
                 coverage_score=1.0,
-                llm_score=100,
+                llm_score=95,
             ),
             citations=[],
             action="CITE",
             route_to=None,
-            model_used="sql",
-            context_chunks_used=0,
+            model_used="claude-cli",
+            context_chunks_used=len(rows),
             context_tokens_used=0,
             generation_time_ms=elapsed_ms,
             grounded=True,
             routing_decision="SQL",
         )
+
+    async def _synthesize_sql_answer(self, query: str, data_text: str) -> str:
+        """Ask Claude to synthesize a natural-language answer from SQL result data."""
+        import asyncio
+        import os
+        import subprocess
+
+        prompt = (
+            f"You are a financial analyst. Answer the user's question using ONLY the structured "
+            f"data provided below. Be concise and precise. Include specific numbers.\n\n"
+            f"Data:\n{data_text}\n\n"
+            f"Question: {query}\n\n"
+            f"Answer:"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        try:
+            result = await asyncio.to_thread(
+                lambda: subprocess.run(
+                    ["claude", "-p", prompt],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env=env,
+                )
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception as exc:
+            logger.warning("sql_route.claude_synthesis_failed: %s", exc)
+
+        # Fallback: return formatted table if Claude fails
+        return data_text
 
     async def generate(self, request: RAGRequest, db: Session) -> RAGResponse:
         """Generate RAG response for a query.

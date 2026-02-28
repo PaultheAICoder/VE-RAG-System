@@ -89,7 +89,7 @@ def get_template_api():
         embedding_model=settings.embedding_model or "nomic-embed-text",
         embedding_dimension=settings.embedding_dimension,
     )
-    form_db = VERagFormDBAdapter(db_path=settings.forms_db_path)
+    form_db = VERagFormDBAdapter(database_url=settings.database_url)
     fingerprinter = VERagLayoutFingerprinter(config, renderer=_pymupdf_renderer)
     ocr_backend = VERagOCRAdapter(engine=settings.forms_ocr_engine)
     pdf_widget_backend = VERagPDFWidgetAdapter()

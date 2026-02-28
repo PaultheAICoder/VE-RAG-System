@@ -833,18 +833,14 @@ class DocumentService:
             logger.warning("Invalid excel_db_table_names JSON: %s", table_names_json)
             return
 
-        db_path = self.settings.excel_tables_db_path
-        if not Path(db_path).exists():
-            return
-
         try:
             from ai_ready_rag.services.ingestkit_adapters import create_structured_db
 
-            structured_db = create_structured_db(db_path=db_path)
+            structured_db = create_structured_db(database_url=self.settings.database_url)
             for table_name in table_names:
                 try:
                     structured_db.drop_table(table_name)
-                    logger.info("Dropped Excel table '%s' from %s", table_name, db_path)
+                    logger.info("Dropped Excel table '%s' from postgres", table_name)
                 except Exception as e:
                     logger.warning("Failed to drop Excel table '%s': %s", table_name, e)
         except ImportError:
@@ -862,19 +858,15 @@ class DocumentService:
             logger.warning("forms.cleanup.not_list: %s", table_names_json)
             return
 
-        db_path = self.settings.forms_db_path
-        if not Path(db_path).exists():
-            return
-
         try:
             from ai_ready_rag.services.ingestkit_adapters import VERagFormDBAdapter
 
-            form_db = VERagFormDBAdapter(db_path=db_path)
+            form_db = VERagFormDBAdapter(database_url=self.settings.database_url)
             for table_name in table_names:
                 try:
                     form_db.check_table_name(table_name)
-                    form_db.execute_sql(f"DROP TABLE IF EXISTS [{table_name}]")
-                    logger.info("Dropped forms table '%s' from %s", table_name, db_path)
+                    form_db.execute_sql(f'DROP TABLE IF EXISTS "forms_data"."{table_name}"')
+                    logger.info("Dropped forms table '%s' from postgres", table_name)
                 except ValueError:
                     logger.error("forms.cleanup.unsafe_identifier rejected: %s", table_name)
                 except Exception as e:
