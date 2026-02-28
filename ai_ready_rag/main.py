@@ -307,29 +307,6 @@ async def lifespan(app: FastAPI):
     await warming_cleanup.start()
     logger.info("WarmingCleanupService started")
 
-    # Module discovery — load registered modules
-    from ai_ready_rag.core.module_registry import ModuleRegistry
-
-    registry = ModuleRegistry.get_instance()
-    settings_obj = get_settings()
-    for module_id in settings_obj.active_modules:
-        if module_id == "core":
-            continue
-        try:
-            mod_path = f"ai_ready_rag.modules.{module_id}.module"
-            import importlib
-
-            mod = importlib.import_module(mod_path)
-            if hasattr(mod, "register"):
-                mod.register(registry)
-            # Mount any routers the module registered
-            for router, prefix in registry.api_routers:
-                app.include_router(router, prefix=prefix)
-        except ImportError as exc:
-            logger.warning("module.load.skipped", extra={"module_id": module_id, "error": str(exc)})
-        except Exception as exc:
-            logger.error("module.load.failed", extra={"module_id": module_id, "error": str(exc)})
-
     # Periodic recovery for stuck processing documents (#308)
     async def _stale_processing_recovery_loop():
         """Reset documents stuck in 'processing' for >15 min back to 'pending'."""
