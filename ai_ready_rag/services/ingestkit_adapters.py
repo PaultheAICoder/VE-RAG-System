@@ -5,7 +5,7 @@ access-control metadata (tags, document_id, tenant_id) and using VE-RAG's
 configured services (Qdrant collection, Claude CLI, PostgreSQL).
 
 Adapters:
-- VERagVectorStoreAdapter: Writes to VE-RAG's Qdrant/pgvector collection
+- VERagVectorStoreAdapter: Writes to VE-RAG's pgvector chunk_vectors table
 - VERagEmbeddingAdapter: Delegates to ingestkit's OllamaEmbedding (same Ollama server)
 - VERagClaudeLLM: LLMBackend using Claude CLI (`claude -p`) — primary LLM for all ingestkit
 - VERagPostgresStructuredDB: StructuredDBBackend over PostgreSQL (replaces SQLite for Excel)
@@ -24,18 +24,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from qdrant_client import QdrantClient
-from qdrant_client.models import (
-    Distance,
-    FieldCondition,
-    Filter,
-    MatchValue,
-    PayloadSchemaType,
-    PointIdsList,
-    PointStruct,
-    VectorParams,
-)
-
 if TYPE_CHECKING:
     from ingestkit_core.models import ChunkPayload
 
@@ -43,20 +31,20 @@ logger = logging.getLogger(__name__)
 
 
 class VERagVectorStoreAdapter:
-    """Adapts ingestkit's VectorStoreBackend protocol to VE-RAG's Qdrant collection.
+    """Adapts ingestkit's VectorStoreBackend protocol to VE-RAG's pgvector store.
 
-    Merges VE-RAG access-control fields (tags, document_id, tenant_id, etc.) into
-    every Qdrant point payload so that existing search filters and lifecycle
-    operations (delete_document, update_document_tags) work on ingestkit-written points.
+    Writes chunks directly to the chunk_vectors table using psycopg2, merging
+    VE-RAG access-control fields (tags, document_id, tenant_id, etc.) into every
+    row so RAG search and lifecycle operations work on ingestkit-written chunks.
 
-    Uses sync QdrantClient because ingestkit's pipeline is synchronous.
+    The `collection` parameter accepted by ingestkit protocol methods is ignored —
+    all chunks go to the shared chunk_vectors table (managed by Alembic migrations).
     """
 
     def __init__(
         self,
         *,
-        qdrant_url: str,
-        collection_name: str,
+        database_url: str,
         embedding_dimension: int,
         document_id: str,
         document_name: str,
@@ -64,8 +52,7 @@ class VERagVectorStoreAdapter:
         uploaded_by: str,
         tenant_id: str = "default",
     ) -> None:
-        self._client = QdrantClient(url=qdrant_url, timeout=30.0)
-        self._collection_name = collection_name
+        self._database_url = database_url
         self._embedding_dimension = embedding_dimension
         self._document_id = document_id
         self._document_name = document_name
@@ -75,146 +62,155 @@ class VERagVectorStoreAdapter:
         self._uploaded_at = datetime.now(UTC).isoformat()
 
     def ensure_collection(self, collection: str, vector_size: int) -> None:
-        """Create the collection if it does not already exist."""
-        name = self._resolve_collection(collection)
-        if not self._client.collection_exists(name):
-            self._client.create_collection(
-                collection_name=name,
-                vectors_config={
-                    "dense": VectorParams(
-                        size=vector_size,
-                        distance=Distance.COSINE,
-                    )
-                },
-            )
-            logger.info("Created Qdrant collection '%s' (dim=%d)", name, vector_size)
+        """No-op — chunk_vectors table is managed by Alembic migrations."""
 
     def upsert_chunks(self, collection: str, chunks: list[ChunkPayload]) -> int:
-        """Upsert chunks with VE-RAG's payload schema merged in.
+        """Insert chunks into chunk_vectors with VE-RAG metadata merged in.
 
-        Each point payload contains:
-        - VE-RAG fields: chunk_id, document_id, document_name, chunk_index,
-          chunk_text, tags, tenant_id, uploaded_by, uploaded_at, page_number, section
-        - ingestkit provenance fields (prefixed with ingestkit_*): source_format,
-          ingestion_method, parser_version, ingest_key, sheet_name, etc.
+        Each row contains:
+        - VE-RAG fields: document_id, document_name, chunk_index, chunk_text,
+          tags, tenant_id, uploaded_by, uploaded_at, page_number, section
+        - ingestkit provenance fields (stored in metadata_ JSON under ingestkit_*)
         """
         if not chunks:
             return 0
 
-        name = self._resolve_collection(collection)
-        points = []
+        import psycopg2
 
-        for chunk in chunks:
-            meta = chunk.metadata
-            chunk_index = meta.chunk_index
-
-            # Qdrant requires point IDs to be UUIDs or unsigned ints.
-            # Some ingestkit packages (e.g. email) produce non-UUID IDs.
-            try:
-                point_id = str(uuid.UUID(chunk.id))
-            except ValueError:
-                point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk.id))
-
-            payload = {
-                # VE-RAG standard fields (must match vector_service.py schema)
-                "chunk_id": chunk.id,
-                "document_id": self._document_id,
-                "document_name": self._document_name,
-                "chunk_index": chunk_index,
-                "chunk_text": chunk.text,
-                "tags": self._tags,
-                "tenant_id": self._tenant_id,
-                "uploaded_by": self._uploaded_by,
-                "uploaded_at": self._uploaded_at,
-                "page_number": None,  # Excel files don't have page numbers
-                "section": meta.section_title,
-                # ingestkit provenance fields
-                "ingestkit_source_format": meta.source_format,
-                "ingestkit_ingestion_method": meta.ingestion_method,
-                "ingestkit_parser_version": meta.parser_version,
-                "ingestkit_ingest_key": meta.ingest_key,
-                "ingestkit_chunk_hash": meta.chunk_hash,
-                "ingestkit_source_uri": meta.source_uri,
-                "ingestkit_ingest_run_id": meta.ingest_run_id,
-            }
-
-            # Add Excel-specific fields if present
-            if meta.table_name:
-                payload["ingestkit_table_name"] = meta.table_name
-            if meta.row_count is not None:
-                payload["ingestkit_row_count"] = meta.row_count
-            if meta.columns:
-                payload["ingestkit_columns"] = meta.columns
-
-            # Add sheet_name if the metadata has it (ChunkMetadata extends BaseChunkMetadata)
-            if hasattr(meta, "sheet_name"):
-                payload["ingestkit_sheet_name"] = meta.sheet_name
-
-            points.append(
-                PointStruct(
-                    id=point_id,
-                    vector={"dense": chunk.vector},
-                    payload=payload,
+        conn = psycopg2.connect(self._database_url)
+        try:
+            with conn.cursor() as cur:
+                # Re-index: remove existing chunks for this document first
+                cur.execute(
+                    "DELETE FROM chunk_vectors WHERE document_id = %s",
+                    (self._document_id,),
                 )
-            )
 
-        self._client.upsert(collection_name=name, points=points)
+                for chunk in chunks:
+                    meta = chunk.metadata
+                    chunk_index = meta.chunk_index
+
+                    # chunk_vectors.id must be a valid UUID string
+                    try:
+                        chunk_id = str(uuid.UUID(chunk.id))
+                    except ValueError:
+                        chunk_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk.id))
+
+                    metadata: dict = {
+                        "tags": self._tags,
+                        "document_name": self._document_name,
+                        "uploaded_by": self._uploaded_by,
+                        "uploaded_at": self._uploaded_at,
+                        "page_number": None,
+                        "section": meta.section_title,
+                        "ingestkit_source_format": meta.source_format,
+                        "ingestkit_ingestion_method": meta.ingestion_method,
+                        "ingestkit_parser_version": meta.parser_version,
+                        "ingestkit_ingest_key": meta.ingest_key,
+                        "ingestkit_chunk_hash": meta.chunk_hash,
+                        "ingestkit_source_uri": meta.source_uri,
+                        "ingestkit_ingest_run_id": meta.ingest_run_id,
+                    }
+                    if meta.table_name:
+                        metadata["ingestkit_table_name"] = meta.table_name
+                    if meta.row_count is not None:
+                        metadata["ingestkit_row_count"] = meta.row_count
+                    if meta.columns:
+                        metadata["ingestkit_columns"] = meta.columns
+                    if hasattr(meta, "sheet_name"):
+                        metadata["ingestkit_sheet_name"] = meta.sheet_name
+
+                    vector = chunk.vector  # pre-computed by VERagEmbeddingAdapter
+                    if vector:
+                        vector_str = f"[{','.join(str(x) for x in vector)}]"
+                        cur.execute(
+                            "INSERT INTO chunk_vectors "
+                            "(id, document_id, chunk_index, chunk_text, metadata_, "
+                            "tenant_id, embedding, vector_embedding) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s, CAST(%s AS vector))",
+                            (
+                                chunk_id,
+                                self._document_id,
+                                chunk_index,
+                                chunk.text,
+                                json.dumps(metadata),
+                                self._tenant_id,
+                                json.dumps(vector),
+                                vector_str,
+                            ),
+                        )
+                    else:
+                        cur.execute(
+                            "INSERT INTO chunk_vectors "
+                            "(id, document_id, chunk_index, chunk_text, metadata_, "
+                            "tenant_id, embedding) "
+                            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                            (
+                                chunk_id,
+                                self._document_id,
+                                chunk_index,
+                                chunk.text,
+                                json.dumps(metadata),
+                                self._tenant_id,
+                                None,
+                            ),
+                        )
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
         logger.info(
-            "Upserted %d ingestkit chunks for document %s to '%s'",
-            len(points),
+            "ingestkit.pgvector.upsert: %d chunks for document %s",
+            len(chunks),
             self._document_id,
-            name,
         )
-        return len(points)
+        return len(chunks)
 
     def create_payload_index(self, collection: str, field: str, field_type: str) -> None:
-        """Create a payload index on the specified field."""
-        type_map = {
-            "keyword": PayloadSchemaType.KEYWORD,
-            "integer": PayloadSchemaType.INTEGER,
-        }
-        schema_type = type_map.get(field_type)
-        if schema_type is None:
-            raise ValueError(f"Unsupported field_type '{field_type}'")
-
-        name = self._resolve_collection(collection)
-        self._client.create_payload_index(
-            collection_name=name,
-            field_name=field,
-            field_schema=schema_type,
-        )
+        """No-op — pgvector indexes are managed by Alembic migrations."""
 
     def delete_by_ids(self, collection: str, ids: list[str]) -> int:
-        """Delete points by their IDs."""
+        """Delete chunks by their IDs."""
         if not ids:
             return 0
 
-        name = self._resolve_collection(collection)
-        self._client.delete(
-            collection_name=name,
-            points_selector=PointIdsList(points=ids),
-        )
-        return len(ids)
+        import psycopg2
+
+        conn = psycopg2.connect(self._database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM chunk_vectors WHERE id = ANY(%s)", (ids,))
+                deleted = cur.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        return deleted
 
     def delete_by_filter(self, collection: str, field: str, value: str) -> None:
-        """Delete points matching a payload filter (e.g., by ingest_key)."""
-        name = self._resolve_collection(collection)
-        self._client.delete(
-            collection_name=name,
-            points_selector=Filter(
-                must=[FieldCondition(key=field, match=MatchValue(value=value))],
-            ),
-        )
+        """Delete chunks matching a metadata JSON field value."""
+        import psycopg2
+
+        conn = psycopg2.connect(self._database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM chunk_vectors "
+                    "WHERE document_id = %s AND metadata_::jsonb @> %s::jsonb",
+                    (self._document_id, json.dumps({field: value})),
+                )
+            conn.commit()
+        finally:
+            conn.close()
         logger.info(
-            "Deleted ingestkit points where %s=%s from '%s'",
+            "ingestkit.pgvector.delete_by_filter: %s=%s for document %s",
             field,
             value,
-            name,
+            self._document_id,
         )
-
-    def _resolve_collection(self, collection: str) -> str:
-        """Use VE-RAG's collection name, ignoring ingestkit's default_collection."""
-        return self._collection_name
 
 
 def create_embedding_adapter(
