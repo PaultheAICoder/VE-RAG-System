@@ -14,7 +14,6 @@ import fnmatch
 import json
 import logging
 import re
-import sqlite3
 
 from sqlalchemy.orm import Session
 
@@ -405,18 +404,19 @@ class FormsProcessingService:
         # 2. Read fields from the first table (ACORD forms typically have one)
         table_name = table_names[0]
         form_db.check_table_name(table_name)
-        db_path = form_db.get_connection_uri().replace("sqlite:///", "")
-        conn = sqlite3.connect(db_path)
+        import psycopg2
+        import psycopg2.extras
+
+        conn = psycopg2.connect(form_db.get_connection_uri())
+        conn.autocommit = True
         try:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute(f"SELECT * FROM [{table_name}] LIMIT 1")
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cursor.execute(f'SELECT * FROM "{form_db._SCHEMA}"."{table_name}" LIMIT 1')
             row = cursor.fetchone()
             if row is None:
                 return 0
-            columns = row.keys()
             fields: dict[str, str] = {}
-            for col in columns:
-                val = row[col]
+            for col, val in row.items():
                 if val is not None and str(val).strip():
                     fields[col] = str(val).strip()
         finally:
@@ -430,15 +430,8 @@ class FormsProcessingService:
         ungrouped: dict[str, str] = {}
 
         for field_name, field_value in fields.items():
-            # Skip metadata columns
-            if field_name.lower() in (
-                "id",
-                "ingest_key",
-                "document_id",
-                "tenant_id",
-                "created_at",
-                "updated_at",
-            ):
+            # Skip metadata columns (postgres schema uses _ prefix)
+            if field_name.startswith("_"):
                 continue
 
             matched = False
