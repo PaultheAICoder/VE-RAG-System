@@ -255,10 +255,17 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    # Initialize QueryRouter singleton (SQL-first deterministic routing)
+    from ai_ready_rag.services.factory import get_query_router
+
+    query_router = get_query_router()
+    app.state.query_router = query_router
+    logger.info("QueryRouter initialized (SQL-first routing)")
+
     # Initialize and start DB-based WarmingWorker
     from ai_ready_rag.services.rag_service import RAGService
 
-    rag_service = RAGService(settings, vector_service=vector_service)
+    rag_service = RAGService(settings, vector_service=vector_service, query_router=query_router)
     warming_worker = WarmingWorker(rag_service, settings)
     await warming_worker.start()
 

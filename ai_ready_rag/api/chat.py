@@ -567,6 +567,7 @@ async def send_message(
             settings,
             vector_service=request.app.state.vector_service,
             default_model=chat_model,
+            query_router=getattr(request.app.state, "query_router", None),
         )
         response = await rag_service.generate(rag_request, db)
 
