@@ -173,6 +173,24 @@ _TRACKED_MIGRATIONS = [
             "ALTER TABLE documents ADD COLUMN source_path VARCHAR",
         ],
     ),
+    (
+        "claude_usage_log_v1",
+        [
+            """CREATE TABLE IF NOT EXISTS claude_usage_log (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                model_id VARCHAR(100) NOT NULL,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cost_usd NUMERIC(10, 6) NOT NULL,
+                operation VARCHAR(50) NOT NULL,
+                document_id VARCHAR,
+                session_id VARCHAR,
+                tenant_id VARCHAR(100) DEFAULT 'default',
+                recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_claude_usage_log_tenant_date ON claude_usage_log (tenant_id, recorded_at)",
+        ],
+    ),
 ]
 
 
