@@ -42,3 +42,6 @@ issues/
 frontend/.vite/
 frontend/dist/
 ai_ready_rag/static/
+
+# Tenant instances (customer data — tracked dir, ignored contents)
+tenant-instances/*/

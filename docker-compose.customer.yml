@@ -1,0 +1,114 @@
+# VaultIQ Customer Deployment Template
+# Usage: docker compose -f docker-compose.customer.yml up -d
+# Before running: copy .env.customer.template to .env and fill in values
+#
+# Per-customer Docker Compose instance — one stack per {customer}.vaultiq.app
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vaultiq-api:latest
+    container_name: vaultiq-api
+    restart: unless-stopped
+    ports:
+      - "8502:8502"
+    environment:
+      - ENV_PROFILE=hosted
+      - TENANT_ID=${TENANT_ID}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - VAULTIQ_ENCRYPTION_KEY=${VAULTIQ_ENCRYPTION_KEY}
+      - DATABASE_URL=postgresql://vaultiq:${POSTGRES_PASSWORD}@postgres:5432/vaultiq
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+    volumes:
+      - ./data/uploads:/app/data/uploads
+      - ./tenant-instances/${TENANT_ID}:/app/tenant-instances/${TENANT_ID}:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8502/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vaultiq-api:latest
+    container_name: vaultiq-worker
+    restart: unless-stopped
+    command: python -m arq ai_ready_rag.workers.arq_worker.WorkerSettings
+    environment:
+      - ENV_PROFILE=hosted
+      - TENANT_ID=${TENANT_ID}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - VAULTIQ_ENCRYPTION_KEY=${VAULTIQ_ENCRYPTION_KEY}
+      - DATABASE_URL=postgresql://vaultiq:${POSTGRES_PASSWORD}@postgres:5432/vaultiq
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_BASE_URL=http://ollama:11434
+    volumes:
+      - ./data/uploads:/app/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: vaultiq-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=vaultiq
+      - POSTGRES_USER=vaultiq
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaultiq -d vaultiq"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: vaultiq-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: vaultiq-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  ollama_data:
+    driver: local
