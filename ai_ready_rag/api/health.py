@@ -210,7 +210,7 @@ async def health_check(request: Request, db: Session = Depends(get_db)):
     return {
         "status": "healthy",
         "version": settings.app_version,
-        "database": "sqlite",
+        "database": settings.database_backend,
         "redis": "connected" if redis_ok else "unavailable",
         "rag_enabled": settings.enable_rag,
         "profile": settings.env_profile,
