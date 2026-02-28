@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from ai_ready_rag.services.cost_tracker import CostTracker
 from ai_ready_rag.tenant.resolver import PromptResolver
 
 logger = logging.getLogger(__name__)
@@ -69,10 +70,12 @@ class ClaudeEnrichmentService:
         settings: Any,
         db_session: Any = None,
         tenant_id: str = "default",
+        tenant_config: Any = None,
     ) -> None:
         self._settings = settings
         self._db = db_session
         self._client = None
+        self._tenant_config = tenant_config
 
         # Resolve prompts via 3-tier PromptResolver; fall back to module-level constants
         resolver = PromptResolver(tenant_id=tenant_id, module_id="core")
@@ -80,13 +83,29 @@ class ClaudeEnrichmentService:
         self._entity_prompt = resolver.resolve("enrichment_entities") or ENTITY_EXTRACTION_PROMPT
 
     def _is_enabled(self) -> bool:
-        """Return True only when Claude enrichment is explicitly enabled."""
-        enabled = getattr(self._settings, "claude_enrichment_enabled", None)
+        """Return True only when Claude enrichment is explicitly enabled.
+
+        When tenant_config is provided, TenantConfig.feature_flags.claude_enrichment_enabled
+        takes precedence over Settings.claude_enrichment_enabled. A TenantConfig flag of False
+        disables enrichment even if Settings has it True.
+        """
         api_key = getattr(self._settings, "claude_api_key", None)
         database_backend = getattr(self._settings, "database_backend", "sqlite")
         if database_backend == "sqlite":
             return False
-        return bool(enabled and api_key)
+        if not api_key:
+            return False
+
+        # Check TenantConfig feature flag first (overrides global settings)
+        if self._tenant_config is not None:
+            tc_flags = getattr(self._tenant_config, "feature_flags", None)
+            tc_flag = getattr(tc_flags, "claude_enrichment_enabled", None)
+            if tc_flag is not None:
+                return bool(tc_flag)
+
+        # Fall back to global settings
+        enabled = getattr(self._settings, "claude_enrichment_enabled", None)
+        return bool(enabled)
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -101,6 +120,15 @@ class ClaudeEnrichmentService:
                 ) from err
         return self._client
 
+    def _get_daily_enrichment_cap(self) -> float:
+        """Return daily enrichment cap in USD from TenantConfig or Settings fallback."""
+        if self._tenant_config is not None:
+            ai_models = getattr(self._tenant_config, "ai_models", None)
+            cap = getattr(ai_models, "daily_enrichment_cap_usd", None)
+            if cap is not None:
+                return float(cap)
+        return float(getattr(self._settings, "claude_enrichment_cost_limit_usd", 10.0))
+
     async def enrich_document(
         self,
         document_id: str,
@@ -110,6 +138,7 @@ class ClaudeEnrichmentService:
         """Run the full two-call enrichment pipeline for a document.
 
         Returns enrichment result dict. No-op (returns empty dict) if not enabled.
+        Returns {"status": "cap_exceeded"} if the daily enrichment cap is exceeded.
         """
         if not self._is_enabled():
             logger.debug(
@@ -117,6 +146,27 @@ class ClaudeEnrichmentService:
                 extra={"document_id": document_id, "reason": "not_enabled_or_sqlite"},
             )
             return {}
+
+        # Check daily enrichment cap before making API calls
+        daily_cap = self._get_daily_enrichment_cap()
+        if daily_cap > 0:
+            try:
+                tracker = CostTracker(db=self._db, daily_cap_usd=daily_cap)
+                tenant_id = "default"
+                if self._tenant_config is not None:
+                    tenant_id = getattr(self._tenant_config, "tenant_id", "default")
+                if not tracker.is_allowed(estimated_cost=0.0, tenant_id=tenant_id):
+                    logger.warning(
+                        "enrichment.cap_exceeded",
+                        extra={"document_id": document_id, "daily_cap_usd": daily_cap},
+                    )
+                    return {"status": "cap_exceeded"}
+            except Exception as cap_exc:
+                # Non-fatal: log and continue if cap check itself fails
+                logger.warning(
+                    "enrichment.cap_check_failed",
+                    extra={"document_id": document_id, "error": str(cap_exc)},
+                )
 
         try:
             synopsis = await self._call_synopsis(document_id, document_text)
@@ -150,12 +200,21 @@ class ClaudeEnrichmentService:
             )
             raise
 
+    def _get_enrichment_model(self) -> str:
+        """Return enrichment model ID from TenantConfig or Settings fallback."""
+        if self._tenant_config is not None:
+            ai_models = getattr(self._tenant_config, "ai_models", None)
+            model = getattr(ai_models, "enrichment_model", None)
+            if model:
+                return model
+        return getattr(self._settings, "claude_enrichment_model", "claude-sonnet-4-6")
+
     async def _call_synopsis(self, document_id: str, document_text: str) -> SynopsisResult:
         """Call claude-sonnet-4-6 for document synopsis with prompt caching."""
         import json
 
         client = self._get_client()
-        model = getattr(self._settings, "claude_enrichment_model", "claude-sonnet-4-6")
+        model = self._get_enrichment_model()
         timeout = getattr(self._settings, "claude_enrichment_timeout", 60)
 
         # Truncate to ~100k chars to stay within token limits
