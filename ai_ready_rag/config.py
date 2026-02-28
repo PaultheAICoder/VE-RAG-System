@@ -427,6 +427,12 @@ class Settings(BaseSettings):
     tenant_config_path: str = "tenant-instances/{tenant_id}/tenant.json"
     vaultiq_encryption_key: str | None = None  # from VAULTIQ_ENCRYPTION_KEY env var
 
+    # Webhook / Integrations
+    webhook_enabled: bool = False
+    webhook_secret: str | None = None  # HMAC signing secret (sha256)
+    webhook_timeout_seconds: int = 10
+    webhook_max_retries: int = 3
+
     def model_post_init(self, __context: Any) -> None:
         """Apply profile defaults after Pydantic initialization."""
         profile = PROFILE_DEFAULTS.get(self.env_profile, PROFILE_DEFAULTS["laptop"])
