@@ -24,7 +24,7 @@ async def run_reindex_job(job_id: str, mode: str = "all") -> None:
         job_id: The reindex job ID to process.
         mode: Document selection — "all", "ready", or "failed".
     """
-    from ai_ready_rag.services.factory import get_vector_service
+    from ai_ready_rag.services.factory import get_enrichment_service, get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingService
 
     logger.info(f"[REINDEX WORKER] Starting reindex job {job_id}")
@@ -74,9 +74,11 @@ async def run_reindex_job(job_id: str, mode: str = "all") -> None:
         vector_service = get_vector_service(settings)
         await vector_service.initialize()
 
+        enrichment_service = get_enrichment_service(settings, db_session=db)
         processing_service = ProcessingService(
             vector_service=vector_service,
             settings=settings,
+            enrichment_service=enrichment_service,
         )
 
         for doc in documents:

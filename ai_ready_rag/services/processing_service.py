@@ -15,6 +15,7 @@ from ai_ready_rag.db.models import Document
 from ai_ready_rag.services.factory import get_chunker, get_vector_service
 
 if TYPE_CHECKING:
+    from ai_ready_rag.services.enrichment_service import ClaudeEnrichmentService
     from ai_ready_rag.services.protocols import ChunkerProtocol, VectorServiceProtocol
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class ProcessingService:
         settings: Settings,
         vector_service: "VectorServiceProtocol | None" = None,
         chunker: "ChunkerProtocol | None" = None,
+        enrichment_service: "ClaudeEnrichmentService | None" = None,
     ):
         """Initialize processing service.
 
@@ -74,10 +76,14 @@ class ProcessingService:
             settings: Application settings.
             vector_service: Optional vector service override (uses factory if None).
             chunker: Optional chunker override (uses factory if None).
+            enrichment_service: Optional enrichment service. When provided, runs the
+                Claude two-call enrichment pipeline after vector indexing. The service
+                self-disables when not configured, so passing it is always safe.
         """
         self.settings = settings
         self._vector_service = vector_service
         self._chunker = chunker
+        self._enrichment_service = enrichment_service
 
     @property
     def vector_service(self) -> "VectorServiceProtocol":
@@ -353,6 +359,41 @@ class ProcessingService:
                 uploaded_by=document.uploaded_by,
                 chunk_metadata=chunk_metadata,
             )
+
+            # Run Claude enrichment pipeline (no-op when not enabled/configured)
+            if self._enrichment_service is not None:
+                document_text = "\n\n".join(chunk.text for chunk in chunks)
+                chunk_dicts_for_enrichment = [
+                    {
+                        "text": chunk.text,
+                        "chunk_index": chunk.chunk_index,
+                        "page_number": chunk.page_number,
+                        "section": chunk.section,
+                    }
+                    for chunk in chunks
+                ]
+                try:
+                    await self._enrichment_service.enrich_document(
+                        document_id=document.id,
+                        document_text=document_text,
+                        chunks=chunk_dicts_for_enrichment,
+                    )
+                    # Write synopsis_id back to document after enrichment persists it
+                    from ai_ready_rag.db.models.enrichment import EnrichmentSynopsis
+
+                    synopsis = (
+                        db.query(EnrichmentSynopsis).filter_by(document_id=document.id).first()
+                    )
+                    if synopsis:
+                        document.synopsis_id = synopsis.id
+                    document.enrichment_status = "completed"
+                except Exception as exc:
+                    logger.warning(
+                        "enrichment_failed",
+                        extra={"document_id": document.id, "error": str(exc)},
+                    )
+                    document.enrichment_status = "failed"
+                db.flush()
 
             # Post-process: rechunk Coverage Summary xlsx files
             if file_path.suffix.lower() == ".xlsx" and self.settings.coverage_rechunk_enabled:

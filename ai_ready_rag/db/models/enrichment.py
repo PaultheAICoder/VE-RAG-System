@@ -53,17 +53,3 @@ class EnrichmentEntity(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     synopsis = relationship("EnrichmentSynopsis", back_populates="entities")
-
-
-class ReviewItem(Base):
-    __tablename__ = "review_items"
-
-    id = Column(String, primary_key=True, default=generate_uuid)
-    query_id = Column(String, nullable=True, index=True)  # chat message ID if applicable
-    answer_text = Column(Text, nullable=True)
-    confidence = Column(Float, nullable=True)
-    reason = Column(String, nullable=True)  # why it was routed to review
-    status = Column(String, default="pending")  # pending | approved | rejected
-    resolved_at = Column(DateTime, nullable=True)
-    resolved_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

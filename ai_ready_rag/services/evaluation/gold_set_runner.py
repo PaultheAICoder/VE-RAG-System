@@ -12,7 +12,7 @@ Usage (programmatic)::
         answer_fn=my_rag_answer_fn,
     )
     report = runner.run()
-    print(report.score, report.meets_standard_threshold)
+    # report.score, report.meets_standard_threshold
 
 Usage (CLI)::
 

@@ -45,7 +45,7 @@ async def process_document(
 
     from ai_ready_rag.db.database import SessionLocal
     from ai_ready_rag.db.models import Document
-    from ai_ready_rag.services.factory import get_vector_service
+    from ai_ready_rag.services.factory import get_enrichment_service, get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingOptions, ProcessingService
 
     logger.info(f"[ARQ] Starting processing for document {document_id}")
@@ -87,9 +87,11 @@ async def process_document(
                 except Exception as e:
                     logger.warning(f"Failed to delete vectors for {document_id}: {e}")
 
+            enrichment_service = get_enrichment_service(settings, db_session=db)
             processing_service = ProcessingService(
                 vector_service=vector_service,
                 settings=settings,
+                enrichment_service=enrichment_service,
             )
 
             try:
