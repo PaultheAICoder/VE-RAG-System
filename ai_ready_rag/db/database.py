@@ -205,6 +205,46 @@ def apply_tracked_migrations(eng) -> None:
             logger.info("tracked.migration.applied", extra={"migration": name})
 
 
+def run_alembic_upgrade(revision: str = "head", scope: str = "core") -> None:
+    """Run Alembic migrations for the given scope.
+
+    - scope="core": runs core platform migrations from alembic/
+    - scope="module:{name}": runs module-specific migrations (future)
+
+    SQLite profiles use create_all() instead of Alembic.
+    """
+    import os
+
+    from alembic import command
+    from alembic.config import Config as AlembicConfig
+
+    url = settings.database_url
+    if url.startswith("sqlite"):
+        # SQLite dev path: create_all() is sufficient, skip Alembic
+        Base.metadata.create_all(bind=engine)
+        logger.info("alembic.skipped", extra={"reason": "sqlite", "scope": scope})
+        return
+
+    # PostgreSQL path
+    alembic_cfg = AlembicConfig("alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", url)
+
+    if scope.startswith("module:"):
+        module_name = scope.split(":", 1)[1]
+        # Module migrations use separate version tables (future)
+        alembic_cfg.set_main_option("version_table", f"alembic_version_{module_name}")
+        # Module migration dirs: modules/{name}/migrations/
+        migration_dir = os.path.join("ai_ready_rag", "modules", module_name, "migrations")
+        if os.path.isdir(migration_dir):
+            alembic_cfg.set_main_option("script_location", migration_dir)
+        else:
+            logger.debug("alembic.module.no_migrations", extra={"module": module_name})
+            return
+
+    command.upgrade(alembic_cfg, revision)
+    logger.info("alembic.upgraded", extra={"revision": revision, "scope": scope})
+
+
 def get_db() -> Generator[Session, None, None]:
     """Dependency for getting database sessions."""
     db = SessionLocal()
