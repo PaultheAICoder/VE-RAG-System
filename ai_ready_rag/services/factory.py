@@ -172,6 +172,22 @@ def get_chunker(
         raise ValueError(f"Unknown chunker_backend: {backend}")
 
 
+def get_enrichment_service(settings: Settings, db_session: object = None) -> object:
+    """Factory that returns a ClaudeEnrichmentService instance.
+
+    Args:
+        settings: Application settings (used to detect enabled/disabled state).
+        db_session: Optional SQLAlchemy session for persisting enrichment results.
+
+    Returns:
+        ClaudeEnrichmentService — self-disables when claude_enrichment_enabled is
+        False, claude_api_key is None, or database_backend == 'sqlite'.
+    """
+    from ai_ready_rag.services.enrichment_service import ClaudeEnrichmentService
+
+    return ClaudeEnrichmentService(settings=settings, db_session=db_session)
+
+
 def get_query_router() -> QueryRouter:
     """Factory that returns a QueryRouter configured from application settings.
 

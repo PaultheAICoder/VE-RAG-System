@@ -108,7 +108,7 @@ async def process_document_task(
         processing_options_dict: Optional dict of per-upload processing options.
         delete_existing: If True, delete existing vectors before processing (for reprocess).
     """
-    from ai_ready_rag.services.factory import get_vector_service
+    from ai_ready_rag.services.factory import get_enrichment_service, get_vector_service
     from ai_ready_rag.services.processing_service import ProcessingOptions, ProcessingService
 
     logger.info("document_processing_started", extra={"document_id": document_id})
@@ -144,9 +144,11 @@ async def process_document_task(
                     logger.warning(f"Failed to delete vectors for {document_id}: {e}")
                     # Continue anyway - vectors may not exist
 
+            enrichment_service = get_enrichment_service(settings, db_session=db)
             processing_service = ProcessingService(
                 vector_service=vector_service,
                 settings=settings,
+                enrichment_service=enrichment_service,
             )
 
             # Process the document with optional per-upload options
