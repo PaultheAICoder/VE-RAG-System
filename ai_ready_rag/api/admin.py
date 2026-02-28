@@ -2767,8 +2767,6 @@ async def list_completed_warming_jobs(
 
     Admin only.
     """
-    from datetime import date
-
     query = db.query(WarmingBatch).filter(
         WarmingBatch.status.in_(["completed", "completed_with_errors"])
     )
@@ -2782,7 +2780,7 @@ async def list_completed_warming_jobs(
                 detail="Invalid date format. Use YYYY-MM-DD.",
             ) from None
     else:
-        filter_date = date.today()
+        filter_date = datetime.now(UTC).date()
 
     query = query.filter(
         WarmingBatch.completed_at >= datetime.combine(filter_date, datetime.min.time()),

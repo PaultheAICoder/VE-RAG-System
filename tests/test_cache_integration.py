@@ -47,6 +47,8 @@ def mock_settings():
     settings.rag_chunk_overlap_threshold = 0.9
     settings.rag_enable_query_expansion = False  # Disable for predictable tests
     settings.rag_enable_hallucination_check = False  # Disable for speed
+    settings.rag_recency_weight = 0.15
+    settings.rag_intent_boost_weight = 0.35
     return settings
 
 

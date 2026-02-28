@@ -154,9 +154,12 @@ class TestNoPrintStatements:
     def test_no_print_in_source(self):
         """No print() statements in ai_ready_rag source."""
         import pathlib
+        import re
 
         source_dir = pathlib.Path(__file__).parent.parent / "ai_ready_rag"
         violations = []
+        # Match print( only when not preceded by an identifier character (word boundary)
+        _print_re = re.compile(r"(?<![a-zA-Z0-9_])print\s*\(")
 
         for py_file in source_dir.rglob("*.py"):
             content = py_file.read_text()
@@ -165,7 +168,7 @@ class TestNoPrintStatements:
                 # Skip comments
                 if stripped.startswith("#"):
                     continue
-                if "print(" in stripped:
+                if _print_re.search(stripped):
                     violations.append(f"{py_file.relative_to(source_dir.parent)}:{i}: {stripped}")
 
         assert violations == [], "Found print() statements:\n" + "\n".join(violations)

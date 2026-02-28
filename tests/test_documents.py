@@ -460,14 +460,23 @@ class TestDocumentTagUpdate:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
 
+@patch(
+    "ai_ready_rag.api.documents.get_redis_pool",
+    new_callable=AsyncMock,
+)
 class TestUploadWithProcessingOptions:
-    """Tests for per-upload processing options."""
+    """Tests for per-upload processing options.
+
+    Redis is mocked to None at class level so uploads fall back to
+    BackgroundTasks, letting us assert on process_document_task call args.
+    """
 
     @patch("ai_ready_rag.api.documents.process_document_task")
     def test_upload_with_enable_ocr_false(
-        self, mock_task, client, admin_headers, test_tag, tmp_path
+        self, mock_task, mock_redis, client, admin_headers, test_tag, tmp_path
     ):
         """Upload with enable_ocr=false passes option to background task."""
+        mock_redis.return_value = None
         test_file = tmp_path / "test.txt"
         test_file.write_text("Test content")
 
@@ -492,9 +501,10 @@ class TestUploadWithProcessingOptions:
 
     @patch("ai_ready_rag.api.documents.process_document_task")
     def test_upload_without_options_passes_none(
-        self, mock_task, client, admin_headers, test_tag, tmp_path
+        self, mock_task, mock_redis, client, admin_headers, test_tag, tmp_path
     ):
         """Upload without processing options passes None to background task."""
+        mock_redis.return_value = None
         test_file = tmp_path / "test.txt"
         test_file.write_text("Test content")
 
@@ -514,9 +524,10 @@ class TestUploadWithProcessingOptions:
 
     @patch("ai_ready_rag.api.documents.process_document_task")
     def test_upload_with_multiple_options(
-        self, mock_task, client, admin_headers, test_tag, tmp_path
+        self, mock_task, mock_redis, client, admin_headers, test_tag, tmp_path
     ):
         """Upload with multiple processing options passes all to task."""
+        mock_redis.return_value = None
         test_file = tmp_path / "test.txt"
         test_file.write_text("Test content")
 
@@ -544,9 +555,10 @@ class TestUploadWithProcessingOptions:
 
     @patch("ai_ready_rag.api.documents.process_document_task")
     def test_upload_with_include_image_descriptions(
-        self, mock_task, client, admin_headers, test_tag, tmp_path
+        self, mock_task, mock_redis, client, admin_headers, test_tag, tmp_path
     ):
         """Upload with include_image_descriptions option."""
+        mock_redis.return_value = None
         test_file = tmp_path / "test.txt"
         test_file.write_text("Test content")
 
@@ -567,7 +579,7 @@ class TestUploadWithProcessingOptions:
         assert options_dict["include_image_descriptions"] is True
 
     def test_upload_with_invalid_table_extraction_mode(
-        self, client, admin_headers, test_tag, tmp_path
+        self, mock_redis, client, admin_headers, test_tag, tmp_path
     ):
         """Upload with invalid table_extraction_mode returns 400."""
         test_file = tmp_path / "test.txt"

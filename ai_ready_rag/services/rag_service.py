@@ -1803,7 +1803,7 @@ class RAGService:
         # 1. Find primary tag from context
         tag_counts: dict[str, int] = {}
         for result in context_results:
-            for tag in getattr(result, "tags", []):
+            for tag in result.tags or []:
                 if tag != "public":  # Skip public tag for routing
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
