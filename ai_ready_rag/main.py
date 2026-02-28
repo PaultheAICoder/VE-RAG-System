@@ -26,6 +26,7 @@ from ai_ready_rag.api import (
     tags,
     users,
 )
+from ai_ready_rag.api.tenant import router as tenant_router
 from ai_ready_rag.config import get_settings
 from ai_ready_rag.core.error_handlers import register_error_handlers
 from ai_ready_rag.core.logging import configure_logging
@@ -407,6 +408,7 @@ app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["Jobs"])
 app.include_router(experimental.router, prefix="/api", tags=["Experimental"])
 app.include_router(evaluations.router, prefix="/api/evaluations", tags=["Evaluations"])
+app.include_router(tenant_router)
 
 # Form template management (optional -- requires ingestkit-forms)
 if settings.use_ingestkit_forms:
