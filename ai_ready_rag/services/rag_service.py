@@ -41,6 +41,7 @@ from ai_ready_rag.services.vector_service import SearchResult
 
 if TYPE_CHECKING:
     from ai_ready_rag.services.protocols import VectorServiceProtocol
+    from ai_ready_rag.services.query_router import QueryRouter, RoutingDecision
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +212,7 @@ class RAGResponse:
     context_tokens_used: int
     generation_time_ms: float
     grounded: bool  # True iff len(citations) > 0
-    routing_decision: Literal["RETRIEVE", "DIRECT"] | None = None  # Query routing result
+    routing_decision: Literal["RETRIEVE", "DIRECT", "SQL"] | None = None  # Query routing result
 
 
 @dataclass
@@ -936,6 +937,7 @@ class RAGService:
         vector_service: VectorServiceProtocol | None = None,
         cache_service: CacheService | None = None,
         default_model: str | None = None,
+        query_router: QueryRouter | None = None,
     ):
         """Initialize RAG service.
 
@@ -944,6 +946,7 @@ class RAGService:
             vector_service: VectorService instance (uses factory if None for backward compat)
             cache_service: CacheService instance (lazy-created if None)
             default_model: Optional default model override
+            query_router: Optional QueryRouter for SQL-first deterministic routing
         """
         self.settings = settings
         self._vector_service = vector_service
@@ -958,6 +961,8 @@ class RAGService:
         self._cache_service: CacheService | None = cache_service
         # Live evaluation queue (injected post-construction from main.py)
         self._live_eval_queue = None
+        # SQL-first query router (optional — disabled if None)
+        self.query_router: QueryRouter | None = query_router
         # Forms query service (lazy — only if forms DB exists)
         self._forms_query_service = None
         forms_db = getattr(settings, "forms_db_path", None)
@@ -1950,6 +1955,89 @@ class RAGService:
             routing_decision=routing_decision,
         )
 
+    async def _execute_sql_route(
+        self,
+        decision: RoutingDecision,
+        query: str,
+        db: Session,
+        elapsed_ms: float,
+    ) -> RAGResponse:
+        """Execute a SQL-routed structured query and return a formatted RAGResponse.
+
+        Args:
+            decision: Routing decision containing template_name and confidence
+            query: Original user query string
+            db: Database session for executing SQL
+            elapsed_ms: Elapsed time so far (for total latency in response)
+
+        Returns:
+            RAGResponse with SQL-derived answer and routing_decision="SQL"
+        """
+        from sqlalchemy import text as sa_text
+
+        from ai_ready_rag.modules.registry import get_registry
+
+        template_name = decision.template_name
+        registry = get_registry()
+        sql_template = registry.get_sql_template_object(template_name)
+
+        if sql_template is None:
+            # Template disappeared between routing and execution — fall through gracefully
+            logger.warning(
+                "sql_route.template_missing",
+                extra={"template": template_name},
+            )
+            return self._insufficient_context_response(self.default_model, elapsed_ms, "SQL")
+
+        row_cap = getattr(self.settings, "structured_query_row_cap", 100)
+        try:
+            result = db.execute(sa_text(sql_template.sql), {"row_cap": row_cap})
+            rows = result.fetchall()
+            columns = list(result.keys())
+        except Exception as exc:
+            logger.warning(
+                "sql_route.execution_error",
+                extra={"template": template_name, "error": str(exc)},
+            )
+            return self._insufficient_context_response(self.default_model, elapsed_ms, "SQL")
+
+        # Format rows as a human-readable table
+        if not rows:
+            answer = "No matching records found in the database for your query."
+        else:
+            header = " | ".join(columns)
+            separator = "-" * len(header)
+            body_lines = [" | ".join(str(cell) for cell in row) for row in rows[:row_cap]]
+            answer = f"{header}\n{separator}\n" + "\n".join(body_lines)
+
+        logger.info(
+            "sql_route.success",
+            extra={
+                "template": template_name,
+                "rows_returned": len(rows),
+                "confidence": decision.confidence,
+            },
+        )
+
+        return RAGResponse(
+            answer=answer,
+            confidence=ConfidenceScore(
+                overall=100,
+                retrieval_score=decision.confidence,
+                coverage_score=1.0,
+                llm_score=100,
+            ),
+            citations=[],
+            action="CITE",
+            route_to=None,
+            model_used="sql",
+            context_chunks_used=0,
+            context_tokens_used=0,
+            generation_time_ms=elapsed_ms,
+            grounded=True,
+            routing_decision="SQL",
+        )
+
     async def generate(self, request: RAGRequest, db: Session) -> RAGResponse:
         """Generate RAG response for a query.
 
@@ -2051,6 +2139,19 @@ class RAGService:
                     return self._cache_entry_to_response(cached, elapsed_ms)
             except Exception as e:
                 logger.warning(f"Cache lookup failed, proceeding without cache: {e}")
+
+        # 1.4 SQL-first routing (structured queries only — no LLM involved)
+        structured_query_enabled = bool(getattr(self.settings, "structured_query_enabled", False))
+        if self.query_router and structured_query_enabled:
+            from ai_ready_rag.services.query_router import RouteType
+
+            sql_decision = self.query_router.route(
+                query=request.query,
+                structured_query_enabled=True,
+            )
+            if sql_decision.route == RouteType.SQL and sql_decision.template_name:
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                return await self._execute_sql_route(sql_decision, request.query, db, elapsed_ms)
 
         # 1.5 Run query router (if retrieve_and_direct mode enabled)
         routing_decision: str | None = None
