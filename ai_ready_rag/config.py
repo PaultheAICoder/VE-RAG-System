@@ -395,6 +395,8 @@ class Settings(BaseSettings):
     claude_enrichment_max_retries: int = 3
     claude_enrichment_timeout: int = 60
     claude_enrichment_cost_limit_usd: float = 10.0  # daily cap
+    # Enrichment backend: "api" = Anthropic HTTP API, "cli" = claude -p subprocess (#435)
+    claude_backend: Literal["api", "cli"] = "api"
 
     # ---------------------------------------------------------------------------
     # Claude Query (Standard tier primary) — Issue #374
