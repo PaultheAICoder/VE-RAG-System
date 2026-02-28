@@ -16,6 +16,7 @@ from ai_ready_rag.services.settings_service import get_model_setting
 if TYPE_CHECKING:
     from ai_ready_rag.services.processing_service import ProcessingOptions
     from ai_ready_rag.services.protocols import ChunkerProtocol, VectorServiceProtocol
+    from ai_ready_rag.services.query_router import QueryRouter
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +63,21 @@ def get_vector_service(settings: Settings) -> VectorServiceProtocol:
             ollama_url=settings.ollama_base_url,
             embedding_dimension=settings.embedding_dimension,
         )
+    elif backend == "pgvector":
+        from ai_ready_rag.services.pgvector_service import PgVectorService
+
+        logger.info(f"Creating PgVectorService: {settings.database_url[:30]}...")
+        return PgVectorService(
+            database_url=settings.database_url,
+            ollama_url=settings.ollama_base_url,
+            embedding_model=embedding_model,
+            embedding_dimension=settings.embedding_dimension,
+            tenant_id=settings.default_tenant_id,
+        )
     else:
-        raise ValueError(f"Unknown vector_backend: {backend}")
+        raise ValueError(
+            f"Unknown vector_backend: {backend!r}. Valid options: qdrant, chroma, pgvector"
+        )
 
 
 def get_chunker(
@@ -156,3 +170,18 @@ def get_chunker(
         )
     else:
         raise ValueError(f"Unknown chunker_backend: {backend}")
+
+
+def get_query_router() -> QueryRouter:
+    """Factory that returns a QueryRouter configured from application settings.
+
+    Returns:
+        QueryRouter instance with sql_confidence_threshold from settings
+        (defaults to 0.6 if setting is not present).
+    """
+    from ai_ready_rag.config import get_settings
+    from ai_ready_rag.services.query_router import QueryRouter
+
+    settings = get_settings()
+    sql_threshold = getattr(settings, "structured_query_confidence_threshold", 0.6)
+    return QueryRouter(sql_confidence_threshold=sql_threshold)

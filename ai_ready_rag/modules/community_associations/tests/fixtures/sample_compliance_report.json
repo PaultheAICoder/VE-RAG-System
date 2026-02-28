@@ -1,0 +1,44 @@
+{
+  "account_name": "Marshall Wells Community Association",
+  "account_id": "test-marshall-wells-001",
+  "report_date": "2025-07-01",
+  "report_version": "1.0",
+  "compliance_summary": {
+    "fannie_mae_eligible": true,
+    "fha_eligible": true,
+    "overall_status": "compliant",
+    "gaps": []
+  },
+  "coverage_checks": [
+    {
+      "coverage_line": "property",
+      "policy_number": "MW-PROP-2025-001",
+      "required_limit": 12500000,
+      "actual_limit": 12500000,
+      "meets_fannie_mae": true,
+      "meets_fha": true,
+      "notes": "Replacement cost value confirmed by appraisal dated 2025-05-15"
+    },
+    {
+      "coverage_line": "general_liability",
+      "policy_number": "MW-GL-2025-001",
+      "required_limit": 1000000,
+      "actual_limit": 1000000,
+      "meets_fannie_mae": true,
+      "meets_fha": true,
+      "notes": "Per-occurrence limit meets minimum requirements"
+    },
+    {
+      "coverage_line": "fidelity",
+      "policy_number": "MW-FID-2025-001",
+      "required_limit": 248000,
+      "actual_limit": 250000,
+      "meets_fannie_mae": true,
+      "meets_fha": true,
+      "notes": "Fidelity bond covers 3 months maximum assessments for 124 units"
+    }
+  ],
+  "unit_count": 124,
+  "reviewer": "automated",
+  "review_timestamp": "2025-07-01T08:00:00Z"
+}

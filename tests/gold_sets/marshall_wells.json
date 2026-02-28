@@ -1,0 +1,77 @@
+{
+  "name": "Marshall Wells Community Association",
+  "version": "1.0",
+  "description": "Gold-set evaluation questions for the Marshall Wells Community Association insurance portfolio. Covers policy coverage limits, expiring policies, Fannie Mae/FHA compliance, and premium amounts.",
+  "questions": [
+    {
+      "id": "q001",
+      "question": "What is the General Liability coverage limit for Marshall Wells Community Association?",
+      "expected_answer": "$1,000,000",
+      "category": "coverage",
+      "weight": 1.0
+    },
+    {
+      "id": "q002",
+      "question": "What is the aggregate General Liability limit?",
+      "expected_answer": "$2,000,000",
+      "category": "coverage",
+      "weight": 1.0
+    },
+    {
+      "id": "q003",
+      "question": "What is the property coverage limit for the Marshall Wells common area buildings?",
+      "expected_answer": "$4,500,000",
+      "category": "coverage",
+      "weight": 1.0
+    },
+    {
+      "id": "q004",
+      "question": "What is the Directors and Officers (D&O) liability limit?",
+      "expected_answer": "$1,000,000",
+      "category": "coverage",
+      "weight": 1.0
+    },
+    {
+      "id": "q005",
+      "question": "What is the fidelity bond / employee dishonesty coverage limit?",
+      "expected_answer": "$500,000",
+      "category": "coverage",
+      "weight": 1.0
+    },
+    {
+      "id": "q006",
+      "question": "When does the current General Liability policy expire?",
+      "expected_answer": "June 1, 2026",
+      "category": "expiration",
+      "weight": 1.0
+    },
+    {
+      "id": "q007",
+      "question": "When does the property insurance policy expire?",
+      "expected_answer": "June 1, 2026",
+      "category": "expiration",
+      "weight": 1.0
+    },
+    {
+      "id": "q008",
+      "question": "Does the Marshall Wells Community Association policy meet Fannie Mae insurance requirements?",
+      "expected_answer": "Yes",
+      "category": "compliance",
+      "weight": 1.5
+    },
+    {
+      "id": "q009",
+      "question": "Does the association carry the FHA-required fidelity bond coverage?",
+      "expected_answer": "Yes",
+      "category": "compliance",
+      "weight": 1.5
+    },
+    {
+      "id": "q010",
+      "question": "What is the annual premium for the General Liability policy?",
+      "expected_answer": "$3,200",
+      "category": "premium",
+      "weight": 1.0
+    }
+  ]
+}

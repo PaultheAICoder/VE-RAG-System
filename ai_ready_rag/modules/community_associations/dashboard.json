@@ -1,0 +1,157 @@
+{
+  "module_id": "community_associations",
+  "version": "1.0",
+  "dashboard": {
+    "title": "Community Associations Insurance Hub",
+    "icon": "shield",
+    "feature_flag": "ca_enabled",
+    "views": [
+      {
+        "id": "ca_coverage_summary",
+        "title": "Coverage Summary",
+        "description": "Current insurance coverage by line of business",
+        "icon": "file-shield",
+        "route": "/ca/coverage",
+        "api_endpoint": "/api/ca/accounts/{account_id}/coverage-summary",
+        "layout": "table",
+        "columns": [
+          {"key": "coverage_line", "label": "Coverage Line", "sortable": true},
+          {"key": "carrier_name", "label": "Carrier", "sortable": true},
+          {"key": "limit_amount", "label": "Limit", "format": "currency", "sortable": true},
+          {"key": "deductible_amount", "label": "Deductible", "format": "currency"},
+          {"key": "expiration_date", "label": "Expiration", "format": "date", "sortable": true},
+          {"key": "meets_fannie_mae", "label": "Fannie Mae", "format": "boolean"},
+          {"key": "meets_fha", "label": "FHA", "format": "boolean"}
+        ],
+        "filters": [
+          {"key": "coverage_line", "label": "Coverage Line", "type": "multiselect"},
+          {"key": "status", "label": "Status", "type": "select", "options": ["active", "expired", "all"]}
+        ]
+      },
+      {
+        "id": "ca_compliance_gaps",
+        "title": "Compliance Gaps",
+        "description": "Fannie Mae / FHA compliance gap analysis",
+        "icon": "alert-triangle",
+        "route": "/ca/compliance",
+        "api_endpoint": "/api/ca/accounts/{account_id}/compliance-gaps",
+        "layout": "list",
+        "columns": [
+          {"key": "coverage_line", "label": "Coverage Line"},
+          {"key": "gap_type", "label": "Gap Type"},
+          {"key": "severity", "label": "Severity", "format": "badge"},
+          {"key": "standard", "label": "Standard"},
+          {"key": "detail", "label": "Detail"}
+        ],
+        "empty_state": {
+          "icon": "check-circle",
+          "title": "No compliance gaps",
+          "description": "All coverage lines meet Fannie Mae and FHA requirements"
+        }
+      },
+      {
+        "id": "ca_renewals",
+        "title": "Upcoming Renewals",
+        "description": "Policies expiring within the next 90 days",
+        "icon": "calendar",
+        "route": "/ca/renewals",
+        "api_endpoint": "/api/ca/accounts/{account_id}/renewals",
+        "layout": "timeline",
+        "columns": [
+          {"key": "coverage_line", "label": "Coverage Line"},
+          {"key": "carrier_name", "label": "Carrier"},
+          {"key": "policy_number", "label": "Policy #"},
+          {"key": "expiration_date", "label": "Expiration", "format": "date"},
+          {"key": "days_until_expiry", "label": "Days Left", "format": "countdown"},
+          {"key": "total_premium_usd", "label": "Premium", "format": "currency"}
+        ],
+        "alerts": [
+          {"threshold_days": 30, "severity": "urgent", "label": "Expires Soon"},
+          {"threshold_days": 60, "severity": "warning", "label": "Renewal Due"},
+          {"threshold_days": 90, "severity": "info", "label": "Upcoming"}
+        ]
+      },
+      {
+        "id": "ca_unit_owners",
+        "title": "Unit Owner Compliance",
+        "description": "HO-6 insurance compliance status by unit",
+        "icon": "users",
+        "route": "/ca/unit-owners",
+        "api_endpoint": "/api/ca/accounts/{account_id}/unit-owners",
+        "layout": "table",
+        "columns": [
+          {"key": "unit_number", "label": "Unit", "sortable": true},
+          {"key": "compliance_status", "label": "HO-6 Status", "format": "badge", "sortable": true},
+          {"key": "ho6_required", "label": "Required", "format": "boolean"},
+          {"key": "ho6_verified", "label": "Verified", "format": "boolean"},
+          {"key": "ho6_expiration_date", "label": "Expires", "format": "date"},
+          {"key": "last_letter_sent_at", "label": "Last Letter", "format": "datetime"}
+        ],
+        "filters": [
+          {
+            "key": "compliance_status",
+            "label": "Status",
+            "type": "select",
+            "options": ["all", "compliant", "non_compliant", "unknown", "pending"]
+          }
+        ]
+      }
+    ],
+    "automation_actions": [
+      {
+        "id": "generate_renewal_packet",
+        "title": "Generate Renewal Packet",
+        "description": "Create a comprehensive renewal preparation package for this account",
+        "icon": "package",
+        "api_endpoint": "/api/ca/accounts/{account_id}/renewal-packet",
+        "method": "POST",
+        "confirm": {
+          "title": "Generate Renewal Packet?",
+          "message": "This will generate a renewal prep packet including coverage summary, compliance analysis, and carrier comparison. Continue?",
+          "confirm_label": "Generate",
+          "cancel_label": "Cancel"
+        },
+        "success_message": "Renewal packet generated successfully",
+        "feature_flag": "ca_auto_renewal"
+      },
+      {
+        "id": "send_ho6_letters",
+        "title": "Send HO-6 Compliance Letters",
+        "description": "Generate and queue compliance letters for non-compliant unit owners",
+        "icon": "mail",
+        "api_endpoint": "/api/ca/accounts/{account_id}/letters",
+        "method": "POST",
+        "params": {
+          "letter_type": "ho6_reminder"
+        },
+        "confirm": {
+          "title": "Send HO-6 Letters?",
+          "message": "This will generate compliance letters for all units with unverified HO-6 coverage. The letters will be queued for review before sending.",
+          "confirm_label": "Generate Letters",
+          "cancel_label": "Cancel"
+        },
+        "success_message": "Letter batch created — review before sending",
+        "feature_flag": "ca_unit_owner_letters"
+      },
+      {
+        "id": "generate_board_presentation",
+        "title": "Generate Board Presentation",
+        "description": "Create an insurance review slide deck for the next board meeting",
+        "icon": "presentation",
+        "api_endpoint": "/api/ca/accounts/{account_id}/board-presentation",
+        "method": "POST",
+        "params": {
+          "format": "pdf"
+        },
+        "confirm": {
+          "title": "Generate Board Presentation?",
+          "message": "This will create a board-ready insurance review package including coverage summary, compliance status, renewals, and recommended resolutions.",
+          "confirm_label": "Generate",
+          "cancel_label": "Cancel"
+        },
+        "success_message": "Board presentation generated successfully",
+        "feature_flag": "ca_board_presentations"
+      }
+    ]
+  }
+}
