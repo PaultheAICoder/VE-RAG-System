@@ -173,6 +173,58 @@ _TRACKED_MIGRATIONS = [
             "ALTER TABLE documents ADD COLUMN source_path VARCHAR",
         ],
     ),
+    (
+        "enrichment_v1_tables",
+        [
+            """CREATE TABLE IF NOT EXISTS enrichment_synopses (
+                id VARCHAR PRIMARY KEY,
+                document_id VARCHAR NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                synopsis_text TEXT NOT NULL,
+                model_id VARCHAR NOT NULL,
+                prompt_version VARCHAR,
+                token_cost INTEGER,
+                cost_usd REAL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_enrichment_synopses_document_id ON enrichment_synopses(document_id)",
+            """CREATE TABLE IF NOT EXISTS enrichment_entities (
+                id VARCHAR PRIMARY KEY,
+                synopsis_id VARCHAR NOT NULL REFERENCES enrichment_synopses(id) ON DELETE CASCADE,
+                entity_type VARCHAR NOT NULL,
+                value VARCHAR NOT NULL,
+                canonical_value VARCHAR,
+                confidence REAL,
+                source_chunk_index INTEGER,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_enrichment_entities_synopsis_id ON enrichment_entities(synopsis_id)",
+            """CREATE TABLE IF NOT EXISTS review_items (
+                id VARCHAR PRIMARY KEY,
+                query_id VARCHAR,
+                answer_text TEXT,
+                confidence REAL,
+                reason VARCHAR,
+                status VARCHAR DEFAULT 'pending',
+                resolved_at DATETIME,
+                resolved_by VARCHAR REFERENCES users(id) ON DELETE SET NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_review_items_query_id ON review_items(query_id)",
+        ],
+    ),
+    (
+        "enrichment_v1_document_columns",
+        [
+            "ALTER TABLE documents ADD COLUMN synopsis_id VARCHAR REFERENCES enrichment_synopses(id) ON DELETE SET NULL",
+            "ALTER TABLE documents ADD COLUMN enrichment_status VARCHAR",
+            "ALTER TABLE documents ADD COLUMN enrichment_model VARCHAR",
+            "ALTER TABLE documents ADD COLUMN enrichment_version VARCHAR",
+            "ALTER TABLE documents ADD COLUMN enrichment_tokens_used INTEGER",
+            "ALTER TABLE documents ADD COLUMN enrichment_cost_usd REAL",
+            "ALTER TABLE documents ADD COLUMN enrichment_completed_at DATETIME",
+            "ALTER TABLE documents ADD COLUMN document_role VARCHAR",
+        ],
+    ),
 ]
 
 
