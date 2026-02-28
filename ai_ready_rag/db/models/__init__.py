@@ -28,6 +28,7 @@ from ai_ready_rag.db.models.evaluation import (
     EvaluationSample,
     LiveEvaluationScore,
 )
+from ai_ready_rag.db.models.excel_tables import ExcelTableRegistry
 from ai_ready_rag.db.models.rag import CuratedQA, CuratedQAKeyword, QuerySynonym
 from ai_ready_rag.db.models.review import ReviewItem
 from ai_ready_rag.db.models.suggestion import TagSuggestion
@@ -67,4 +68,5 @@ __all__ = [
     "EnrichmentSynopsis",
     "EnrichmentEntity",
     "ReviewItem",
+    "ExcelTableRegistry",
 ]

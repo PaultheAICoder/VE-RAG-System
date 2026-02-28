@@ -347,10 +347,65 @@ class VERagPostgresStructuredDB:
         )
         try:
             df.to_sql(table_name, engine, if_exists="replace", index=False, schema=self._SCHEMA)
+            # Register schema metadata in excel_table_registry for NL2SQL discovery
+            self._register_table_in_registry(table_name, df)
         except Exception as exc:
             raise RuntimeError(f"Failed to write table '{table_name}': {exc}") from exc
         finally:
             engine.dispose()
+
+    def _register_table_in_registry(self, table_name: str, df) -> None:
+        """Write table schema to excel_table_registry for NL2SQL discovery.
+
+        Uses UPSERT so re-ingesting the same file updates the existing row
+        rather than creating a duplicate. Failures are logged but never raised
+        (registry write must not break ingest).
+        """
+        import uuid as _uuid
+        from datetime import datetime
+
+        try:
+            columns = list(df.columns.astype(str))
+            column_types = {str(col): str(dtype) for col, dtype in df.dtypes.items()}
+            now = datetime.utcnow()
+
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO excel_table_registry
+                            (id, table_name, schema_name, columns, column_types,
+                             tenant_id, row_count, created_at, updated_at)
+                        VALUES
+                            (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (schema_name, table_name)
+                        DO UPDATE SET
+                            columns = EXCLUDED.columns,
+                            column_types = EXCLUDED.column_types,
+                            row_count = EXCLUDED.row_count,
+                            updated_at = EXCLUDED.updated_at
+                        """,
+                        (
+                            str(_uuid.uuid4()),
+                            table_name,
+                            self._SCHEMA,
+                            json.dumps(columns),
+                            json.dumps(column_types),
+                            getattr(self, "_tenant_id", "default"),
+                            len(df),
+                            now,
+                            now,
+                        ),
+                    )
+                conn.commit()
+            logger.info(
+                "excel_table_registry.written: table=%s columns=%d rows=%d",
+                table_name,
+                len(columns),
+                len(df),
+            )
+        except Exception as exc:
+            logger.warning("excel_table_registry.write_failed: %s", exc)
 
     def drop_table(self, table_name: str) -> None:
         with self._connect() as conn:
