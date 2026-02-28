@@ -36,6 +36,7 @@ class ChatMessage(TimestampMixin, Base):
     confidence_coverage = Column(Float, nullable=True)
     confidence_llm = Column(Integer, nullable=True)
     generation_time_ms = Column(Float, nullable=True)
+    model_used = Column(String, nullable=True)
     was_routed = Column(Boolean, default=False)
     routed_to = Column(String, nullable=True)
     route_reason = Column(String, nullable=True)

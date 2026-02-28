@@ -104,6 +104,7 @@ class MessageResponse(BaseModel):
     sources: list[SourceInfo] | None = None
     confidence: ConfidenceInfo | None = None
     generation_time_ms: float | None = None
+    model_used: str | None = None
     was_routed: bool = False
     routed_to: str | None = None
     route_reason: str | None = None
