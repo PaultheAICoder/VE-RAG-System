@@ -933,3 +933,49 @@ class ReconcileResponse(BaseModel):
     issues: list[ReconcileIssue]
     repairs: list[ReconcileRepair]
     dry_run: bool
+
+
+# =============================================================================
+# Review Queue (Issue #383)
+# =============================================================================
+
+
+class ReviewItemResponse(BaseModel):
+    """Single review queue item."""
+
+    id: str
+    review_type: str
+    query: str | None = None
+    tentative_answer: str | None = None
+    confidence: float | None = None
+    candidate_types: str | None = None
+    candidate_scores: str | None = None
+    review_status: str
+    corrected_answer: str | None = None
+    reviewer_id: str | None = None
+    module_context: str | None = None
+    tenant_id: str | None = None
+    document_id: str | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class ReviewQueueListResponse(BaseModel):
+    """Paginated list of review queue items."""
+
+    items: list[ReviewItemResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class ReviewItemResolveResponse(BaseModel):
+    """Response after approving or rejecting a review item."""
+
+    id: str
+    review_status: str
+    resolved_at: datetime
+    reviewer_id: str
