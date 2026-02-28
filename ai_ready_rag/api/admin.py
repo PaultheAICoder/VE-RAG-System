@@ -2092,7 +2092,7 @@ async def start_reindex(
     redis = await get_redis_pool()
     if redis:
         try:
-            await redis.enqueue_job("reindex_knowledge_base", job.id, request.mode)
+            await redis.enqueue_job("reindex_knowledge_base", job.id)
             logger.info(f"Reindex job {job.id} enqueued via ARQ")
         except Exception as e:
             logger.warning(f"ARQ enqueue failed for reindex, falling back: {e}")
