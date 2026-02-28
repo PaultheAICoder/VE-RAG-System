@@ -1,0 +1,153 @@
+{
+  "version": "1.0",
+  "account": "Marshall Wells Community Association",
+  "account_id": "test-marshall-wells-001",
+  "description": "Gold set for CA module extraction accuracy evaluation",
+  "passing_threshold": 0.70,
+  "questions": [
+    {
+      "id": "q01",
+      "category": "coverage_lookup",
+      "question": "What is the property insurance carrier for Marshall Wells?",
+      "expected_answer": "State Farm Fire and Casualty Company",
+      "expected_entities": [{"type": "insurance_carrier", "value": "State Farm Fire and Casualty Company"}],
+      "acceptable_variants": ["State Farm", "State Farm Fire and Casualty"],
+      "weight": 1.0
+    },
+    {
+      "id": "q02",
+      "category": "coverage_lookup",
+      "question": "What is the property coverage limit?",
+      "expected_answer": "12500000",
+      "expected_entities": [{"type": "coverage_limit", "value": "12500000"}],
+      "acceptable_variants": ["$12,500,000", "12.5 million", "$12.5M"],
+      "weight": 1.0
+    },
+    {
+      "id": "q03",
+      "category": "coverage_lookup",
+      "question": "What is the property deductible?",
+      "expected_answer": "25000",
+      "expected_entities": [{"type": "deductible", "value": "25000"}],
+      "acceptable_variants": ["$25,000", "$25K"],
+      "weight": 1.0
+    },
+    {
+      "id": "q04",
+      "category": "coverage_lookup",
+      "question": "What is the general liability carrier?",
+      "expected_answer": "The Travelers Indemnity Company",
+      "expected_entities": [{"type": "insurance_carrier", "value": "The Travelers Indemnity Company"}],
+      "acceptable_variants": ["Travelers", "Travelers Indemnity"],
+      "weight": 1.0
+    },
+    {
+      "id": "q05",
+      "category": "coverage_lookup",
+      "question": "What is the general liability limit?",
+      "expected_answer": "1000000",
+      "expected_entities": [{"type": "coverage_limit", "value": "1000000"}],
+      "acceptable_variants": ["$1,000,000", "$1M", "1 million"],
+      "weight": 1.0
+    },
+    {
+      "id": "q06",
+      "category": "coverage_lookup",
+      "question": "What is the fidelity coverage carrier?",
+      "expected_answer": "Hartford Fire Insurance Company",
+      "expected_entities": [{"type": "insurance_carrier", "value": "Hartford Fire Insurance Company"}],
+      "acceptable_variants": ["Hartford", "The Hartford"],
+      "weight": 1.0
+    },
+    {
+      "id": "q07",
+      "category": "policy_dates",
+      "question": "When does the property policy expire?",
+      "expected_answer": "2026-06-01",
+      "expected_entities": [{"type": "expiration_date", "value": "2026-06-01"}],
+      "acceptable_variants": ["June 1, 2026", "06/01/2026"],
+      "weight": 1.0
+    },
+    {
+      "id": "q08",
+      "category": "policy_dates",
+      "question": "What is the effective date of the property policy?",
+      "expected_answer": "2025-06-01",
+      "expected_entities": [{"type": "effective_date", "value": "2025-06-01"}],
+      "acceptable_variants": ["June 1, 2025", "06/01/2025"],
+      "weight": 1.0
+    },
+    {
+      "id": "q09",
+      "category": "premium",
+      "question": "What is the total annual premium?",
+      "expected_answer": "59800.00",
+      "expected_entities": [{"type": "coverage_limit", "value": "59800.00"}],
+      "acceptable_variants": ["$59,800", "$59,800.00"],
+      "weight": 1.0
+    },
+    {
+      "id": "q10",
+      "category": "compliance",
+      "question": "Does the general liability coverage meet Fannie Mae requirements?",
+      "expected_answer": "yes",
+      "expected_entities": [],
+      "acceptable_variants": ["true", "Yes", "meets requirements"],
+      "weight": 1.0
+    },
+    {
+      "id": "q11",
+      "category": "compliance",
+      "question": "Is this association FHA eligible?",
+      "expected_answer": "yes",
+      "expected_entities": [],
+      "acceptable_variants": ["true", "Yes", "FHA eligible"],
+      "weight": 1.0
+    },
+    {
+      "id": "q12",
+      "category": "account_info",
+      "question": "How many units does Marshall Wells have?",
+      "expected_answer": "124",
+      "expected_entities": [],
+      "acceptable_variants": ["124 units"],
+      "weight": 1.0
+    },
+    {
+      "id": "q13",
+      "category": "policy_number",
+      "question": "What is the property policy number?",
+      "expected_answer": "MW-PROP-2025-001",
+      "expected_entities": [{"type": "policy_number", "value": "MW-PROP-2025-001"}],
+      "acceptable_variants": [],
+      "weight": 1.0
+    },
+    {
+      "id": "q14",
+      "category": "premium",
+      "question": "What is the property insurance premium?",
+      "expected_answer": "48500.00",
+      "expected_entities": [],
+      "acceptable_variants": ["$48,500", "$48,500.00"],
+      "weight": 1.0
+    },
+    {
+      "id": "q15",
+      "category": "coverage_lookup",
+      "question": "How many coverage lines does Marshall Wells carry?",
+      "expected_answer": "3",
+      "expected_entities": [],
+      "acceptable_variants": ["three", "3 policies"],
+      "weight": 1.0
+    },
+    {
+      "id": "q16",
+      "category": "compliance",
+      "question": "Does the property coverage meet both Fannie Mae and FHA requirements?",
+      "expected_answer": "yes",
+      "expected_entities": [],
+      "acceptable_variants": ["true", "Yes", "meets both"],
+      "weight": 1.0
+    }
+  ]
+}

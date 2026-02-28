@@ -52,4 +52,25 @@ class Document(Base):
     auto_tag_source = Column(Text, nullable=True)  # JSON provenance
     source_path = Column(String, nullable=True)  # Original folder path from upload
 
+    # Enrichment columns — Issue #366
+    synopsis_id = Column(
+        String,
+        ForeignKey("enrichment_synopses.id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+    )
+    enrichment_status = Column(String, nullable=True)  # null | pending | completed | failed
+    enrichment_model = Column(String, nullable=True)
+    enrichment_version = Column(String, nullable=True)
+    enrichment_tokens_used = Column(Integer, nullable=True)
+    enrichment_cost_usd = Column(Float, nullable=True)
+    enrichment_completed_at = Column(DateTime, nullable=True)
+    document_role = Column(String, nullable=True)  # e.g. "governing_doc", "insurance_policy"
+
     tags = relationship("Tag", secondary=document_tags, back_populates="documents")
+
+    # Relationship — the "active" synopsis linked to this document
+    synopsis = relationship(
+        "EnrichmentSynopsis",
+        foreign_keys=[synopsis_id],
+        primaryjoin="Document.synopsis_id == EnrichmentSynopsis.id",
+    )

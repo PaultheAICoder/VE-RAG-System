@@ -20,6 +20,7 @@ from ai_ready_rag.db.models.cache import (
 )
 from ai_ready_rag.db.models.chat import ChatMessage, ChatSession
 from ai_ready_rag.db.models.document import Document
+from ai_ready_rag.db.models.enrichment import EnrichmentEntity, EnrichmentSynopsis
 from ai_ready_rag.db.models.evaluation import (
     DatasetSample,
     EvaluationDataset,
@@ -63,5 +64,7 @@ __all__ = [
     "EvaluationRun",
     "EvaluationSample",
     "LiveEvaluationScore",
+    "EnrichmentSynopsis",
+    "EnrichmentEntity",
     "ReviewItem",
 ]
