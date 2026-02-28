@@ -42,6 +42,7 @@ from ai_ready_rag.services.rag_service import (
     RAGService,
 )
 from ai_ready_rag.services.settings_service import SettingsService
+from ai_ready_rag.tenant.resolver import get_tenant_config_resolver
 
 # Settings key for runtime chat model override
 CHAT_MODEL_KEY = "chat_model"
@@ -563,11 +564,16 @@ async def send_message(
         settings_service = SettingsService(db)
         chat_model = settings_service.get(CHAT_MODEL_KEY) or settings.chat_model
 
+        # Resolve tenant config for per-tenant feature flag gating
+        tenant_id = getattr(current_user, "tenant_id", None) or settings.default_tenant_id
+        tenant_config = get_tenant_config_resolver().resolve(tenant_id)
+
         rag_service = RAGService(
             settings,
             vector_service=request.app.state.vector_service,
             default_model=chat_model,
             query_router=getattr(request.app.state, "query_router", None),
+            tenant_config=tenant_config,
         )
         response = await rag_service.generate(rag_request, db)
 

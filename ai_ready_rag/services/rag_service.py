@@ -938,6 +938,7 @@ class RAGService:
         cache_service: CacheService | None = None,
         default_model: str | None = None,
         query_router: QueryRouter | None = None,
+        tenant_config: object | None = None,
     ):
         """Initialize RAG service.
 
@@ -947,9 +948,12 @@ class RAGService:
             cache_service: CacheService instance (lazy-created if None)
             default_model: Optional default model override
             query_router: Optional QueryRouter for SQL-first deterministic routing
+            tenant_config: Optional TenantConfig for per-tenant feature flag overrides.
+                When provided, feature flags in TenantConfig take precedence over Settings.
         """
         self.settings = settings
         self._vector_service = vector_service
+        self._tenant_config = tenant_config
         self.ollama_url = settings.ollama_base_url
         self.default_model = default_model or settings.chat_model
         # Non-tunable settings from config (not exposed in UI)
@@ -2141,7 +2145,13 @@ class RAGService:
                 logger.warning(f"Cache lookup failed, proceeding without cache: {e}")
 
         # 1.4 SQL-first routing (structured queries only — no LLM involved)
+        # TenantConfig feature flag takes precedence over global Settings when provided.
         structured_query_enabled = bool(getattr(self.settings, "structured_query_enabled", False))
+        if self._tenant_config is not None:
+            tc_flags = getattr(self._tenant_config, "feature_flags", None)
+            tc_sq_flag = getattr(tc_flags, "structured_query_enabled", None)
+            if tc_sq_flag is not None:
+                structured_query_enabled = bool(tc_sq_flag)
         if self.query_router and structured_query_enabled:
             from ai_ready_rag.services.query_router import RouteType
 
