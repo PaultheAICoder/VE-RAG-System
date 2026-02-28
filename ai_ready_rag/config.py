@@ -299,6 +299,17 @@ class Settings(BaseSettings):
     auto_tagging_llm_timeout_seconds: int = 30
     auto_tagging_llm_max_retries: int = 1
 
+    # Claude API (Standard tier — used by ClaudeQueryService and ClaudeEnrichmentService)
+    claude_api_key: str | None = None  # Required to enable Claude-backed services
+    claude_query_enabled: bool = False  # Enable ClaudeQueryService (requires postgresql + api_key)
+    claude_query_model_simple: str = (
+        "claude-haiku-4-5-20251001"  # Fast/cheap model for simple queries
+    )
+    claude_query_model_complex: str = "claude-sonnet-4-6"  # Accurate model for complex queries
+    claude_query_cost_limit_usd: float = 1.0  # Per-request cost guard (no-op if exceeded)
+    claude_enrichment_timeout: int = 60  # Timeout seconds for Claude API calls
+    database_backend: str = "sqlite"  # "sqlite" | "postgresql" — guards Claude features
+
     # Document Processing
     enable_ocr: bool | None = None  # None = use profile default
     ocr_language: str = "eng"
