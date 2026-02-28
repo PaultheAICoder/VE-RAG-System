@@ -62,8 +62,8 @@ class TestReconcileEndpoint:
                     "document_id": "abc-123",
                     "filename": "report.pdf",
                     "issue": "ghost_doc",
-                    "detail": "status=ready in SQLite but 0 vectors in chunk_vectors",
-                    "sqlite_chunks": 36,
+                    "detail": "status=ready in PostgreSQL but 0 vectors in chunk_vectors",
+                    "db_chunks": 36,
                     "vector_chunks": 0,
                 }
             ],
@@ -94,8 +94,8 @@ class TestReconcileEndpoint:
                     "document_id": "orphan-1",
                     "filename": None,
                     "issue": "orphan_vectors",
-                    "detail": "Vectors exist in chunk_vectors but no SQLite record",
-                    "sqlite_chunks": None,
+                    "detail": "Vectors exist in chunk_vectors but no PostgreSQL record",
+                    "db_chunks": None,
                     "vector_chunks": 14,
                 }
             ],

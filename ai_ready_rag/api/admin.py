@@ -704,20 +704,13 @@ async def get_architecture_info(
 
     try:
         health = await vector_service.health_check()
-        # Handle both Qdrant (named tuple) and ChromaDB (dict) responses
-        if isinstance(health, dict):
-            vector_db_status = "healthy" if health.get("healthy", False) else "unhealthy"
-            # Check Ollama separately for ChromaDB
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(f"{settings.ollama_base_url}/api/tags")
-                    ollama_status = "healthy" if resp.status_code == 200 else "unhealthy"
-            except Exception:
-                ollama_status = "unhealthy"
-        else:
-            # Qdrant returns named tuple
-            ollama_status = "healthy" if health.ollama_healthy else "unhealthy"
-            vector_db_status = "healthy" if health.qdrant_healthy else "unhealthy"
+        vector_db_status = "healthy" if health.get("healthy", False) else "unhealthy"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{settings.ollama_base_url}/api/tags")
+                ollama_status = "healthy" if resp.status_code == 200 else "unhealthy"
+        except Exception:
+            ollama_status = "unhealthy"
     except Exception as e:
         logger.warning(f"Health check failed: {e}")
         ollama_status = "unhealthy"
@@ -761,7 +754,7 @@ async def get_architecture_info(
             model=get_model_setting("embedding_model", settings.embedding_model),
             dimensions=settings.embedding_dimension,
             vector_store=settings.vector_backend,
-            vector_store_url=settings.qdrant_url,
+            vector_store_url=settings.database_url,
         ),
         chat_model=ChatModelInfo(
             name=get_model_setting("chat_model", settings.chat_model),
@@ -1152,7 +1145,7 @@ async def get_detailed_health(
             status="healthy" if vector_healthy else "unhealthy",
             version=vector_db_version,
             details={
-                "collection": settings.qdrant_collection,
+                "table": "chunk_vectors",
                 "chunks": total_chunks,
             },
         ),
@@ -2610,13 +2603,13 @@ async def get_cache_stats(
 
     # Estimate storage size (rough calculation)
     # Each entry: ~10KB average (query_text + answer + embedding + sources)
-    storage_bytes = stats.sqlite_entries * 10240 if stats.sqlite_entries else None
+    storage_bytes = stats.db_entries * 10240 if stats.db_entries else None
 
     return CacheStatsResponse(
         enabled=stats.enabled,
         total_entries=stats.total_entries,
         memory_entries=stats.memory_entries,
-        sqlite_entries=stats.sqlite_entries,
+        db_entries=stats.db_entries,
         hit_count=stats.hit_count,
         miss_count=stats.miss_count,
         hit_rate=stats.hit_rate,
@@ -2633,7 +2626,7 @@ async def clear_cache(
 ):
     """Clear all cache entries.
 
-    Removes all entries from both memory and SQLite cache.
+    Removes all entries from both memory and database cache.
     Admin only.
     """
     from ai_ready_rag.services.cache_service import CacheService
@@ -4671,7 +4664,7 @@ async def reconcile_stores(
     current_user: User = Depends(require_system_admin),
     db: Session = Depends(get_db),
 ):
-    """Detect and optionally repair SQLite ↔ Qdrant drift.
+    """Detect and optionally repair PostgreSQL ↔ pgvector drift.
 
     Use dry_run=true (default) to detect issues without making changes.
     Set dry_run=false to auto-repair detected issues.
