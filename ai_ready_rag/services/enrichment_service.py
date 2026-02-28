@@ -13,12 +13,16 @@ No-op on sqlite profile — Ollama/RAG path is unaffected.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ai_ready_rag.services.cost_tracker import CostTracker
 from ai_ready_rag.tenant.resolver import PromptResolver
+
+if TYPE_CHECKING:
+    from ai_ready_rag.services.enrichment_cli_backend import ClaudeCliEnrichmentBackend
 
 logger = logging.getLogger(__name__)
 
@@ -82,19 +86,33 @@ class ClaudeEnrichmentService:
         self._synopsis_prompt = resolver.resolve("enrichment_synopsis") or SYNOPSIS_SYSTEM_PROMPT
         self._entity_prompt = resolver.resolve("enrichment_entities") or ENTITY_EXTRACTION_PROMPT
 
+        # Wire in CLI backend when CLAUDE_BACKEND=cli
+        self._cli_backend: ClaudeCliEnrichmentBackend | None = None
+        if getattr(settings, "claude_backend", "api") == "cli":
+            from ai_ready_rag.services.enrichment_cli_backend import ClaudeCliEnrichmentBackend
+
+            self._cli_backend = ClaudeCliEnrichmentBackend()
+
     def _is_enabled(self) -> bool:
         """Return True only when Claude enrichment is explicitly enabled.
 
         When tenant_config is provided, TenantConfig.feature_flags.claude_enrichment_enabled
         takes precedence over Settings.claude_enrichment_enabled. A TenantConfig flag of False
         disables enrichment even if Settings has it True.
+
+        When claude_backend == "cli", the API key check is skipped (CLI uses the local
+        Claude Code session instead of ANTHROPIC_API_KEY).
         """
-        api_key = getattr(self._settings, "claude_api_key", None)
         database_backend = getattr(self._settings, "database_backend", "sqlite")
         if database_backend == "sqlite":
             return False
-        if not api_key:
-            return False
+
+        claude_backend = getattr(self._settings, "claude_backend", "api")
+        if claude_backend != "cli":
+            # API backend requires an API key
+            api_key = getattr(self._settings, "claude_api_key", None)
+            if not api_key:
+                return False
 
         # Check TenantConfig feature flag first (overrides global settings)
         if self._tenant_config is not None:
@@ -210,9 +228,31 @@ class ClaudeEnrichmentService:
         return getattr(self._settings, "claude_enrichment_model", "claude-sonnet-4-6")
 
     async def _call_synopsis(self, document_id: str, document_text: str) -> SynopsisResult:
-        """Call claude-sonnet-4-6 for document synopsis with prompt caching."""
+        """Call Claude for document synopsis.
+
+        Delegates to the CLI backend when claude_backend == "cli", otherwise
+        uses the Anthropic HTTP API with prompt caching.
+        """
         import json
 
+        # --- CLI backend path ---
+        if self._cli_backend is not None:
+            content = await asyncio.to_thread(
+                self._cli_backend.call_synopsis, document_text, "default"
+            )
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                parsed = {"raw": content}
+            return SynopsisResult(
+                synopsis_text=content,
+                model_id="claude-cli",
+                token_cost=0,
+                cost_usd=0.0,
+                raw_json=parsed,
+            )
+
+        # --- API backend path (unchanged) ---
         client = self._get_client()
         model = self._get_enrichment_model()
         timeout = getattr(self._settings, "claude_enrichment_timeout", 60)
@@ -260,17 +300,14 @@ class ClaudeEnrichmentService:
         synopsis: SynopsisResult,
         chunks: list[dict[str, Any]],
     ) -> list[EntityResult]:
-        """Call claude-haiku for entity extraction on chunk batches."""
+        """Call Claude for entity extraction on chunk batches.
+
+        Delegates to the CLI backend when claude_backend == "cli", otherwise
+        uses the Anthropic HTTP API (haiku model, batched).
+        """
         import json
 
-        client = self._get_client()
-        simple_model = getattr(
-            self._settings,
-            "claude_query_model_simple",
-            "claude-haiku-4-5-20251001",
-        )
         batch_size = getattr(self._settings, "claude_enrichment_batch_size", 8)
-
         all_entities: list[EntityResult] = []
 
         for batch_start in range(0, len(chunks), batch_size):
@@ -280,26 +317,39 @@ class ClaudeEnrichmentService:
                 for i, c in enumerate(batch)
             )
 
-            prompt = f"Synopsis:\n{synopsis.synopsis_text[:1000]}\n\nChunks:\n{batch_text}"
-
-            message = client.messages.create(
-                model=simple_model,
-                max_tokens=1024,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": self._entity_prompt + "\n\n" + prompt,
-                    }
-                ],
-            )
-
-            content = message.content[0].text if message.content else "[]"
-            try:
-                items = json.loads(content)
-                if not isinstance(items, list):
+            # --- CLI backend path ---
+            if self._cli_backend is not None:
+                items = await asyncio.to_thread(
+                    self._cli_backend.call_entity_extraction,
+                    synopsis.synopsis_text,
+                    batch_text,
+                )
+            else:
+                # --- API backend path (unchanged) ---
+                client = self._get_client()
+                simple_model = getattr(
+                    self._settings,
+                    "claude_query_model_simple",
+                    "claude-haiku-4-5-20251001",
+                )
+                prompt = f"Synopsis:\n{synopsis.synopsis_text[:1000]}\n\nChunks:\n{batch_text}"
+                message = client.messages.create(
+                    model=simple_model,
+                    max_tokens=1024,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": self._entity_prompt + "\n\n" + prompt,
+                        }
+                    ],
+                )
+                content = message.content[0].text if message.content else "[]"
+                try:
+                    items = json.loads(content)
+                    if not isinstance(items, list):
+                        items = []
+                except json.JSONDecodeError:
                     items = []
-            except json.JSONDecodeError:
-                items = []
 
             for item in items:
                 if not isinstance(item, dict):

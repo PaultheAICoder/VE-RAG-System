@@ -3,7 +3,7 @@
   "tenant_name": "VaultIQ Dev",
   "feature_flags": {
     "ca_enabled": true,
-    "claude_enrichment_enabled": false,
+    "claude_enrichment_enabled": true,
     "structured_query_enabled": true,
     "claude_query_enabled": false
   },
