@@ -57,8 +57,11 @@ class QueryRouter:
 
     def _get_registry(self):
         if self._registry is None:
-            from ai_ready_rag.core.module_registry import ModuleRegistry
+            from ai_ready_rag.modules.registry import ModuleRegistry
 
+            # Use get_instance() so the router always shares the same singleton
+            # as main.py and module startup code, even when called before
+            # init_registry() (e.g. in tests — returns an empty registry).
             self._registry = ModuleRegistry.get_instance()
         return self._registry
 

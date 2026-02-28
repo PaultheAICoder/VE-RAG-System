@@ -2,7 +2,7 @@
 
 import pytest
 
-from ai_ready_rag.core.module_registry import ModuleRegistry, SQLTemplate
+from ai_ready_rag.modules.registry import ModuleRegistry, SQLTemplate
 from ai_ready_rag.services.query_router import QueryRouter, RouteType
 
 
@@ -17,6 +17,7 @@ def reset_registry():
 def router_with_templates():
     registry = ModuleRegistry.get_instance()
     registry.register_sql_templates(
+        "test_module",
         {
             "ca_coverage_by_line": SQLTemplate(
                 name="ca_coverage_by_line",
@@ -35,7 +36,7 @@ def router_with_templates():
                 trigger_phrases=["carrier", "insurer", "who insures", "insurance company"],
                 description="Look up carrier by account name",
             ),
-        }
+        },
     )
     return QueryRouter(sql_confidence_threshold=0.5)
 
@@ -94,13 +95,14 @@ class TestQueryRouterRouting:
     def test_review_route_when_floor_set(self):
         registry = ModuleRegistry.get_instance()
         registry.register_sql_templates(
+            "test_module",
             {
                 "test_tmpl": SQLTemplate(
                     name="test_tmpl",
                     sql="SELECT 1 LIMIT :row_cap",
                     trigger_phrases=["coverage", "policy", "limit", "carrier", "insurer"],
                 ),
-            }
+            },
         )
         router = QueryRouter(sql_confidence_threshold=0.9, review_floor=0.1)
         decision = router.route("what is the coverage?", structured_query_enabled=True)

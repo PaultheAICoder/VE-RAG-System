@@ -26,6 +26,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+# ─── SQL template dataclass ──────────────────────────────────────────────────
+
+
+@dataclass
+class SQLTemplate:
+    """A registered SQL template with its parameter contract and routing metadata."""
+
+    name: str
+    sql: str
+    trigger_phrases: list[str] = field(default_factory=list)
+    description: str = ""
+
+
 # ─── SQL template safety guards ─────────────────────────────────────────────
 
 _DML_PATTERN = re.compile(
@@ -92,12 +106,32 @@ class ModuleRegistry:
     def __init__(self) -> None:
         self._classifiers: dict[str, Any] = {}  # module_name → classifier config/path
         self._entity_maps: dict[str, dict[str, str]] = {}  # module_name → {entity: table.col}
-        self._sql_templates: dict[str, str] = {}  # template_name → sql
+        self._sql_templates: dict[str, SQLTemplate] = {}  # template_name → SQLTemplate
         self._compliance_checkers: dict[str, ComplianceChecker] = {}
         self._api_routers: list[tuple[str, APIRouter, str]] = []  # (module_name, router, prefix)
         self._ams_connectors: dict[str, Any] = {}  # name → AMSConnector
         self._active_modules: list[str] = ["core"]
         self._manifests: dict[str, ModuleManifest] = {}
+
+    # ── Class-level singleton helpers (mirrors core.module_registry API) ──
+
+    @classmethod
+    def get_instance(cls) -> ModuleRegistry:
+        """Return the process-wide singleton, initializing it if needed.
+
+        Convenience alias for init_registry() / get_registry() for code that
+        previously used core.module_registry.ModuleRegistry.get_instance().
+        """
+        global _registry
+        if _registry is None:
+            _registry = cls()
+        return _registry
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton — for testing only."""
+        global _registry
+        _registry = None
 
     # ── Registration methods (called by modules at startup) ────────────────
 
@@ -125,13 +159,18 @@ class ModuleRegistry:
             extra={"module_name": module_name, "count": len(entity_map)},
         )
 
-    def register_sql_templates(self, module_name: str, templates: dict[str, str] | str) -> None:
+    def register_sql_templates(
+        self, module_name: str, templates: dict[str, SQLTemplate | str] | str
+    ) -> None:
         """Register parameterized SQL templates.
 
         Args:
             module_name: Unique module identifier.
-            templates: Dict of {template_name: sql_string} OR path to sql_templates.yaml.
-                       All templates are validated for safety (no DML, must have LIMIT).
+            templates: One of:
+                - Dict of {template_name: SQLTemplate} — preferred, full metadata
+                - Dict of {template_name: sql_string} — backward-compat; auto-wrapped
+                - Path to sql_templates.yaml — loaded and auto-wrapped
+                All templates are validated for safety (no DML, must have LIMIT).
 
         Raises:
             ValueError: If any template fails safety validation.
@@ -144,9 +183,15 @@ class ModuleRegistry:
                 data = yaml.safe_load(f)
             templates = {t["name"]: t["sql"].strip() for t in data.get("templates", [])}
 
-        for name, sql in templates.items():
-            _validate_sql_template(name, sql)
-            self._sql_templates[name] = sql
+        for name, tmpl in templates.items():
+            if isinstance(tmpl, SQLTemplate):
+                _validate_sql_template(name, tmpl.sql)
+                self._sql_templates[name] = tmpl
+            else:
+                # Backward compat: plain SQL string — auto-wrap into SQLTemplate
+                sql = tmpl
+                _validate_sql_template(name, sql)
+                self._sql_templates[name] = SQLTemplate(name=name, sql=sql, trigger_phrases=[])
 
         logger.info(
             "registry.sql_templates.registered",
@@ -195,12 +240,22 @@ class ModuleRegistry:
             merged.update(entity_map)
         return merged
 
-    def get_sql_templates(self) -> dict[str, str]:
-        """Return all registered SQL templates across all modules."""
+    @property
+    def sql_templates(self) -> dict[str, SQLTemplate]:
+        """Return all registered SQL templates as SQLTemplate objects (used by QueryRouter)."""
         return dict(self._sql_templates)
 
+    def get_sql_templates(self) -> dict[str, str]:
+        """Return all registered SQL templates as {name: sql} strings (backward-compat)."""
+        return {name: tmpl.sql for name, tmpl in self._sql_templates.items()}
+
     def get_sql_template(self, name: str) -> str | None:
-        """Return a single SQL template by name."""
+        """Return a single SQL template SQL string by name, or None."""
+        tmpl = self._sql_templates.get(name)
+        return tmpl.sql if tmpl is not None else None
+
+    def get_sql_template_object(self, name: str) -> SQLTemplate | None:
+        """Return a single SQLTemplate object by name, or None."""
         return self._sql_templates.get(name)
 
     def get_compliance_checker(self, module_name: str) -> ComplianceChecker | None:
