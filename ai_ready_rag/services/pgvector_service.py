@@ -297,20 +297,21 @@ class PgVectorService:
         """Return per-document chunk counts and totals for admin endpoints."""
         with SessionLocal() as db:
             try:
-                # PostgreSQL: ->> operator
+                # metadata_ is stored as TEXT; cast to JSON to extract fields
                 rows = db.execute(
                     text(
                         "SELECT document_id, "
-                        "metadata_->>'document_name' AS filename, "
+                        "metadata_::json->>'document_name' AS filename, "
                         "COUNT(*) AS chunk_count "
                         "FROM chunk_vectors "
                         "WHERE tenant_id = :tenant "
-                        "GROUP BY document_id, metadata_->>'document_name'"
+                        "GROUP BY document_id, metadata_::json->>'document_name'"
                     ),
                     {"tenant": self._tenant_id},
                 ).fetchall()
             except Exception:
-                # SQLite fallback (used in tests)
+                # SQLite fallback (used in tests): json_extract syntax
+                db.rollback()
                 rows = db.execute(
                     text(
                         "SELECT document_id, "
