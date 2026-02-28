@@ -87,7 +87,17 @@ async def process_document(
                 except Exception as e:
                     logger.warning(f"Failed to delete vectors for {document_id}: {e}")
 
-            enrichment_service = get_enrichment_service(settings, db_session=db)
+            # Resolve per-tenant feature flags so ClaudeEnrichmentService sees
+            # tenant.json's claude_enrichment_enabled flag.
+            from ai_ready_rag.services.tenant_config_resolver import get_tenant_config_resolver
+
+            _tenant_id = getattr(document, "tenant_id", None) or getattr(
+                settings, "default_tenant_id", "default"
+            )
+            _tenant_config = get_tenant_config_resolver().resolve(_tenant_id)
+            enrichment_service = get_enrichment_service(
+                settings, db_session=db, tenant_config=_tenant_config
+            )
             processing_service = ProcessingService(
                 vector_service=vector_service,
                 settings=settings,

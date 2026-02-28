@@ -114,13 +114,34 @@ class ClaudeQueryService:
         )
 
     def _is_enabled(self) -> bool:
-        """Return True only when all conditions for Claude query are satisfied."""
-        enabled = getattr(self._settings, "claude_query_enabled", None)
-        api_key = getattr(self._settings, "claude_api_key", None)
+        """Return True only when all conditions for Claude query are satisfied.
+
+        When claude_backend == "cli", the API key check is skipped (CLI uses the
+        local Claude Code session instead of ANTHROPIC_API_KEY).
+        When tenant_config is provided, its feature_flags.claude_query_enabled
+        takes precedence over Settings.claude_query_enabled.
+        """
         db_backend = getattr(self._settings, "database_backend", "sqlite")
         if db_backend == "sqlite":
             return False
-        return bool(enabled and api_key)
+
+        claude_backend = getattr(self._settings, "claude_backend", "api")
+        if claude_backend != "cli":
+            # API backend requires an API key
+            api_key = getattr(self._settings, "claude_api_key", None)
+            if not api_key:
+                return False
+
+        # Check TenantConfig feature flag first (overrides global settings)
+        if self._tenant_config is not None:
+            tc_flags = getattr(self._tenant_config, "feature_flags", None)
+            tc_flag = getattr(tc_flags, "claude_query_enabled", None)
+            if tc_flag is not None:
+                return bool(tc_flag)
+
+        # Fall back to global settings
+        enabled = getattr(self._settings, "claude_query_enabled", None)
+        return bool(enabled)
 
     def _get_client(self):
         """Lazily initialise the Anthropic client; raises RuntimeError if package missing."""
@@ -137,6 +158,31 @@ class ClaudeQueryService:
                 ) from exc
         return self._client
 
+    def _answer_via_cli(
+        self,
+        query: str,
+        context_text: str,
+        system_prompt: str,
+    ) -> str:
+        """Answer via claude CLI subprocess (CLAUDE_BACKEND=cli mode).
+
+        Synchronous — callers must wrap with asyncio.to_thread.
+        """
+        import subprocess
+
+        full_prompt = f"{system_prompt}\n\nContext:\n{context_text}\n\nQuestion: {query}"
+        result = subprocess.run(  # noqa: S603
+            ["claude", "-p", full_prompt],
+            capture_output=True,
+            text=True,
+            timeout=getattr(self._settings, "claude_enrichment_timeout", 120),
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"claude -p exited with code {result.returncode}: {result.stderr.strip()}"
+            )
+        return result.stdout.strip()
+
     async def answer(
         self,
         query: str,
@@ -146,6 +192,7 @@ class ClaudeQueryService:
         """Answer a query using Claude with retrieved context chunks.
 
         Returns None if service is disabled — caller should use Ollama fallback.
+        Uses CLI backend (claude -p) when CLAUDE_BACKEND=cli, otherwise Anthropic API.
         """
         if not self._is_enabled():
             logger.debug("claude_query.disabled", extra={"reason": "not_enabled_or_sqlite"})
@@ -167,6 +214,32 @@ class ClaudeQueryService:
             + (f"\n\n{system_prompt_suffix}" if system_prompt_suffix else "")
         )
 
+        # CLI backend path — no API key required
+        claude_backend = getattr(self._settings, "claude_backend", "api")
+        if claude_backend == "cli":
+            import asyncio
+
+            try:
+                answer_text = await asyncio.to_thread(
+                    self._answer_via_cli, query, context_text, system_prompt
+                )
+                logger.info(
+                    "claude_query.answered",
+                    extra={"model": "claude-cli", "is_complex": is_complex, "backend": "cli"},
+                )
+                return QueryResponse(
+                    answer=answer_text,
+                    model_used="claude-cli",
+                    is_complex=is_complex,
+                    token_cost=0,
+                    cost_usd=0.0,
+                    route_type="claude_cli",
+                )
+            except Exception as exc:
+                logger.error("claude_query.cli_failed", extra={"error": str(exc)})
+                raise
+
+        # API backend path
         user_message = f"Context:\n{context_text}\n\nQuestion: {query}"
 
         try:
