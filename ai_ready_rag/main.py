@@ -120,8 +120,8 @@ async def lifespan(app: FastAPI):
     if settings.use_ingestkit_excel and "postgresql" in settings.database_url:
         from ai_ready_rag.services.excel_tables_service import ExcelTablesService
 
-        n = ExcelTablesService(settings.database_url).discover_and_register()
-        logger.info("excel_tables_service: registered %d year tables", n)
+        n = ExcelTablesService(settings.database_url).discover_and_register_all()
+        logger.info("excel_tables_service: registered %d sql templates", n)
 
     # Verify evaluation tables exist (fail-fast if eval_enabled and tables missing)
     if settings.eval_enabled:

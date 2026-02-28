@@ -2,9 +2,11 @@
 
 No LLM call is made during routing. Routing decisions are:
 1. SQL-first: if entity extraction + trigger phrases + confidence >= threshold -> structured query
-2. RAG fallback: all other queries -> vector search
+2. SQL-first: if quantitative signals + column signals match and confidence >= threshold -> NL2SQL
+3. RAG fallback: all other queries -> vector search
 
 Modules contribute SQL templates and trigger phrases via ModuleRegistry.register_sql_templates().
+Templates with column_signals set are eligible for quantitative signal scoring (NL2SQL path).
 """
 
 from __future__ import annotations
@@ -15,6 +17,31 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+# Quantitative signals that indicate a user wants a data-lookup/aggregation answer.
+# When a template has column_signals set, both a quantitative signal AND a column signal
+# must appear in the query to produce a confidence score >= sql_confidence_threshold.
+QUANTITATIVE_SIGNALS = [
+    "how many",
+    "how much",
+    "total",
+    "sum",
+    "count",
+    "average",
+    "on hand",
+    "balance",
+    "amount due",
+    "list all",
+    "show me all",
+    "give me",
+    "quantity",
+    "in stock",
+    "remaining",
+    "what is the",
+    "show me",
+    "outstanding",
+    "aged",
+]
 
 
 class RouteType(str, Enum):
@@ -97,21 +124,29 @@ class QueryRouter:
                 if re.search(r"\b" + re.escape(phrase.lower()) + r"\b", query_lower):
                     matched.append(phrase)
 
-            if not matched:
-                continue
+            if matched:
+                # Presence-based confidence: trigger_phrases are domain vocabulary, not a
+                # checklist.  Any matching phrase means the query is in-domain → base 0.7.
+                # A density bonus (up to 0.3) rewards more matches and is used for template
+                # disambiguation when multiple templates share trigger phrases.
+                n_total = max(len(template.trigger_phrases), 1)
+                density_bonus = min((len(matched) - 1) / max(n_total - 1, 1) * 0.3, 0.3)
+                confidence = 0.7 + density_bonus
 
-            # Presence-based confidence: trigger_phrases are domain vocabulary, not a
-            # checklist.  Any matching phrase means the query is in-domain → base 0.7.
-            # A density bonus (up to 0.3) rewards more matches and is used for template
-            # disambiguation when multiple templates share trigger phrases.
-            n_total = max(len(template.trigger_phrases), 1)
-            density_bonus = min((len(matched) - 1) / max(n_total - 1, 1) * 0.3, 0.3)
-            confidence = 0.7 + density_bonus
+                if confidence > best_confidence:
+                    best_confidence = confidence
+                    best_template = name
+                    best_phrases = matched
 
-            if confidence > best_confidence:
-                best_confidence = confidence
-                best_template = name
-                best_phrases = matched
+            elif template.column_signals is not None:
+                # No phrase match — try quantitative signal scoring for NL2SQL templates
+                signal_confidence = self._score_quantitative_signals(
+                    query_lower, template.column_signals
+                )
+                if signal_confidence > best_confidence:
+                    best_confidence = signal_confidence
+                    best_template = name
+                    best_phrases = ["<quantitative_signal>"]
 
         if best_template is None:
             return RoutingDecision(
@@ -153,3 +188,50 @@ class QueryRouter:
             matched_phrases=best_phrases,
             reason="below_sql_threshold",
         )
+
+    def _score_quantitative_signals(
+        self, query_lower: str, column_signals: dict[str, list[str]]
+    ) -> float:
+        """Score a query against column_signals for NL2SQL routing.
+
+        Algorithm:
+          - base score 0.5 if any QUANTITATIVE_SIGNALS phrase appears in the query
+          - column bonus 0.25 if any column synonym from column_signals appears
+          - Returns 0.75 when both hit (above 0.6 threshold → SQL route)
+          - Returns 0.5 when only quantitative hit (below 0.6 threshold → RAG)
+          - Returns 0.0 when neither hit
+
+        Args:
+            query_lower: Lowercased query string.
+            column_signals: Dict from SQLTemplate.column_signals.
+
+        Returns:
+            Confidence float in range [0.0, 0.75].
+        """
+        # Check quantitative signals
+        quantitative_hit = False
+        quant_signals = column_signals.get("__quantitative__", QUANTITATIVE_SIGNALS)
+        for signal in quant_signals:
+            if re.search(r"\b" + re.escape(signal.lower()) + r"\b", query_lower):
+                quantitative_hit = True
+                break
+
+        if not quantitative_hit:
+            return 0.0
+
+        # Check column name signals (exclude __quantitative__ sentinel key)
+        column_hit = False
+        for col_key, synonyms in column_signals.items():
+            if col_key == "__quantitative__":
+                continue
+            for syn in synonyms:
+                if re.search(r"\b" + re.escape(syn.lower()) + r"\b", query_lower):
+                    column_hit = True
+                    break
+            if column_hit:
+                break
+
+        # Score: 0.5 base + 0.25 column bonus = 0.75 total (above 0.6 threshold)
+        base = 0.5
+        column_bonus = 0.25 if column_hit else 0.0
+        return base + column_bonus

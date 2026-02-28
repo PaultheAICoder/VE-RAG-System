@@ -38,6 +38,7 @@ class SQLTemplate:
     sql: str
     trigger_phrases: list[str] = field(default_factory=list)
     description: str = ""
+    column_signals: dict[str, list[str]] | None = field(default=None)
 
 
 # ─── SQL template safety guards ─────────────────────────────────────────────

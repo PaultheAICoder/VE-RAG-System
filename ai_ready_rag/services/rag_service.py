@@ -39,6 +39,7 @@ from ai_ready_rag.services.settings_service import get_rag_setting
 from ai_ready_rag.services.vector_types import SearchResult
 
 if TYPE_CHECKING:
+    from ai_ready_rag.modules.registry import SQLTemplate
     from ai_ready_rag.services.protocols import VectorServiceProtocol
     from ai_ready_rag.services.query_router import QueryRouter, RoutingDecision
 
@@ -1993,6 +1994,16 @@ class RAGService:
             )
             return self._insufficient_context_response(self.default_model, elapsed_ms, "SQL")
 
+        # NL2SQL path: templates with column_signals need Claude to generate the SQL
+        if sql_template.column_signals is not None:
+            return await self._execute_nl2sql_route(
+                decision=decision,
+                query=query,
+                db=db,
+                elapsed_ms=elapsed_ms,
+                sql_template=sql_template,
+            )
+
         row_cap = getattr(self.settings, "structured_query_row_cap", 100)
         try:
             result = db.execute(sa_text(sql_template.sql), {"row_cap": row_cap})
@@ -2076,6 +2087,170 @@ class RAGService:
 
         # Fallback: return formatted table if Claude fails
         return data_text
+
+    async def _execute_nl2sql_route(
+        self,
+        decision: RoutingDecision,
+        query: str,
+        db: Session,
+        elapsed_ms: float,
+        sql_template: SQLTemplate,
+    ) -> RAGResponse:
+        """Execute NL2SQL: generate SQL via Claude, validate, run it, synthesize answer.
+
+        This path is taken when a SQL template has column_signals set (non-P&L tables).
+        Claude generates a schema-aware SELECT statement; the injection guard validates
+        it before execution.
+
+        Args:
+            decision: Routing decision that selected this template.
+            query: Original user query.
+            db: SQLAlchemy session for executing the generated SQL.
+            elapsed_ms: Elapsed time so far for latency tracking.
+            sql_template: The matched SQLTemplate with column_signals.
+
+        Returns:
+            RAGResponse with routing_decision="SQL".
+        """
+        from sqlalchemy import text as sa_text
+
+        from ai_ready_rag.services.excel_tables_service import SqlInjectionGuard
+
+        template_name = sql_template.name
+        column_signals = sql_template.column_signals or {}
+        columns = [k for k in column_signals if k != "__quantitative__"]
+
+        # 1. Build schema context for Claude
+        # Extract table name from template name (template name is "excel_<table_name>")
+        table_name = template_name
+        if template_name.startswith("excel_"):
+            table_name = template_name[len("excel_") :]
+
+        schema_context = (
+            f'Table: excel_tables."{table_name}"\n'
+            f"Columns: {', '.join(str(c) for c in columns)}\n"
+            f"Write a safe PostgreSQL SELECT query to answer this question.\n"
+            f"Use ILIKE for text matching. Quote column names with double quotes.\n"
+            f"Return ONLY the SQL, no explanation, no markdown."
+        )
+
+        # 2. Generate SQL via Claude
+        generated_sql = await self._generate_sql_from_schema(query, schema_context)
+
+        if not generated_sql:
+            logger.info("nl2sql.no_sql_generated — falling back to insufficient context")
+            return self._insufficient_context_response(self.default_model, elapsed_ms, "SQL")
+
+        # 3. SQL injection guard
+        try:
+            SqlInjectionGuard().validate(generated_sql)
+        except ValueError as exc:
+            logger.warning("nl2sql.injection_guard_blocked: %s", exc)
+            return self._insufficient_context_response(self.default_model, elapsed_ms, "SQL")
+
+        # 4. Execute the generated SQL
+        try:
+            result = db.execute(sa_text(generated_sql))
+            rows = result.fetchall()
+            col_names = list(result.keys())
+        except Exception as exc:
+            logger.warning(
+                "nl2sql.execution_failed: %s | SQL: %s",
+                exc,
+                generated_sql[:200],
+            )
+            return self._insufficient_context_response(self.default_model, elapsed_ms, "SQL")
+
+        # 5. Synthesize natural-language answer
+        if not rows:
+            answer = "No matching records found in the database for your query."
+        else:
+            row_cap = getattr(self.settings, "structured_query_row_cap", 100)
+            header = " | ".join(col_names)
+            body_lines = [
+                " | ".join(str(cell) if cell is not None else "" for cell in row)
+                for row in rows[:row_cap]
+            ]
+            data_text = f"{header}\n" + "\n".join(body_lines)
+            answer = await self._synthesize_sql_answer(query, data_text)
+
+        logger.info(
+            "nl2sql.success",
+            extra={
+                "template": template_name,
+                "rows_returned": len(rows),
+                "confidence": decision.confidence,
+            },
+        )
+
+        return RAGResponse(
+            answer=answer,
+            confidence=ConfidenceScore(
+                overall=90,
+                retrieval_score=decision.confidence,
+                coverage_score=1.0,
+                llm_score=90,
+            ),
+            citations=[],
+            action="CITE",
+            route_to=None,
+            model_used="claude-cli",
+            context_chunks_used=len(rows),
+            context_tokens_used=0,
+            generation_time_ms=elapsed_ms,
+            grounded=True,
+            routing_decision="SQL",
+        )
+
+    async def _generate_sql_from_schema(self, query: str, schema_context: str) -> str:
+        """Ask Claude to generate a PostgreSQL SELECT statement given schema context.
+
+        Args:
+            query: User's natural-language question.
+            schema_context: Table name and column info for the prompt.
+
+        Returns:
+            Generated SQL string, or empty string on failure.
+        """
+        import asyncio
+        import os
+        import subprocess
+
+        prompt = (
+            f"You are a PostgreSQL expert. Generate a single SQL SELECT query.\n\n"
+            f"{schema_context}\n\n"
+            f"Rules:\n"
+            f"- Return ONLY the SQL query, no explanation, no markdown fences\n"
+            f'- Use double-quoted column names (e.g., "On Hand", "Item")\n'
+            f"- Add LIMIT 100 unless the query is an aggregate (COUNT, SUM, etc.)\n"
+            f"- Use ILIKE for text matching\n\n"
+            f"User question: {query}\n\n"
+            f"SQL:"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        try:
+            result = await asyncio.to_thread(
+                lambda: subprocess.run(
+                    ["claude", "-p", prompt],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=env,
+                )
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                generated = result.stdout.strip()
+                # Strip markdown code fences if Claude added them
+                if generated.startswith("```"):
+                    lines = generated.split("\n")
+                    generated = "\n".join(
+                        line for line in lines if not line.startswith("```")
+                    ).strip()
+                return generated
+        except Exception as exc:
+            logger.warning("nl2sql.generation_failed: %s", exc)
+
+        return ""
 
     async def generate(self, request: RAGRequest, db: Session) -> RAGResponse:
         """Generate RAG response for a query.
