@@ -3,7 +3,8 @@
 import pytest
 
 from ai_ready_rag.db.models.document import Document
-from ai_ready_rag.db.models.enrichment import EnrichmentEntity, EnrichmentSynopsis, ReviewItem
+from ai_ready_rag.db.models.enrichment import EnrichmentEntity, EnrichmentSynopsis
+from ai_ready_rag.db.models.review import ReviewItem
 
 
 class TestEnrichmentSynopsis:
@@ -241,11 +242,11 @@ class TestReviewItem:
     def test_review_item_can_be_created(self, db):
         """ReviewItem can be inserted and retrieved from the database."""
         item = ReviewItem(
-            query_id="msg-abc-123",
-            answer_text="The policy limit is $1M per occurrence.",
+            review_type="low_confidence_answer",
+            query="msg-abc-123",
+            tentative_answer="The policy limit is $1M per occurrence.",
             confidence=0.42,
-            reason="confidence_below_threshold",
-            status="pending",
+            review_status="pending",
         )
         db.add(item)
         db.flush()
@@ -253,62 +254,63 @@ class TestReviewItem:
 
         result = db.query(ReviewItem).filter_by(id=item.id).first()
         assert result is not None
-        assert result.query_id == "msg-abc-123"
-        assert result.answer_text == "The policy limit is $1M per occurrence."
+        assert result.review_type == "low_confidence_answer"
+        assert result.query == "msg-abc-123"
+        assert result.tentative_answer == "The policy limit is $1M per occurrence."
         assert result.confidence == pytest.approx(0.42)
-        assert result.reason == "confidence_below_threshold"
-        assert result.status == "pending"
+        assert result.review_status == "pending"
         assert result.resolved_at is None
-        assert result.resolved_by is None
+        assert result.reviewer_id is None
         assert result.created_at is not None
 
     def test_review_item_default_status_is_pending(self, db):
-        """ReviewItem.status defaults to 'pending' when not specified."""
+        """ReviewItem.review_status defaults to 'pending' when not specified."""
         item = ReviewItem(
-            answer_text="An unanswered question.",
+            review_type="low_confidence_answer",
+            tentative_answer="An unanswered question.",
         )
         db.add(item)
         db.flush()
         db.refresh(item)
 
-        assert item.status == "pending"
+        assert item.review_status == "pending"
 
-    def test_review_item_all_fields_nullable_except_id_and_status(self, db):
-        """All fields except id, status, and created_at are nullable."""
-        item = ReviewItem()
+    def test_review_item_optional_fields_are_nullable(self, db):
+        """Optional fields are nullable; only review_type is required."""
+        item = ReviewItem(review_type="unknown_document_type")
         db.add(item)
         db.flush()
         db.refresh(item)
 
         assert item.id is not None
-        assert item.status == "pending"
+        assert item.review_status == "pending"
         assert item.created_at is not None
-        assert item.query_id is None
-        assert item.answer_text is None
+        assert item.query is None
+        assert item.tentative_answer is None
         assert item.confidence is None
-        assert item.reason is None
         assert item.resolved_at is None
-        assert item.resolved_by is None
+        assert item.reviewer_id is None
 
     def test_review_item_can_be_resolved_by_user(self, db, admin_user):
-        """ReviewItem can reference a user via resolved_by FK."""
+        """ReviewItem can reference a user via reviewer_id FK."""
         from datetime import datetime
 
         item = ReviewItem(
-            query_id="msg-resolve-test",
-            answer_text="Approved answer.",
+            review_type="low_confidence_answer",
+            query="msg-resolve-test",
+            tentative_answer="Approved answer.",
             confidence=0.9,
-            status="approved",
-            resolved_by=admin_user.id,
+            review_status="accepted",
+            reviewer_id=admin_user.id,
             resolved_at=datetime.utcnow(),
         )
         db.add(item)
         db.flush()
         db.refresh(item)
 
-        assert item.resolved_by == admin_user.id
+        assert item.reviewer_id == admin_user.id
         assert item.resolved_at is not None
-        assert item.status == "approved"
+        assert item.review_status == "accepted"
 
 
 class TestDocumentEnrichmentColumns:

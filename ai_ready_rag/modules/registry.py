@@ -95,6 +95,7 @@ class ModuleRegistry:
         self._sql_templates: dict[str, str] = {}  # template_name → sql
         self._compliance_checkers: dict[str, ComplianceChecker] = {}
         self._api_routers: list[tuple[str, APIRouter, str]] = []  # (module_name, router, prefix)
+        self._ams_connectors: dict[str, Any] = {}  # name → AMSConnector
         self._active_modules: list[str] = ["core"]
         self._manifests: dict[str, ModuleManifest] = {}
 
@@ -209,6 +210,19 @@ class ModuleRegistry:
     def get_api_routers(self) -> list[tuple[str, APIRouter, str]]:
         """Return list of (module_name, router, prefix) tuples for mounting."""
         return list(self._api_routers)
+
+    def register_ams_connector(self, name: str, connector: Any) -> None:
+        """Register an AMS (Agency Management System) connector by name."""
+        self._ams_connectors[name] = connector
+        logger.info("registry.ams_connector.registered", extra={"connector_name": name})
+
+    def get_ams_connector(self, name: str) -> Any | None:
+        """Return a registered AMS connector by name, or None if not found."""
+        return self._ams_connectors.get(name)
+
+    def list_ams_connectors(self) -> list[str]:
+        """Return sorted list of registered AMS connector names."""
+        return sorted(self._ams_connectors.keys())
 
     @property
     def active_modules(self) -> list[str]:
