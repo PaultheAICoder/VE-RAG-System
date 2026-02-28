@@ -156,7 +156,7 @@ def _build_hybrid_search_status(request: Request) -> dict:
     sparse_available = getattr(vector_service, "_sparse_available", False)
 
     active_mode = "hybrid" if (enabled and collection_has_sparse) else "dense_only"
-    active_threshold = vector_service.min_similarity_score
+    active_threshold = getattr(vector_service, "min_similarity_score", None)
 
     return {
         "enabled": enabled,

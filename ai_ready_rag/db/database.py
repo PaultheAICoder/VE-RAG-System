@@ -18,9 +18,12 @@ os.makedirs("data", exist_ok=True)
 
 # Create engine with profile-based pool settings
 # Pool size scales based on hardware capabilities (laptop vs spark)
+_is_sqlite = settings.database_url.startswith("sqlite")
+_connect_args = {"check_same_thread": False} if _is_sqlite else {}
+
 engine = create_engine(
     settings.database_url,
-    connect_args={"check_same_thread": False},
+    connect_args=_connect_args,
     echo=False,  # Set to True to see SQL statements for debugging
     poolclass=QueuePool,
     pool_size=settings.db_pool_size,
@@ -30,9 +33,11 @@ engine = create_engine(
 )
 
 
-# Enable WAL mode for SQLite
+# Enable WAL mode for SQLite only
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
+    if not _is_sqlite:
+        return
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")
@@ -61,50 +66,59 @@ def init_db():
     # Migration: recreate warming_sse_events without stale UNIQUE(event_id) (#214)
     # The original table had UNIQUE(event_id) which conflicts with batch_seq-based
     # event_ids (e.g., "1" collides across jobs). Recreate without that constraint.
-    try:
-        with engine.connect() as conn:
-            has_stale_unique = conn.execute(
-                text(
-                    "SELECT 1 FROM sqlite_master WHERE name='sqlite_autoindex_warming_sse_events_1'"
-                )
-            ).fetchone()
-            if has_stale_unique:
-                conn.execute(text("DROP TABLE IF EXISTS warming_sse_events"))
-                conn.execute(
+    # SQLite-only: sqlite_master does not exist on PostgreSQL.
+    if _is_sqlite:
+        try:
+            with engine.connect() as conn:
+                has_stale_unique = conn.execute(
                     text(
-                        "CREATE TABLE warming_sse_events ("
-                        "  id INTEGER NOT NULL PRIMARY KEY,"
-                        "  event_id VARCHAR NOT NULL,"
-                        "  event_type VARCHAR NOT NULL,"
-                        "  job_id VARCHAR,"
-                        "  batch_seq INTEGER,"
-                        "  payload TEXT NOT NULL,"
-                        "  created_at DATETIME"
-                        ")"
+                        "SELECT 1 FROM sqlite_master WHERE name='sqlite_autoindex_warming_sse_events_1'"
                     )
-                )
-                conn.execute(text("CREATE INDEX idx_sse_events_job ON warming_sse_events (job_id)"))
-                conn.execute(
-                    text("CREATE INDEX idx_sse_events_created ON warming_sse_events (created_at)")
-                )
-                conn.execute(
-                    text(
-                        "CREATE UNIQUE INDEX uq_sse_events_job_batch_seq "
-                        "ON warming_sse_events(job_id, batch_seq)"
+                ).fetchone()
+                if has_stale_unique:
+                    conn.execute(text("DROP TABLE IF EXISTS warming_sse_events"))
+                    conn.execute(
+                        text(
+                            "CREATE TABLE warming_sse_events ("
+                            "  id INTEGER NOT NULL PRIMARY KEY,"
+                            "  event_id VARCHAR NOT NULL,"
+                            "  event_type VARCHAR NOT NULL,"
+                            "  job_id VARCHAR,"
+                            "  batch_seq INTEGER,"
+                            "  payload TEXT NOT NULL,"
+                            "  created_at DATETIME"
+                            ")"
+                        )
                     )
+                    conn.execute(
+                        text("CREATE INDEX idx_sse_events_job ON warming_sse_events (job_id)")
+                    )
+                    conn.execute(
+                        text(
+                            "CREATE INDEX idx_sse_events_created ON warming_sse_events (created_at)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "CREATE UNIQUE INDEX uq_sse_events_job_batch_seq "
+                            "ON warming_sse_events(job_id, batch_seq)"
+                        )
+                    )
+                    conn.commit()
+                    logger.info("Recreated warming_sse_events without stale UNIQUE(event_id)")
+        except Exception as e:
+            logger.warning(f"SSE table migration skipped: {e}")
+
+    # Migration: add confidence_score column to warming_queries (#189) — SQLite only
+    if _is_sqlite:
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text("ALTER TABLE warming_queries ADD COLUMN confidence_score INTEGER")
                 )
                 conn.commit()
-                logger.info("Recreated warming_sse_events without stale UNIQUE(event_id)")
-    except Exception as e:
-        logger.warning(f"SSE table migration skipped: {e}")
-
-    # Migration: add confidence_score column to warming_queries (#189)
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE warming_queries ADD COLUMN confidence_score INTEGER"))
-            conn.commit()
-    except Exception:
-        pass  # Column already exists
+        except Exception:
+            pass  # Column already exists
 
     # Tracked migrations (replaces ad-hoc ALTER TABLE ... except pass)
     apply_tracked_migrations(engine)
@@ -239,7 +253,12 @@ _TRACKED_MIGRATIONS = [
 
 
 def apply_tracked_migrations(eng) -> None:
-    """Apply tracked migrations that haven't been applied yet. Fail-fast on error."""
+    """Apply tracked migrations that haven't been applied yet. Fail-fast on error.
+
+    SQLite only — Alembic handles schema evolution for PostgreSQL.
+    """
+    if not eng.url.drivername.startswith("sqlite"):
+        return  # PostgreSQL uses Alembic migrations instead
     with eng.connect() as conn:
         conn.execute(
             text(
