@@ -32,11 +32,11 @@ echo "✓ Loaded .env.dev-full"
 # ── Docker infrastructure ─────────────────────────────────────────────────────
 if [ "$RESET" = true ]; then
   echo "⚠  Resetting postgres volume..."
-  docker compose -f docker-compose.dev.yml down -v 2>/dev/null || true
+  docker-compose -f docker-compose.dev.yml down -v 2>/dev/null || true
 fi
 
 echo "▶ Starting postgres + redis..."
-docker compose -f docker-compose.dev.yml up -d
+docker-compose -f docker-compose.dev.yml up -d
 
 echo "⏳ Waiting for postgres to be healthy..."
 ATTEMPTS=0

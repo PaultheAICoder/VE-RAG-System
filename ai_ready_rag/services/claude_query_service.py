@@ -158,6 +158,15 @@ class ClaudeQueryService:
                 ) from exc
         return self._client
 
+    @staticmethod
+    def _clean_env() -> dict:
+        """Return os.environ with CLAUDECODE unset so claude -p can run outside an active session."""
+        import os
+
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        return env
+
     def _answer_via_cli(
         self,
         query: str,
@@ -167,6 +176,8 @@ class ClaudeQueryService:
         """Answer via claude CLI subprocess (CLAUDE_BACKEND=cli mode).
 
         Synchronous — callers must wrap with asyncio.to_thread.
+        Unsets CLAUDECODE so the subprocess is not blocked when the server
+        is started from within a Claude Code session.
         """
         import subprocess
 
@@ -176,6 +187,7 @@ class ClaudeQueryService:
             capture_output=True,
             text=True,
             timeout=getattr(self._settings, "claude_enrichment_timeout", 120),
+            env=self._clean_env(),
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -200,17 +212,26 @@ class ClaudeQueryService:
 
         model_id, is_complex = self._model_router.select_model(query)
 
-        # Build context string from chunks
+        # Build context string with SourceId markers so citations can be extracted
+        def _fmt_chunk(i: int, chunk: dict) -> str:
+            doc_id = chunk.get("document_id", "")
+            chunk_idx = chunk.get("chunk_index", i)
+            doc_name = chunk.get("document_name", f"Source {i + 1}")
+            text = chunk.get("text", chunk.get("content", ""))
+            if doc_id:
+                return f"[SourceId: {doc_id}:{chunk_idx}]\n[Document: {doc_name}]\n---\n{text}\n---"
+            return f"[Document: {doc_name}]\n---\n{text}\n---"
+
         context_text = "\n\n".join(
-            f"[Source {i + 1}]: {chunk.get('content', chunk.get('text', ''))}"
-            for i, chunk in enumerate(context_chunks[:10])  # limit to 10 chunks
+            _fmt_chunk(i, chunk) for i, chunk in enumerate(context_chunks[:10])
         )
 
         system_prompt = (
-            "You are a knowledgeable insurance and property management assistant. "
-            "Answer questions using ONLY the provided context. "
-            "If the context doesn't contain the answer, say so clearly. "
-            "Cite specific sources when possible."
+            "You are a knowledgeable assistant. "
+            "Answer questions using ONLY the provided context documents. "
+            "For every factual statement, include the SourceId citation exactly as shown in the context header. "
+            "Example: 'Vacation time is 15 days [SourceId: abc123:2]'. "
+            "If the context doesn't contain the answer, say so clearly."
             + (f"\n\n{system_prompt_suffix}" if system_prompt_suffix else "")
         )
 

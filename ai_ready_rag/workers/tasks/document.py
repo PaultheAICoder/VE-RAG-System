@@ -89,7 +89,7 @@ async def process_document(
 
             # Resolve per-tenant feature flags so ClaudeEnrichmentService sees
             # tenant.json's claude_enrichment_enabled flag.
-            from ai_ready_rag.services.tenant_config_resolver import get_tenant_config_resolver
+            from ai_ready_rag.tenant.resolver import get_tenant_config_resolver
 
             _tenant_id = getattr(document, "tenant_id", None) or getattr(
                 settings, "default_tenant_id", "default"

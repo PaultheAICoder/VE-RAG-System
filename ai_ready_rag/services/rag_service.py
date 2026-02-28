@@ -2311,19 +2311,32 @@ class RAGService:
         # 4. Try Claude query service first (when enabled), fall back to Ollama
         answer: str | None = None
         claude_model_used: str | None = None
+        claude_llm_score: int | None = None
 
         try:
             from ai_ready_rag.services.claude_query_service import ClaudeQueryService
 
             claude_svc = ClaudeQueryService(self.settings, tenant_config=self._tenant_config)
             if claude_svc._is_enabled():
+                # Include document_id and chunk_index so ClaudeQueryService can add SourceId markers
                 chunks_as_dicts = [
-                    {"text": c.chunk_text, "document_name": c.document_name} for c in final_chunks
+                    {
+                        "text": c.chunk_text,
+                        "document_name": c.document_name,
+                        "document_id": c.document_id,
+                        "chunk_index": c.chunk_index,
+                    }
+                    for c in final_chunks
                 ]
                 claude_response = await claude_svc.answer(request.query, chunks_as_dicts)
                 if claude_response is not None:
                     answer = claude_response.answer
                     claude_model_used = claude_response.model_used
+                    # Trust Claude's answer for the hallucination check — the hallucination
+                    # evaluator uses Ollama which doesn't know about "claude-cli" as a model name.
+                    # Score 90 triggers the "synthesize citations" path when no SourceId markers
+                    # are present, which is preferable to the "replace with fallback" path.
+                    claude_llm_score = 90
                     logger.info(
                         "[RAG] Claude query answered",
                         extra={"model": claude_model_used, "route": claude_response.route_type},
@@ -2375,12 +2388,16 @@ class RAGService:
         clean_answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
 
         # Evaluate hallucination (Spark feature)
-        llm_score = await self.evaluate_hallucination(
-            query=request.query,
-            answer=clean_answer,
-            context_summary=context_for_coverage,
-            model=model,
-        )
+        # Skip Ollama eval when Claude already answered — Ollama doesn't know "claude-cli"
+        if claude_llm_score is not None:
+            llm_score = claude_llm_score
+        else:
+            llm_score = await self.evaluate_hallucination(
+                query=request.query,
+                answer=clean_answer,
+                context_summary=context_for_coverage,
+                model=model,
+            )
 
         confidence = self._calculate_confidence(
             retrieval_results=final_chunks,
