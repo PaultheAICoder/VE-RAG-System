@@ -1,25 +1,54 @@
-#!/bin/bash
-# Start VE-RAG-System servers
-# Usage: ./scripts/start-servers.sh [backend|dev|all]
-#   backend  - Start only backend (port 8502), assumes frontend already built
-#   dev      - Start frontend dev server (port 5173) for local development
-#   all      - Build frontend + start backend (default, recommended for production)
+#!/usr/bin/env bash
+# start-servers.sh — VE-RAG-System unified startup
+#
+# Usage:
+#   ./scripts/start-servers.sh                  # build frontend + start backend
+#   ./scripts/start-servers.sh backend          # skip frontend build
+#   ./scripts/start-servers.sh dev              # start frontend dev server (:5173)
+#   ./scripts/start-servers.sh all              # explicit alias for default
+#   ./scripts/start-servers.sh --reset          # drop & recreate postgres volume, then start
+#   ./scripts/start-servers.sh --reload         # enable uvicorn --reload (hot reload)
+#   ./scripts/start-servers.sh backend --reload # combine mode + flags
+#
+# Environment:
+#   Reads .env from project root.
+#   Set DOCKER_INFRA=false to skip docker-compose (e.g. Spark production).
 
-MODE="${1:-all}"
+set -euo pipefail
 
-# Change to project root directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
-# Activate virtual environment
-source .venv/bin/activate
+# ── Parse args ────────────────────────────────────────────────────────────────
+MODE="all"
+RESET=false
+RELOAD=false
 
-# Export env vars from .env (skip comments and empty lines)
+for arg in "$@"; do
+    case $arg in
+        --reset)  RESET=true ;;
+        --reload) RELOAD=true ;;
+        backend|dev|all) MODE="$arg" ;;
+        *)
+            echo "Usage: $0 [backend|dev|all] [--reset] [--reload]"
+            exit 1
+            ;;
+    esac
+done
+
+# ── Load env ──────────────────────────────────────────────────────────────────
 if [ -f ".env" ]; then
-    export $(grep -v "^#" .env | grep -v "^$" | xargs)
+    set -a && source .env && set +a
+    echo "✓ Loaded .env"
 else
     echo "Warning: No .env file found. Using defaults."
+fi
+
+# ── Activate venv ─────────────────────────────────────────────────────────────
+if [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+    echo "✓ Virtual environment activated"
 fi
 
 # Prevent Tesseract OpenMP threads from stacking with ARQ job concurrency.
@@ -30,10 +59,36 @@ if [ -d "/usr/local/cuda/targets/sbsa-linux/lib" ]; then
     export LD_LIBRARY_PATH="/usr/local/cuda/targets/sbsa-linux/lib:${LD_LIBRARY_PATH:-}"
 fi
 
-# Kill any stale standalone ARQ CLI workers from previous runs.
+# ── Docker infrastructure ─────────────────────────────────────────────────────
+DOCKER_INFRA="${DOCKER_INFRA:-true}"
+
+if [ "$DOCKER_INFRA" = "true" ] && [ -f "docker-compose.dev.yml" ]; then
+    if [ "$RESET" = true ]; then
+        echo "⚠  Resetting postgres volume..."
+        docker-compose -f docker-compose.dev.yml down -v 2>/dev/null || true
+    fi
+
+    echo "▶ Starting postgres + redis..."
+    docker-compose -f docker-compose.dev.yml up -d
+
+    echo "⏳ Waiting for postgres to be healthy..."
+    ATTEMPTS=0
+    until docker exec vaultiq-dev-postgres pg_isready -U vaultiq -d vaultiq -q 2>/dev/null; do
+        ATTEMPTS=$((ATTEMPTS + 1))
+        if [ "$ATTEMPTS" -ge 30 ]; then
+            echo "ERROR: Postgres did not become healthy in time."
+            exit 1
+        fi
+        sleep 1
+    done
+    echo "✓ Postgres ready"
+else
+    echo "⚠ DOCKER_INFRA=false — skipping docker-compose (assuming external infra)"
+fi
+
+# ── Kill stale ARQ CLI workers ────────────────────────────────────────────────
 # The embedded ARQ worker inside FastAPI replaces the standalone process.
-# A leftover `arq` CLI process competes for Redis jobs using outdated code,
-# causing documents to fail with stale errors (see PROBLEM_STATEMENT_ARQ_OCR.md).
+# A leftover `arq` CLI process competes for Redis jobs using outdated code.
 stale_arq_pids=$(pgrep -f 'arq ai_ready_rag' 2>/dev/null || true)
 if [ -n "$stale_arq_pids" ]; then
     echo "Killing stale ARQ CLI worker(s): $stale_arq_pids"
@@ -41,67 +96,22 @@ if [ -n "$stale_arq_pids" ]; then
     sleep 1
 fi
 
-echo "=== VE-RAG-System Startup ==="
-echo "Directory: $PROJECT_DIR"
-echo "Mode:      $MODE"
+# ── Tenant config ─────────────────────────────────────────────────────────────
+TENANT_DIR="tenant-instances/default"
+TENANT_TEMPLATE="tenant-instances/tenant.dev-default.json"
+if [ -f "$TENANT_TEMPLATE" ] && [ ! -f "$TENANT_DIR/tenant.json" ]; then
+    mkdir -p "$TENANT_DIR"
+    cp "$TENANT_TEMPLATE" "$TENANT_DIR/tenant.json"
+    echo "✓ Created $TENANT_DIR/tenant.json from template"
+fi
 
-# Pre-flight health checks
-preflight_checks() {
-    echo "=== Pre-flight checks ==="
-    local failed=0
+# ── Alembic migrations ────────────────────────────────────────────────────────
+echo "▶ Running Alembic migrations..."
+alembic upgrade head
+echo "✓ Migrations complete"
 
-    # Redis
-    if command -v redis-cli &>/dev/null; then
-        if redis-cli ping &>/dev/null; then
-            echo "  ✓ Redis ........ OK"
-        else
-            echo "  ✗ Redis ........ NOT RESPONDING (is redis-server running?)"
-            failed=1
-        fi
-    elif curl -s "http://localhost:6379" &>/dev/null || timeout 2 bash -c 'echo PING | nc -q1 localhost 6379' 2>/dev/null | grep -q PONG; then
-        echo "  ✓ Redis ........ OK"
-    else
-        echo "  ⚠ Redis ........ UNREACHABLE (ARQ worker will be disabled, using BackgroundTasks fallback)"
-    fi
-
-    # Qdrant
-    if curl -sf "http://localhost:6333/healthz" &>/dev/null; then
-        echo "  ✓ Qdrant ....... OK"
-    else
-        echo "  ✗ Qdrant ....... NOT RESPONDING (is qdrant running?)"
-        echo "    Try: docker start qdrant"
-        failed=1
-    fi
-
-    # Ollama
-    if curl -sf "http://localhost:11434/api/version" &>/dev/null; then
-        echo "  ✓ Ollama ....... OK"
-        # Check required models
-        for model in nomic-embed-text qwen3:8b; do
-            if ollama list 2>/dev/null | grep -q "^${model}"; then
-                echo "    ✓ $model"
-            else
-                echo "    ⚠ $model not found (run: ollama pull $model)"
-            fi
-        done
-    else
-        echo "  ✗ Ollama ....... NOT RESPONDING (is ollama running?)"
-        echo "    Try: ollama serve"
-        failed=1
-    fi
-
-    if [ "$failed" -eq 1 ]; then
-        echo ""
-        echo "ERROR: Required services are not running. Fix the issues above and try again."
-        exit 1
-    fi
-    echo ""
-}
-
-# Initialize database and create admin
-init_database() {
-    echo "=== Initializing database ==="
-    python << "PYTHON"
+# ── Init DB / admin user ──────────────────────────────────────────────────────
+python << "PYTHON"
 import os
 from ai_ready_rag.db.database import SessionLocal, init_db
 from ai_ready_rag.db.models import User
@@ -111,9 +121,8 @@ init_db()
 
 db = SessionLocal()
 try:
-    # Create admin user
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@test.com")
-    admin_password = os.environ.get("ADMIN_PASSWORD", "npassword")
+    admin_password = os.environ.get("ADMIN_PASSWORD", "npassword2002!")
     admin_name = os.environ.get("ADMIN_DISPLAY_NAME", "Administrator")
 
     admin = db.query(User).filter(User.email == admin_email).first()
@@ -130,13 +139,68 @@ try:
         print(f"Admin user created: {admin_email}")
     else:
         print(f"Admin user exists: {admin_email}")
-
-    db.commit()
 finally:
     db.close()
 PYTHON
-}
 
+# ── Pre-flight checks ─────────────────────────────────────────────────────────
+echo "=== Pre-flight checks ==="
+preflight_failed=0
+
+# Redis
+if redis-cli ping &>/dev/null 2>&1; then
+    echo "  ✓ Redis ........ OK"
+elif timeout 2 bash -c 'echo PING | nc -q1 localhost 6379 2>/dev/null' | grep -q PONG 2>/dev/null; then
+    echo "  ✓ Redis ........ OK"
+else
+    echo "  ⚠ Redis ........ UNREACHABLE (ARQ worker will use BackgroundTasks fallback)"
+fi
+
+# Postgres
+DB_URL="${DATABASE_URL:-}"
+if [ -n "$DB_URL" ] && echo "$DB_URL" | grep -q "postgresql"; then
+    if docker exec vaultiq-dev-postgres pg_isready -U vaultiq -d vaultiq -q 2>/dev/null; then
+        echo "  ✓ Postgres ..... OK"
+    else
+        echo "  ✗ Postgres ..... NOT RESPONDING"
+        preflight_failed=1
+    fi
+fi
+
+# Ollama
+if curl -sf "http://localhost:11434/api/version" &>/dev/null; then
+    echo "  ✓ Ollama ....... OK"
+    EMBEDDING_MODEL="${EMBEDDING_MODEL:-nomic-embed-text}"
+    CHAT_MODEL="${CHAT_MODEL:-llama3.2:latest}"
+    for model in "$EMBEDDING_MODEL" "$CHAT_MODEL"; do
+        if ollama list 2>/dev/null | grep -q "^${model}"; then
+            echo "    ✓ $model"
+        else
+            echo "    ⚠ $model not pulled (run: ollama pull $model)"
+        fi
+    done
+else
+    echo "  ✗ Ollama ....... NOT RESPONDING (is ollama running?)"
+    preflight_failed=1
+fi
+
+if [ "$preflight_failed" -eq 1 ]; then
+    echo ""
+    echo "ERROR: Required services are not running. Fix above and retry."
+    exit 1
+fi
+echo ""
+
+# ── Print banner ──────────────────────────────────────────────────────────────
+echo "═══════════════════════════════════════════════════"
+echo "  VaultIQ — Starting"
+echo "  Mode:     $MODE$([ "$RELOAD" = true ] && echo " (--reload)" || true)"
+echo "  Backend:  http://localhost:8502"
+echo "  Swagger:  http://localhost:8502/api/docs"
+echo "═══════════════════════════════════════════════════"
+echo ""
+
+# ── Frontend helpers ──────────────────────────────────────────────────────────
 build_frontend() {
     echo "=== Building frontend ==="
     cd "$PROJECT_DIR/frontend"
@@ -145,39 +209,30 @@ build_frontend() {
     echo "Frontend build complete"
 }
 
-start_dev_server() {
+start_dev_frontend() {
     echo "=== Starting frontend dev server (port 5173) ==="
     cd "$PROJECT_DIR/frontend"
     npm run dev &
-    FRONTEND_PID=$!
-    echo "Frontend PID: $FRONTEND_PID"
+    echo "Frontend PID: $!"
     cd "$PROJECT_DIR"
 }
 
-start_backend() {
-    echo "=== Starting backend server (port 8502) ==="
-    exec python -m uvicorn ai_ready_rag.main:app --host 0.0.0.0 --port 8502
-}
+# ── Launch ────────────────────────────────────────────────────────────────────
+UVICORN_CMD="python -m uvicorn ai_ready_rag.main:app --host 0.0.0.0 --port 8502"
+if [ "$RELOAD" = true ]; then
+    UVICORN_CMD="$UVICORN_CMD --reload"
+fi
 
-# Run based on mode
 case "$MODE" in
     backend)
-        preflight_checks
-        init_database
-        start_backend
+        exec $UVICORN_CMD
         ;;
     dev)
-        start_dev_server
-        wait
+        start_dev_frontend
+        exec $UVICORN_CMD
         ;;
     all)
-        preflight_checks
-        init_database
         build_frontend
-        start_backend
-        ;;
-    *)
-        echo "Usage: $0 [backend|dev|all]"
-        exit 1
+        exec $UVICORN_CMD
         ;;
 esac

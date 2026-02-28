@@ -28,7 +28,7 @@ def get_vector_service(settings: Settings) -> VectorServiceProtocol:
         settings: Application settings with vector_backend configured
 
     Returns:
-        VectorServiceProtocol implementation (Qdrant or Chroma)
+        VectorServiceProtocol implementation (PgVector)
 
     Raises:
         ValueError: If vector_backend is not configured
@@ -41,29 +41,7 @@ def get_vector_service(settings: Settings) -> VectorServiceProtocol:
     embedding_model = get_model_setting("embedding_model", settings.embedding_model)
     logger.info(f"Using embedding model: {embedding_model}")
 
-    if backend == "qdrant":
-        from ai_ready_rag.services.vector_service import VectorService
-
-        logger.info(f"Creating QdrantVectorService: {settings.qdrant_url}")
-        return VectorService(
-            qdrant_url=settings.qdrant_url,
-            ollama_url=settings.ollama_base_url,
-            collection_name=settings.qdrant_collection,
-            embedding_model=embedding_model,
-            embedding_dimension=settings.embedding_dimension,
-        )
-    elif backend == "chroma":
-        from ai_ready_rag.services.vector_chroma import ChromaVectorService
-
-        logger.info(f"Creating ChromaVectorService: {settings.chroma_persist_dir}")
-        return ChromaVectorService(
-            persist_dir=settings.chroma_persist_dir,
-            collection_name=settings.qdrant_collection,  # Reuse collection name setting
-            embedding_model=embedding_model,
-            ollama_url=settings.ollama_base_url,
-            embedding_dimension=settings.embedding_dimension,
-        )
-    elif backend == "pgvector":
+    if backend == "pgvector":
         from ai_ready_rag.services.pgvector_service import PgVectorService
 
         logger.info(f"Creating PgVectorService: {settings.database_url[:30]}...")
@@ -75,9 +53,7 @@ def get_vector_service(settings: Settings) -> VectorServiceProtocol:
             tenant_id=settings.default_tenant_id,
         )
     else:
-        raise ValueError(
-            f"Unknown vector_backend: {backend!r}. Valid options: qdrant, chroma, pgvector"
-        )
+        raise ValueError(f"Unknown vector_backend: {backend!r}. Valid option: pgvector")
 
 
 def get_chunker(

@@ -56,32 +56,37 @@ def validate_claude_model_id(model_id: str, field: str) -> None:
 # Profile defaults for laptop, spark, and hosted deployments
 PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
     "laptop": {
-        "vector_backend": "chroma",
-        "chunker_backend": "simple",
-        "enable_ocr": False,
-        "chat_model": "llama3.2:latest",
+        # Portable — mirrors spark profile. Only hardware-bound limits differ.
+        "vector_backend": "pgvector",
+        "chunker_backend": "docling",
+        "enable_ocr": True,
+        "chat_model": "llama3.2:latest",  # Fallback LLM; Claude is primary
         "embedding_model": "nomic-embed-text",
-        "rag_max_context_tokens": 2000,
+        "rag_max_context_tokens": 2000,  # Hardware limit: smaller than Spark
         "rag_max_history_tokens": 600,
-        "rag_max_response_tokens": 512,
-        "rag_enable_hallucination_check": False,  # Faster dev
+        "rag_max_response_tokens": 512,  # Hardware limit: smaller than Spark
+        "rag_enable_hallucination_check": True,
         # Database pool - modest for laptop hardware
         "db_pool_size": 5,
         "db_pool_max_overflow": 10,
         "db_pool_timeout": 30,
-        # Concurrent processing - limited for laptop
-        "max_concurrent_processing": 3,
+        # Concurrent processing - 2 to avoid tesseract/OCR race conditions (same as Spark)
+        "max_concurrent_processing": 2,
         # Summary generation
         "generate_summaries": True,
-        # ingestkit - disabled on laptop
-        "use_ingestkit_image": False,
-        "use_ingestkit_email": False,
+        # ingestkit - all enabled (mirrors Spark)
+        "use_ingestkit_forms": True,
+        "forms_ocr_engine": "tesseract",  # tesseract on laptop, paddleocr on Spark
+        "forms_vlm_enabled": True,
+        "use_ingestkit_image": True,
+        "use_ingestkit_email": True,
         # Deployment tier and feature flags
         "deployment_tier": "enterprise",
-        "claude_enrichment_enabled": False,
-        "claude_query_enabled": False,
-        "structured_query_enabled": False,
-        "database_backend": "sqlite",
+        "claude_enrichment_enabled": True,
+        "claude_enrichment_model": "claude-sonnet-4-6",
+        "claude_query_enabled": True,
+        "structured_query_enabled": True,
+        "database_backend": "postgresql",
     },
     "spark": {
         "vector_backend": "pgvector",
@@ -111,7 +116,7 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         # Deployment tier and feature flags
         "deployment_tier": "enterprise",
         "claude_enrichment_enabled": True,
-        "claude_query_enabled": False,
+        "claude_query_enabled": True,
         "structured_query_enabled": True,
         "database_backend": "postgresql",
         "claude_enrichment_model": "claude-sonnet-4-6",
@@ -197,7 +202,7 @@ class Settings(BaseSettings):
     deployment_tier: Literal["standard", "enterprise"] | None = None  # None = use profile default
 
     # Pipeline Backends (None = use profile default)
-    vector_backend: Literal["chroma", "qdrant", "pgvector"] | None = None
+    vector_backend: Literal["pgvector"] | None = None
     chunker_backend: Literal["simple", "docling"] | None = None
 
     # API
