@@ -419,6 +419,7 @@ class Settings(BaseSettings):
     structured_query_enabled: bool | None = None  # None = use profile default
     structured_query_row_cap: int = 1000
     structured_query_timeout_seconds: int = 5
+    structured_query_confidence_threshold: float = 0.6
 
     # ---------------------------------------------------------------------------
     # Tenant / Module — Issue #374
