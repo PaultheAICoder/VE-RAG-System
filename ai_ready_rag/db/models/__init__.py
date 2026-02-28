@@ -20,7 +20,7 @@ from ai_ready_rag.db.models.cache import (
 )
 from ai_ready_rag.db.models.chat import ChatMessage, ChatSession
 from ai_ready_rag.db.models.document import Document
-from ai_ready_rag.db.models.enrichment import EnrichmentEntity, EnrichmentSynopsis, ReviewItem
+from ai_ready_rag.db.models.enrichment import EnrichmentEntity, EnrichmentSynopsis
 from ai_ready_rag.db.models.evaluation import (
     DatasetSample,
     EvaluationDataset,
@@ -29,6 +29,7 @@ from ai_ready_rag.db.models.evaluation import (
     LiveEvaluationScore,
 )
 from ai_ready_rag.db.models.rag import CuratedQA, CuratedQAKeyword, QuerySynonym
+from ai_ready_rag.db.models.review import ReviewItem
 from ai_ready_rag.db.models.suggestion import TagSuggestion
 from ai_ready_rag.db.models.user import Tag, User
 from ai_ready_rag.db.models.warming import WarmingBatch, WarmingQuery

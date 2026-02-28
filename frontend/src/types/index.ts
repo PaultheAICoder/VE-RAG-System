@@ -1010,3 +1010,47 @@ export interface ActiveStrategyResponse {
   strategy_name: string;
   strategy_version: string;
 }
+
+// =============================================================================
+// Review Queue Types (Issue #383)
+// =============================================================================
+
+export type ReviewStatus = 'pending' | 'accepted' | 'corrected' | 'dismissed';
+export type ReviewType =
+  | 'low_confidence_answer'
+  | 'account_match_pending'
+  | 'canonicalization_failure'
+  | 'unknown_document_type'
+  | 'ambiguous_classification';
+
+export interface ReviewItem {
+  id: string;
+  review_type: ReviewType;
+  query: string | null;
+  tentative_answer: string | null;
+  confidence: number | null;
+  candidate_types: string | null;
+  candidate_scores: string | null;
+  review_status: ReviewStatus;
+  corrected_answer: string | null;
+  reviewer_id: string | null;
+  module_context: string | null;
+  tenant_id: string | null;
+  document_id: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface ReviewQueueListResponse {
+  items: ReviewItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface ReviewItemResolveResponse {
+  id: string;
+  review_status: ReviewStatus;
+  resolved_at: string;
+  reviewer_id: string;
+}

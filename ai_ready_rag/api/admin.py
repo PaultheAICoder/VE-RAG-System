@@ -44,6 +44,7 @@ from ai_ready_rag.db.models import (
     CuratedQAKeyword,
     Document,
     QuerySynonym,
+    ReviewItem,
     TagSuggestion,
     User,
     WarmingBatch,
@@ -108,6 +109,9 @@ from ai_ready_rag.schemas.admin import (
     ResumeReindexRequest,
     RetrievalSettingsRequest,
     RetrievalSettingsResponse,
+    ReviewItemResolveResponse,
+    ReviewItemResponse,
+    ReviewQueueListResponse,
     SecuritySettingsRequest,
     SecuritySettingsResponse,
     SettingsAuditEntry,
@@ -4712,3 +4716,134 @@ async def reconcile_stores(
         logger.info("Reconciliation complete: no issues found")
 
     return ReconcileResponse(**result)
+
+
+# =============================================================================
+# Review Queue (Issue #383)
+# =============================================================================
+
+
+@router.get("/review-queue", response_model=ReviewQueueListResponse)
+async def list_review_queue(
+    review_status: str | None = Query(
+        None,
+        alias="status",
+        description="Filter by review_status (pending|accepted|corrected|dismissed). Omit for all.",
+    ),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """List items in the review queue.
+
+    Returns paginated review items. Filter by status (pending|accepted|corrected|dismissed)
+    or omit the status parameter to return all items.
+
+    Admin only.
+    """
+    query = db.query(ReviewItem).filter(ReviewItem.is_deleted.is_(False))
+
+    if review_status:
+        query = query.filter(ReviewItem.review_status == review_status)
+
+    total = query.count()
+    items = (
+        query.order_by(ReviewItem.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return ReviewQueueListResponse(
+        items=[ReviewItemResponse.model_validate(item) for item in items],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.post("/review-queue/{item_id}/approve", response_model=ReviewItemResolveResponse)
+async def approve_review_item(
+    item_id: str,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Approve a pending review queue item.
+
+    Sets review_status to 'accepted', records resolved_at and reviewer_id.
+
+    Admin only.
+    """
+    item = (
+        db.query(ReviewItem)
+        .filter(ReviewItem.id == item_id, ReviewItem.is_deleted.is_(False))
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review item not found")
+
+    if item.review_status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Item is already resolved (status: {item.review_status})",
+        )
+
+    now = datetime.now(UTC)
+    item.review_status = "accepted"
+    item.resolved_at = now
+    item.reviewer_id = current_user.id
+    db.commit()
+    db.refresh(item)
+
+    logger.info(f"Admin {current_user.email} approved review item {item_id}")
+
+    return ReviewItemResolveResponse(
+        id=item.id,
+        review_status=item.review_status,
+        resolved_at=item.resolved_at,
+        reviewer_id=item.reviewer_id,
+    )
+
+
+@router.post("/review-queue/{item_id}/reject", response_model=ReviewItemResolveResponse)
+async def reject_review_item(
+    item_id: str,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Reject a pending review queue item.
+
+    Sets review_status to 'dismissed', records resolved_at and reviewer_id.
+
+    Admin only.
+    """
+    item = (
+        db.query(ReviewItem)
+        .filter(ReviewItem.id == item_id, ReviewItem.is_deleted.is_(False))
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review item not found")
+
+    if item.review_status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Item is already resolved (status: {item.review_status})",
+        )
+
+    now = datetime.now(UTC)
+    item.review_status = "dismissed"
+    item.resolved_at = now
+    item.reviewer_id = current_user.id
+    db.commit()
+    db.refresh(item)
+
+    logger.info(f"Admin {current_user.email} rejected review item {item_id}")
+
+    return ReviewItemResolveResponse(
+        id=item.id,
+        review_status=item.review_status,
+        resolved_at=item.resolved_at,
+        reviewer_id=item.reviewer_id,
+    )
