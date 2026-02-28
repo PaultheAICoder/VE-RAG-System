@@ -62,8 +62,21 @@ def get_vector_service(settings: Settings) -> VectorServiceProtocol:
             ollama_url=settings.ollama_base_url,
             embedding_dimension=settings.embedding_dimension,
         )
+    elif backend == "pgvector":
+        from ai_ready_rag.services.pgvector_service import PgVectorService
+
+        logger.info(f"Creating PgVectorService: {settings.database_url[:30]}...")
+        return PgVectorService(
+            database_url=settings.database_url,
+            ollama_url=settings.ollama_base_url,
+            embedding_model=embedding_model,
+            embedding_dimension=settings.embedding_dimension,
+            tenant_id=settings.default_tenant_id,
+        )
     else:
-        raise ValueError(f"Unknown vector_backend: {backend}")
+        raise ValueError(
+            f"Unknown vector_backend: {backend!r}. Valid options: qdrant, chroma, pgvector"
+        )
 
 
 def get_chunker(
