@@ -75,8 +75,7 @@ def get_template_api():
 
     # Build adapters needed by the router
     vector_store = VERagVectorStoreAdapter(
-        qdrant_url=settings.qdrant_url,
-        collection_name=settings.qdrant_collection,
+        database_url=settings.database_url,
         embedding_dimension=settings.embedding_dimension,
         document_id="preview",
         document_name="preview",

@@ -70,8 +70,7 @@ class ExcelProcessingService:
         # Build all adapters and config here (in the event-loop thread).
         # PostgreSQL connections are thread-safe so no need to defer to the worker.
         vector_store = VERagVectorStoreAdapter(
-            qdrant_url=settings.qdrant_url,
-            collection_name=settings.qdrant_collection,
+            database_url=settings.database_url,
             embedding_dimension=settings.embedding_dimension,
             document_id=document.id,
             document_name=document.original_filename,

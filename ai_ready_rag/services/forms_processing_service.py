@@ -157,8 +157,7 @@ class FormsProcessingService:
 
         # 2. Create adapters
         vector_store = VERagVectorStoreAdapter(
-            qdrant_url=settings.qdrant_url,
-            collection_name=settings.qdrant_collection,
+            database_url=settings.database_url,
             embedding_dimension=settings.embedding_dimension,
             document_id=document.id,
             document_name=document.original_filename,
@@ -513,8 +512,8 @@ class FormsProcessingService:
                 )
             )
 
-        # 7. Write new chunks to Qdrant via the adapter
-        count = vector_store.upsert_chunks(settings.qdrant_collection, chunks_to_upsert)
+        # 7. Write new chunks to pgvector via the adapter
+        count = vector_store.upsert_chunks("", chunks_to_upsert)
 
         # 8. Delete original mega-chunk AFTER successful upsert of new chunks.
         #    This ordering prevents data loss: if embedding or upsert fails above,
@@ -522,7 +521,7 @@ class FormsProcessingService:
         if result.ingest_key:
             try:
                 vector_store.delete_by_filter(
-                    settings.qdrant_collection,
+                    "",
                     "ingestkit_ingest_key",
                     result.ingest_key,
                 )
@@ -563,7 +562,7 @@ class FormsProcessingService:
         if result.written and result.written.vector_point_ids:
             try:
                 vector_store.delete_by_filter(
-                    self.settings.qdrant_collection,
+                    "",
                     "ingestkit_ingest_key",
                     result.ingest_key,
                 )
