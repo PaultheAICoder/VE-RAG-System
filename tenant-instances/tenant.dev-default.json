@@ -1,0 +1,19 @@
+{
+  "tenant_id": "default",
+  "tenant_name": "VaultIQ Dev",
+  "feature_flags": {
+    "ca_enabled": true,
+    "claude_enrichment_enabled": false,
+    "structured_query_enabled": true,
+    "claude_query_enabled": false
+  },
+  "ai_models": {
+    "enrichment_model": "claude-haiku-4-5-20251001",
+    "query_model": "claude-sonnet-4-6",
+    "synopsis_model": "claude-sonnet-4-6"
+  },
+  "cost_controls": {
+    "daily_enrichment_cap_usd": 5.0,
+    "monthly_enrichment_cap_usd": 50.0
+  }
+}
