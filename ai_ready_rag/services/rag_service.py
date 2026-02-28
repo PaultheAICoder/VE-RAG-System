@@ -2370,6 +2370,29 @@ class RAGService:
                 structured_query_enabled=True,
             )
             if sql_decision.route == RouteType.SQL and sql_decision.template_name:
+                # Tag-based access control: verify user_tags overlap with table's access_tags.
+                # user_tags=None means admin bypass (no filtering applied — allow all).
+                # access_tags=[] means the table is public (allow all users).
+                from ai_ready_rag.modules.registry import get_registry as _get_registry
+
+                _sql_tmpl = _get_registry().get_sql_template_object(sql_decision.template_name)
+                if (
+                    _sql_tmpl is not None
+                    and _sql_tmpl.access_tags
+                    and request.user_tags is not None
+                    and not set(request.user_tags) & set(_sql_tmpl.access_tags)
+                ):
+                    elapsed_ms = (time.perf_counter() - start_time) * 1000
+                    logger.warning(
+                        "nl2sql.acl_denied: template=%s user_tags=%s required_tags=%s",
+                        sql_decision.template_name,
+                        request.user_tags,
+                        _sql_tmpl.access_tags,
+                    )
+                    return self._insufficient_context_response(
+                        self.default_model, elapsed_ms, "SQL"
+                    )
+
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
                 return await self._execute_sql_route(sql_decision, request.query, db, elapsed_ms)
 

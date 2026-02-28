@@ -241,9 +241,11 @@ def create_llm_adapter():
     return VERagClaudeLLM()
 
 
-def create_structured_db(*, database_url: str) -> VERagPostgresStructuredDB:
+def create_structured_db(
+    *, database_url: str, tags: list[str] | None = None
+) -> VERagPostgresStructuredDB:
     """Return a PostgreSQL StructuredDBBackend for ingestkit-excel table storage."""
-    return VERagPostgresStructuredDB(database_url=database_url)
+    return VERagPostgresStructuredDB(database_url=database_url, tags=tags)
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +321,9 @@ class VERagPostgresStructuredDB:
 
     _SCHEMA = "excel_tables"
 
-    def __init__(self, *, database_url: str) -> None:
+    def __init__(self, *, database_url: str, tags: list[str] | None = None) -> None:
         self._database_url = database_url
+        self._access_tags: list[str] = tags or []
         self._ensure_schema()
 
     def _connect(self):
@@ -360,6 +363,10 @@ class VERagPostgresStructuredDB:
         Uses UPSERT so re-ingesting the same file updates the existing row
         rather than creating a duplicate. Failures are logged but never raised
         (registry write must not break ingest).
+
+        The ``access_tags`` from the document are stored in ``table_metadata``
+        JSON so the ExcelTablesService can enforce tag-based access control
+        on the NL2SQL path at query time.
         """
         import uuid as _uuid
         from datetime import datetime
@@ -368,6 +375,8 @@ class VERagPostgresStructuredDB:
             columns = list(df.columns.astype(str))
             column_types = {str(col): str(dtype) for col, dtype in df.dtypes.items()}
             now = datetime.utcnow()
+            # Embed access_tags in table_metadata so no schema migration is required.
+            table_metadata = json.dumps({"access_tags": self._access_tags})
 
             with self._connect() as conn:
                 with conn.cursor() as cur:
@@ -375,14 +384,15 @@ class VERagPostgresStructuredDB:
                         """
                         INSERT INTO excel_table_registry
                             (id, table_name, schema_name, columns, column_types,
-                             tenant_id, row_count, created_at, updated_at)
+                             tenant_id, row_count, table_metadata, created_at, updated_at)
                         VALUES
-                            (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (schema_name, table_name)
                         DO UPDATE SET
                             columns = EXCLUDED.columns,
                             column_types = EXCLUDED.column_types,
                             row_count = EXCLUDED.row_count,
+                            table_metadata = EXCLUDED.table_metadata,
                             updated_at = EXCLUDED.updated_at
                         """,
                         (
@@ -393,16 +403,18 @@ class VERagPostgresStructuredDB:
                             json.dumps(column_types),
                             getattr(self, "_tenant_id", "default"),
                             len(df),
+                            table_metadata,
                             now,
                             now,
                         ),
                     )
                 conn.commit()
             logger.info(
-                "excel_table_registry.written: table=%s columns=%d rows=%d",
+                "excel_table_registry.written: table=%s columns=%d rows=%d access_tags=%s",
                 table_name,
                 len(columns),
                 len(df),
+                self._access_tags,
             )
         except Exception as exc:
             logger.warning("excel_table_registry.write_failed: %s", exc)

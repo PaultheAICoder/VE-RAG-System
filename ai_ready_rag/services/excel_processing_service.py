@@ -98,7 +98,7 @@ class ExcelProcessingService:
 
         router = ExcelRouter(
             vector_store=vector_store,
-            structured_db=create_structured_db(database_url=settings.database_url),
+            structured_db=create_structured_db(database_url=settings.database_url, tags=tag_names),
             llm=create_llm_adapter(),
             embedder=embedder,
             config=config,
