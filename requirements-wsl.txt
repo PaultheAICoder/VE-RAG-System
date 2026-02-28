@@ -46,6 +46,9 @@ redis>=5.0.0
 # ============== Structured Logging ==============
 structlog>=24.0.0
 
+# ============== Security / Encryption ==============
+cryptography>=41.0.0
+
 # ============== HTML Sanitization ==============
 bleach>=6.0.0
 
