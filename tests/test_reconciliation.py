@@ -30,7 +30,7 @@ class TestReconcileEndpoint:
         """Dry run with no drift returns empty issues list."""
         mock_reconcile.return_value = {
             "total_documents": 10,
-            "total_qdrant_documents": 10,
+            "total_vector_documents": 10,
             "synced": 10,
             "issues": [],
             "repairs": [],
@@ -55,16 +55,16 @@ class TestReconcileEndpoint:
         """Ghost doc (ready in SQLite, 0 vectors) is detected."""
         mock_reconcile.return_value = {
             "total_documents": 5,
-            "total_qdrant_documents": 4,
+            "total_vector_documents": 4,
             "synced": 4,
             "issues": [
                 {
                     "document_id": "abc-123",
                     "filename": "report.pdf",
                     "issue": "ghost_doc",
-                    "detail": "status=ready in SQLite but 0 vectors in Qdrant",
+                    "detail": "status=ready in SQLite but 0 vectors in chunk_vectors",
                     "sqlite_chunks": 36,
-                    "qdrant_chunks": 0,
+                    "vector_chunks": 0,
                 }
             ],
             "repairs": [],
@@ -87,16 +87,16 @@ class TestReconcileEndpoint:
         """Repair mode returns repairs list."""
         mock_reconcile.return_value = {
             "total_documents": 5,
-            "total_qdrant_documents": 6,
+            "total_vector_documents": 6,
             "synced": 4,
             "issues": [
                 {
                     "document_id": "orphan-1",
                     "filename": None,
                     "issue": "orphan_vectors",
-                    "detail": "Vectors exist in Qdrant but no SQLite record",
+                    "detail": "Vectors exist in chunk_vectors but no SQLite record",
                     "sqlite_chunks": None,
-                    "qdrant_chunks": 14,
+                    "vector_chunks": 14,
                 }
             ],
             "repairs": [

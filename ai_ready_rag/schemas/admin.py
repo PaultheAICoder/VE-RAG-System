@@ -928,7 +928,7 @@ class ReconcileResponse(BaseModel):
     """Response from reconciliation endpoint."""
 
     total_documents: int
-    total_qdrant_documents: int
+    total_vector_documents: int
     synced: int
     issues: list[ReconcileIssue]
     repairs: list[ReconcileRepair]

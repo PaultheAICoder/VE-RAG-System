@@ -1,8 +1,11 @@
 """Tests for PgVectorService (requires PostgreSQL + pgvector)."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
-from ai_ready_rag.services.pgvector_service import PgVectorService, SearchResult
+from ai_ready_rag.services.pgvector_service import PgVectorService
+from ai_ready_rag.services.vector_types import SearchResult
 
 
 class TestPgVectorServiceImport:
@@ -59,6 +62,82 @@ class TestPgVectorServiceImport:
         )
         assert r.tags is None
         assert r.section == "Introduction"
+
+    def test_has_embed_method(self):
+        """PgVectorService exposes public embed() method."""
+        svc = PgVectorService(database_url="sqlite:///test.db")
+        assert callable(getattr(svc, "embed", None))
+
+    def test_has_get_extended_stats_method(self):
+        """PgVectorService exposes get_extended_stats() method."""
+        svc = PgVectorService(database_url="sqlite:///test.db")
+        assert callable(getattr(svc, "get_extended_stats", None))
+
+    def test_has_refresh_capabilities_method(self):
+        """PgVectorService exposes refresh_capabilities() method."""
+        svc = PgVectorService(database_url="sqlite:///test.db")
+        assert callable(getattr(svc, "refresh_capabilities", None))
+
+
+class TestPgVectorServiceNewMethods:
+    """Unit tests for the 3 new methods — uses mocks, no DB required."""
+
+    @pytest.fixture
+    def svc(self):
+        return PgVectorService(database_url="sqlite:///test.db", tenant_id="test-tenant")
+
+    @pytest.mark.asyncio
+    async def test_embed_delegates_to_private_embed(self, svc):
+        """embed() is a thin wrapper around _embed()."""
+        svc._embed = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        result = await svc.embed("hello world")
+        svc._embed.assert_called_once_with("hello world")
+        assert result == [0.1, 0.2, 0.3]
+
+    @pytest.mark.asyncio
+    async def test_refresh_capabilities_returns_pgvector_backend(self, svc):
+        """refresh_capabilities() returns pgvector backend descriptor."""
+        result = await svc.refresh_capabilities()
+        assert result["backend"] == "pgvector"
+        assert "vector_search" in result["capabilities"]
+        assert isinstance(result["capabilities"], list)
+
+    @pytest.mark.asyncio
+    async def test_get_extended_stats_empty_db(self, svc):
+        """get_extended_stats() returns zero totals when chunk_vectors is empty."""
+        mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
+        mock_db.execute.return_value.fetchall.return_value = []
+
+        with patch("ai_ready_rag.services.pgvector_service.SessionLocal", return_value=mock_db):
+            result = await svc.get_extended_stats()
+
+        assert result["total_chunks"] == 0
+        assert result["unique_files"] == 0
+        assert result["files"] == []
+        assert result["collection_name"] == "chunk_vectors"
+
+    @pytest.mark.asyncio
+    async def test_get_extended_stats_with_data(self, svc):
+        """get_extended_stats() aggregates file counts correctly."""
+        mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
+        # Simulate 2 documents: 10 + 5 chunks
+        mock_db.execute.return_value.fetchall.return_value = [
+            ("doc-1", "policy.pdf", 10),
+            ("doc-2", "guide.pdf", 5),
+        ]
+
+        with patch("ai_ready_rag.services.pgvector_service.SessionLocal", return_value=mock_db):
+            result = await svc.get_extended_stats()
+
+        assert result["total_chunks"] == 15
+        assert result["unique_files"] == 2
+        assert len(result["files"]) == 2
+        filenames = [f["filename"] for f in result["files"]]
+        assert "policy.pdf" in filenames
 
 
 @pytest.mark.requires_postgres

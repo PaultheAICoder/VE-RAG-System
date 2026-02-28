@@ -288,3 +288,53 @@ class PgVectorService:
                 updated += 1
             db.commit()
         return updated
+
+    async def embed(self, text: str) -> list[float]:
+        """Public wrapper around _embed() for cache seeding and external callers."""
+        return await self._embed(text)
+
+    async def get_extended_stats(self) -> dict[str, Any]:
+        """Return per-document chunk counts and totals for admin endpoints."""
+        with SessionLocal() as db:
+            try:
+                # PostgreSQL: ->> operator
+                rows = db.execute(
+                    text(
+                        "SELECT document_id, "
+                        "metadata_->>'document_name' AS filename, "
+                        "COUNT(*) AS chunk_count "
+                        "FROM chunk_vectors "
+                        "WHERE tenant_id = :tenant "
+                        "GROUP BY document_id, metadata_->>'document_name'"
+                    ),
+                    {"tenant": self._tenant_id},
+                ).fetchall()
+            except Exception:
+                # SQLite fallback (used in tests)
+                rows = db.execute(
+                    text(
+                        "SELECT document_id, "
+                        "json_extract(metadata_, '$.document_name') AS filename, "
+                        "COUNT(*) AS chunk_count "
+                        "FROM chunk_vectors "
+                        "WHERE tenant_id = :tenant "
+                        "GROUP BY document_id, json_extract(metadata_, '$.document_name')"
+                    ),
+                    {"tenant": self._tenant_id},
+                ).fetchall()
+
+        files = [{"document_id": row[0], "filename": row[1], "chunk_count": row[2]} for row in rows]
+        return {
+            "total_chunks": sum(r["chunk_count"] for r in files),
+            "unique_files": len(files),
+            "collection_name": "chunk_vectors",
+            "collection_size_bytes": None,
+            "files": files,
+        }
+
+    async def refresh_capabilities(self) -> dict[str, Any]:
+        """Return backend capability descriptor (no-op for pgvector)."""
+        return {
+            "backend": "pgvector",
+            "capabilities": ["vector_search", "cosine_similarity", "tag_filtering"],
+        }
