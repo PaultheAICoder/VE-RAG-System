@@ -785,7 +785,7 @@ class VERagImageOCRAdapter:
         lang = language or self._language
         tess_config = config or self._config or "--psm 6"
 
-        img = Image.open(io.BytesIO(image_bytes))
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         data = pytesseract.image_to_data(
             img, lang=lang, config=tess_config, output_type=pytesseract.Output.DICT
         )
