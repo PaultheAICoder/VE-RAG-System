@@ -264,7 +264,7 @@ class TestExcelTableRegistryDiscover:
         mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
         mock_cursor.__exit__ = MagicMock(return_value=False)
         mock_cursor.fetchall.return_value = [
-            ("inventory_report", "excel_tables", inventory_columns, inventory_types)
+            ("inventory_report", "excel_tables", inventory_columns, inventory_types, None)
         ]
         mock_conn.cursor.return_value = mock_cursor
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
@@ -397,6 +397,7 @@ class TestIngestKitRegistryWrite:
             adapter = VERagPostgresStructuredDB.__new__(VERagPostgresStructuredDB)
             adapter._database_url = "postgresql://fake/db"
             adapter._SCHEMA = "excel_tables"
+            adapter._access_tags = ["finance"]
             adapter._register_table_in_registry("inventory_report", df)
 
         # Verify cursor.execute was called with INSERT SQL
@@ -423,6 +424,7 @@ class TestIngestKitRegistryWrite:
             adapter = VERagPostgresStructuredDB.__new__(VERagPostgresStructuredDB)
             adapter._database_url = "postgresql://fake/db"
             adapter._SCHEMA = "excel_tables"
+            adapter._access_tags = []
             adapter._register_table_in_registry("my_test_table", df)
 
         call_params = mock_cursor.execute.call_args[0][1]
@@ -438,5 +440,153 @@ class TestIngestKitRegistryWrite:
             adapter = VERagPostgresStructuredDB.__new__(VERagPostgresStructuredDB)
             adapter._database_url = "postgresql://fake/db"
             adapter._SCHEMA = "excel_tables"
+            adapter._access_tags = []
             # Should not raise
             adapter._register_table_in_registry("inventory_report", df)
+
+    def test_registry_write_stores_access_tags_in_table_metadata(self):
+        """_register_table_in_registry serializes access_tags into table_metadata JSON."""
+        from ai_ready_rag.services.ingestkit_adapters import VERagPostgresStructuredDB
+
+        df = self._make_df()
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+
+        with patch("psycopg2.connect", return_value=mock_conn):
+            adapter = VERagPostgresStructuredDB.__new__(VERagPostgresStructuredDB)
+            adapter._database_url = "postgresql://fake/db"
+            adapter._SCHEMA = "excel_tables"
+            adapter._access_tags = ["finance", "accounting"]
+            adapter._register_table_in_registry("finance_table", df)
+
+        call_params = mock_cursor.execute.call_args[0][1]
+        # table_metadata is the 8th param (index 7)
+        table_metadata_json = call_params[7]
+        table_metadata = json.loads(table_metadata_json)
+        assert table_metadata["access_tags"] == ["finance", "accounting"]
+
+
+# =============================================================================
+# TestNL2SQLAccessControl
+# =============================================================================
+
+
+class TestNL2SQLAccessControl:
+    """Tests for tag-based ACL on the NL2SQL path (issue #461)."""
+
+    def _make_sql_template(self, name: str, access_tags: list[str]) -> SQLTemplate:
+        return SQLTemplate(
+            name=name,
+            sql=f'SELECT "col" FROM "excel_tables"."{name}" LIMIT :row_cap',
+            trigger_phrases=[],
+            description=f"Test template {name}",
+            column_signals={
+                "col": ["col", "column"],
+                "__quantitative__": ["how many", "total"],
+            },
+            access_tags=access_tags,
+        )
+
+    def test_sql_template_has_access_tags_field(self):
+        """SQLTemplate dataclass exposes access_tags field."""
+        tmpl = self._make_sql_template("finance_data", ["finance"])
+        assert tmpl.access_tags == ["finance"]
+
+    def test_sql_template_defaults_access_tags_empty(self):
+        """SQLTemplate.access_tags defaults to [] (public table)."""
+        tmpl = SQLTemplate(
+            name="public_table",
+            sql='SELECT "col" FROM "excel_tables"."public_table" LIMIT :row_cap',
+        )
+        assert tmpl.access_tags == []
+
+    def test_register_table_template_propagates_access_tags(self):
+        """_register_table_template stores access_tags on the registered SQLTemplate."""
+        service = ExcelTablesService("postgresql://fake/db")
+
+        registry = ModuleRegistry.get_instance()
+        service._register_table_template(
+            table_name="ar_aging",
+            schema_name="excel_tables",
+            columns=["Vendor", "Amount Due", "Days Aged"],
+            column_types={"Vendor": "object", "Amount Due": "float64", "Days Aged": "int64"},
+            access_tags=["finance", "accounting"],
+        )
+
+        tmpl = registry.get_sql_template_object("excel_ar_aging")
+        assert tmpl is not None
+        assert tmpl.access_tags == ["finance", "accounting"]
+
+    def test_register_table_template_empty_access_tags_is_public(self):
+        """_register_table_template with no access_tags creates a public template."""
+        service = ExcelTablesService("postgresql://fake/db")
+
+        registry = ModuleRegistry.get_instance()
+        service._register_table_template(
+            table_name="public_inventory",
+            schema_name="excel_tables",
+            columns=["SKU", "On Hand"],
+            column_types={"SKU": "object", "On Hand": "int64"},
+            access_tags=[],
+        )
+
+        tmpl = registry.get_sql_template_object("excel_public_inventory")
+        assert tmpl is not None
+        assert tmpl.access_tags == []
+
+    def test_discover_reads_access_tags_from_table_metadata(self):
+        """_discover_registry_tables extracts access_tags from table_metadata JSON."""
+        service = ExcelTablesService("postgresql://fake/db")
+
+        inventory_columns = json.dumps(["SKU", "Item", "On Hand"])
+        inventory_types = json.dumps({"SKU": "object", "Item": "object", "On Hand": "int64"})
+        table_metadata = json.dumps({"access_tags": ["finance"]})
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = [
+            ("inventory_report", "excel_tables", inventory_columns, inventory_types, table_metadata)
+        ]
+        mock_conn.cursor.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.close = MagicMock()
+
+        with patch("psycopg2.connect", return_value=mock_conn):
+            rows = service._discover_registry_tables()
+
+        assert len(rows) == 1
+        assert rows[0]["access_tags"] == ["finance"]
+
+    def test_discover_handles_missing_table_metadata(self):
+        """_discover_registry_tables returns empty access_tags when table_metadata is NULL."""
+        service = ExcelTablesService("postgresql://fake/db")
+
+        inventory_columns = json.dumps(["SKU", "On Hand"])
+        inventory_types = json.dumps({"SKU": "object", "On Hand": "int64"})
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_cursor.fetchall.return_value = [
+            ("inventory_report", "excel_tables", inventory_columns, inventory_types, None)
+        ]
+        mock_conn.cursor.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.close = MagicMock()
+
+        with patch("psycopg2.connect", return_value=mock_conn):
+            rows = service._discover_registry_tables()
+
+        assert len(rows) == 1
+        assert rows[0]["access_tags"] == []

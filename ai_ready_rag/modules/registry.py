@@ -39,6 +39,7 @@ class SQLTemplate:
     trigger_phrases: list[str] = field(default_factory=list)
     description: str = ""
     column_signals: dict[str, list[str]] | None = field(default=None)
+    access_tags: list[str] = field(default_factory=list)  # [] = public (all users)
 
 
 # ─── SQL template safety guards ─────────────────────────────────────────────
