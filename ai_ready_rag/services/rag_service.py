@@ -2308,30 +2308,60 @@ class RAGService:
                 f"score={c.score:.3f} tags={c.tags}"
             )
 
+        # 4. Try Claude query service first (when enabled), fall back to Ollama
+        answer: str | None = None
+        claude_model_used: str | None = None
+
         try:
-            llm = ChatOllama(
-                base_url=self.ollama_url,
-                model=model,
-                temperature=self.rag_temperature,
-                timeout=self.settings.rag_timeout_seconds,
-            )
+            from ai_ready_rag.services.claude_query_service import ClaudeQueryService
 
-            messages = [
-                ("system", system_prompt),
-                ("human", user_prompt),
-            ]
-
-            response = await llm.ainvoke(messages)
-            answer = response.content
-
-            logger.debug(
-                f"[RAG] LLM response length: {len(answer)} chars | First 200 chars: {answer[:200]}"
-            )
-
+            claude_svc = ClaudeQueryService(self.settings, tenant_config=self._tenant_config)
+            if claude_svc._is_enabled():
+                chunks_as_dicts = [
+                    {"text": c.chunk_text, "document_name": c.document_name} for c in final_chunks
+                ]
+                claude_response = await claude_svc.answer(request.query, chunks_as_dicts)
+                if claude_response is not None:
+                    answer = claude_response.answer
+                    claude_model_used = claude_response.model_used
+                    logger.info(
+                        "[RAG] Claude query answered",
+                        extra={"model": claude_model_used, "route": claude_response.route_type},
+                    )
         except Exception as e:
-            if "timeout" in str(e).lower():
-                raise LLMTimeoutError(f"LLM response timed out: {e}") from e
-            raise RAGServiceError(f"LLM generation failed: {e}") from e
+            logger.warning(f"[RAG] Claude query failed, falling back to Ollama: {e}")
+            answer = None
+
+        # 5. Ollama fallback (used when Claude disabled or unavailable)
+        if answer is None:
+            try:
+                llm = ChatOllama(
+                    base_url=self.ollama_url,
+                    model=model,
+                    temperature=self.rag_temperature,
+                    timeout=self.settings.rag_timeout_seconds,
+                )
+
+                messages = [
+                    ("system", system_prompt),
+                    ("human", user_prompt),
+                ]
+
+                response = await llm.ainvoke(messages)
+                answer = response.content
+
+                logger.debug(
+                    f"[RAG] LLM response length: {len(answer)} chars | First 200 chars: {answer[:200]}"
+                )
+
+            except Exception as e:
+                if "timeout" in str(e).lower():
+                    raise LLMTimeoutError(f"LLM response timed out: {e}") from e
+                raise RAGServiceError(f"LLM generation failed: {e}") from e
+
+        # Use Claude model name in response if Claude answered
+        if claude_model_used:
+            model = claude_model_used
 
         # 6. Extract citations
         citations = self._extract_citations(answer, final_chunks)
