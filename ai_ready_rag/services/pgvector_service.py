@@ -119,34 +119,49 @@ class PgVectorService:
                     **{k: v for k, v in meta.items() if k not in ("page_number", "section")},
                 }
                 chunk_id = str(uuid.uuid4())
+                vector_str = f"[{','.join(str(x) for x in embedding)}]"
                 with SessionLocal() as db:
-                    db.execute(
-                        text(
-                            "INSERT INTO chunk_vectors "
-                            "(id, document_id, chunk_index, chunk_text, metadata_, tenant_id, embedding) "
-                            "VALUES (:id, :doc_id, :idx, :text, :meta, :tenant, :emb)"
-                        ),
-                        {
-                            "id": chunk_id,
-                            "doc_id": document_id,
-                            "idx": i,
-                            "text": chunk_text,
-                            "meta": json.dumps(metadata),
-                            "tenant": effective_tenant,
-                            "emb": embedding_json,
-                        },
-                    )
-                    # Update pgvector column if extension is available
+                    # Insert text embedding and vector in one statement to avoid
+                    # partial-transaction issues: if the CAST fails the whole INSERT
+                    # fails atomically rather than leaving an aborted transaction that
+                    # rolls back the text INSERT too.
                     try:
                         db.execute(
                             text(
-                                "UPDATE chunk_vectors SET vector_embedding = :emb::vector "
-                                "WHERE id = :id"
+                                "INSERT INTO chunk_vectors "
+                                "(id, document_id, chunk_index, chunk_text, metadata_, tenant_id, embedding, vector_embedding) "
+                                "VALUES (:id, :doc_id, :idx, :text, :meta, :tenant, :emb, CAST(:vec AS vector))"
                             ),
-                            {"emb": f"[{','.join(str(x) for x in embedding)}]", "id": chunk_id},
+                            {
+                                "id": chunk_id,
+                                "doc_id": document_id,
+                                "idx": i,
+                                "text": chunk_text,
+                                "meta": json.dumps(metadata),
+                                "tenant": effective_tenant,
+                                "emb": embedding_json,
+                                "vec": vector_str,
+                            },
                         )
                     except Exception:
-                        pass  # pgvector may not be available on all connections
+                        # Fallback: insert without vector_embedding (no pgvector extension)
+                        db.rollback()
+                        db.execute(
+                            text(
+                                "INSERT INTO chunk_vectors "
+                                "(id, document_id, chunk_index, chunk_text, metadata_, tenant_id, embedding) "
+                                "VALUES (:id, :doc_id, :idx, :text, :meta, :tenant, :emb)"
+                            ),
+                            {
+                                "id": chunk_id,
+                                "doc_id": document_id,
+                                "idx": i,
+                                "text": chunk_text,
+                                "meta": json.dumps(metadata),
+                                "tenant": effective_tenant,
+                                "emb": embedding_json,
+                            },
+                        )
                     db.commit()
                     indexed += 1
             except Exception as exc:
@@ -178,15 +193,17 @@ class PgVectorService:
         results = []
         with SessionLocal() as db:
             # Try pgvector cosine similarity first
+            # Note: use CAST(:emb AS vector) instead of :emb::vector to avoid
+            # SQLAlchemy treating ::vector as part of the parameter name.
             try:
                 rows = db.execute(
                     text(
                         "SELECT id, document_id, chunk_index, chunk_text, metadata_, "
-                        "1 - (vector_embedding <=> :emb::vector) AS score "
+                        "1 - (vector_embedding <=> CAST(:emb AS vector)) AS score "
                         "FROM chunk_vectors "
                         "WHERE tenant_id = :tenant "
                         "  AND vector_embedding IS NOT NULL "
-                        "ORDER BY vector_embedding <=> :emb::vector "
+                        "ORDER BY vector_embedding <=> CAST(:emb AS vector) "
                         "LIMIT :limit"
                     ),
                     {"emb": embedding_str, "tenant": tenant_id, "limit": limit * 3},
