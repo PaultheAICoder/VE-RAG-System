@@ -1074,39 +1074,22 @@ async def get_detailed_health(
 
     try:
         health = await vector_service.health_check()
-        # Handle both Qdrant (named tuple) and ChromaDB (dict) responses
-        if isinstance(health, dict):
-            # ChromaDB returns {'healthy': bool, ...}
-            vector_healthy = health.get("healthy", False)
-            # Check Ollama separately for ChromaDB
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.get(f"{settings.ollama_base_url}/api/tags")
-                    ollama_healthy = resp.status_code == 200
-            except Exception:
-                ollama_healthy = False
-        else:
-            # Qdrant returns named tuple with ollama_healthy, qdrant_healthy
-            ollama_healthy = health.ollama_healthy
-            vector_healthy = health.qdrant_healthy
+        # pgvector health_check returns {'healthy': bool, 'backend': str, ...}
+        vector_healthy = health.get("healthy", False)
+        # Check Ollama separately
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{settings.ollama_base_url}/api/tags")
+                ollama_healthy = resp.status_code == 200
+        except Exception:
+            ollama_healthy = False
     except Exception as e:
         logger.warning(f"Health check failed: {e}")
 
     # Get Vector DB version
     try:
-        if settings.vector_backend == "qdrant":
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(settings.qdrant_url)
-                if resp.status_code == 200:
-                    vector_db_version = resp.json().get("version")
-        elif settings.vector_backend == "chroma":
-            # ChromaDB doesn't have a remote API for version, get from package
-            try:
-                import chromadb
-
-                vector_db_version = chromadb.__version__
-            except ImportError:
-                vector_db_version = "installed"
+        if settings.vector_backend == "pgvector":
+            vector_db_version = "pgvector"
     except Exception as e:
         logger.debug(f"Failed to get vector DB version: {e}")
 
@@ -1653,7 +1636,7 @@ ADVANCED_DEFAULTS = {
     "chunk_overlap": 80,
     "hnsw_ef_construct": 100,
     "hnsw_m": 16,
-    "vector_backend": "qdrant",
+    "vector_backend": "pgvector",
 }
 
 

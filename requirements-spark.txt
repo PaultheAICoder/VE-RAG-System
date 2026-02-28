@@ -1,46 +1,46 @@
 # AI Ready RAG - DGX Spark Production Dependencies
-# Use: pip install -r requirements-spark.txt
-# Profile: spark (env_profile=spark)
+# Portable: mirrors requirements-wsl.txt. Use on DGX Spark or any production host.
 #
 # System dependencies (install before pip install):
-#   Ubuntu/Debian: apt-get install tesseract-ocr libtesseract-dev
-#   RHEL/CentOS: yum install tesseract tesseract-devel
+#   sudo apt-get install tesseract-ocr libtesseract-dev
 #
-# NOTE: This file does NOT include chromadb (incompatible with DGX onnxruntime)
+# Usage: pip install -r requirements-spark.txt
 
 # ============== Core API ==============
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
+email-validator>=2.0.0
 python-multipart>=0.0.9
 sqlalchemy>=2.0.0
+httpx>=0.27.0
+python-dotenv>=1.0.0
 
 # ============== Authentication ==============
-python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
+pyjwt>=2.8.0
+cryptography>=41.0.0
 
 # ============== Vector Store ==============
-# pgvector for Spark deployment (NOT chromadb - incompatible with DGX onnxruntime)
+pgvector>=0.3.0
+psycopg2-binary>=2.9.0
 
-# ============== Evaluation Framework ==============
-ragas>=0.4.0,<0.5.0
-openai>=1.0.0,<2.0.0
-
-# ============== Document Processing (Full Docling) ==============
-# Required for spark profile chunker_backend=docling
-docling>=2.0.0
-docling-core
-transformers>=4.35.0  # Required for HybridChunker tokenizer (nomic-ai/nomic-embed-text-v1)
+# ============== Database Migrations ==============
+alembic>=1.13.0
 
 # ============== LLM ==============
 langchain>=0.3.0
 langchain-ollama>=0.2.0
-langchain-text-splitters>=0.3.0  # Required for fallback simple chunking
-httpx>=0.27.0
+langchain-text-splitters>=0.3.0
 
-# ============== File Extraction ==============
-# Used by SimpleChunker fallback and for metadata extraction
+# ============== Claude / Anthropic API ==============
+anthropic>=0.40.0
+
+# ============== Document Processing (Full Docling) ==============
+docling>=2.0.0
+docling-core
+transformers>=4.35.0  # Required for HybridChunker tokenizer (nomic-ai/nomic-embed-text-v1)
 pypdf>=3.0.0
 python-docx>=1.0.0
 openpyxl>=3.1.0
@@ -59,17 +59,25 @@ redis>=5.0.0
 # ============== Structured Logging ==============
 structlog>=24.0.0
 
+# ============== HTML Sanitization ==============
+bleach>=6.0.0
+
 # ============== Async File I/O ==============
 aiofiles>=24.1.0
 
-# ============== HTML Sanitization ==============
-bleach>=6.0.0
+# ============== Evaluation Framework ==============
+ragas>=0.4.0,<0.5.0
+openai>=1.0.0,<2.0.0
+pyarrow>=14.0.0
+
+# ============== Document Rendering ==============
+reportlab>=4.0.0
 
 # ============== Testing ==============
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 pytest-cov>=4.0.0
 
-# ============== Development Tools ==============
+# ============== Dev Tools ==============
 ruff>=0.14.0
 pre-commit>=4.0.0
