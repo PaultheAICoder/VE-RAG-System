@@ -17,6 +17,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from ai_ready_rag.tenant.resolver import PromptResolver
+
 logger = logging.getLogger(__name__)
 
 SYNOPSIS_SYSTEM_PROMPT = """You are a document analyst specializing in insurance and property management documents.
@@ -62,10 +64,20 @@ class ClaudeEnrichmentService:
     Gracefully degrades to no-op on SQLite / laptop dev profile.
     """
 
-    def __init__(self, settings: Any, db_session: Any = None) -> None:
+    def __init__(
+        self,
+        settings: Any,
+        db_session: Any = None,
+        tenant_id: str = "default",
+    ) -> None:
         self._settings = settings
         self._db = db_session
         self._client = None
+
+        # Resolve prompts via 3-tier PromptResolver; fall back to module-level constants
+        resolver = PromptResolver(tenant_id=tenant_id, module_id="core")
+        self._synopsis_prompt = resolver.resolve("enrichment_synopsis") or SYNOPSIS_SYSTEM_PROMPT
+        self._entity_prompt = resolver.resolve("enrichment_entities") or ENTITY_EXTRACTION_PROMPT
 
     def _is_enabled(self) -> bool:
         """Return True only when Claude enrichment is explicitly enabled."""
@@ -155,7 +167,7 @@ class ClaudeEnrichmentService:
             system=[
                 {
                     "type": "text",
-                    "text": SYNOPSIS_SYSTEM_PROMPT,
+                    "text": self._synopsis_prompt,
                     "cache_control": {"type": "ephemeral"},  # prompt caching
                 }
             ],
@@ -217,7 +229,7 @@ class ClaudeEnrichmentService:
                 messages=[
                     {
                         "role": "user",
-                        "content": ENTITY_EXTRACTION_PROMPT + "\n\n" + prompt,
+                        "content": self._entity_prompt + "\n\n" + prompt,
                     }
                 ],
             )

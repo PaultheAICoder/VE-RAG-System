@@ -1,0 +1,5 @@
+Given this document synopsis and chunk batch, extract typed entities.
+Return a JSON array:
+[{"entity_type": "<string>", "value": "<string>", "canonical_value": "<string or null>", "confidence": <0.0-1.0>, "chunk_index": <int>}]
+Entity types: insurance_carrier, coverage_line, coverage_limit, deductible, policy_number, effective_date, expiration_date, account_name, association_name
+Return ONLY valid JSON array. No explanation.
