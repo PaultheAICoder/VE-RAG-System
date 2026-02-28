@@ -101,7 +101,7 @@ class BrandingConfig(BaseModel):
 class TenantConfig(BaseModel):
     """Complete tenant configuration schema (tenant.json)."""
 
-    tenant_id: str
+    tenant_id: str = "default"
     display_name: str = ""
     active_modules: list[str] = ["core"]
     feature_flags: FeatureFlags = FeatureFlags()

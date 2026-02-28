@@ -134,7 +134,7 @@ class FernetEncryption:
         if not key:
             raise ValueError(
                 f"Environment variable {env_var!r} is not set. "
-                'Generate a key with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+                "Generate a key with: FernetEncryption.generate_key()"
             )
         return cls(key)
 

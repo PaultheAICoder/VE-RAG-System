@@ -72,6 +72,7 @@ class ModuleRegistry:
         self._sql_templates: dict[str, SQLTemplate] = {}  # template_name → SQLTemplate
         self._compliance_checkers: list[ComplianceChecker] = []
         self._routers: list[tuple[APIRouter, str]] = []  # (router, prefix)
+        self._ams_connectors: dict[str, Any] = {}  # name → AMSConnector
         self._registered_modules: list[str] = []
 
     @classmethod
@@ -150,6 +151,23 @@ class ModuleRegistry:
     @property
     def api_routers(self) -> list[tuple[APIRouter, str]]:
         return list(self._routers)
+
+    # ------------------------------------------------------------------
+    # Extension point 6: AMS connectors
+    # ------------------------------------------------------------------
+
+    def register_ams_connector(self, name: str, connector: Any) -> None:
+        """Register an AMS (Agency Management System) connector by name."""
+        self._ams_connectors[name] = connector
+        logger.debug("registry.ams_connector.added", extra={"name": name})
+
+    def get_ams_connector(self, name: str) -> Any | None:
+        """Return a registered AMS connector by name, or None if not found."""
+        return self._ams_connectors.get(name)
+
+    def list_ams_connectors(self) -> list[str]:
+        """Return sorted list of registered AMS connector names."""
+        return sorted(self._ams_connectors.keys())
 
     # ------------------------------------------------------------------
     # Module lifecycle

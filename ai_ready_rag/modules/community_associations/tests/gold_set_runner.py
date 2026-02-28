@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import click
 
 logger = logging.getLogger(__name__)
 
@@ -135,10 +138,10 @@ if __name__ == "__main__":
         return "unknown"
 
     result = runner.evaluate(_demo_answer_fn)
-    print(result.summary())
-    print()
+    click.echo(result.summary())
+    click.echo("")
     for r in result.results:
         status = "PASS" if r.passed else "FAIL"
-        print(f"  [{status}] {r.question_id}: expected={r.expected!r}  actual={r.actual!r}")
+        click.echo(f"  [{status}] {r.question_id}: expected={r.expected!r}  actual={r.actual!r}")
 
     sys.exit(0 if result.passed_threshold else 1)

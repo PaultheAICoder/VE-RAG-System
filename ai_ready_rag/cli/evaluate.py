@@ -22,6 +22,8 @@ import logging
 import sys
 from pathlib import Path
 
+import click
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -110,22 +112,22 @@ def main() -> None:
         sys.exit(2)
 
     # ------------------------------------------------------------------
-    # Print per-question results
+    # Output per-question results
     # ------------------------------------------------------------------
-    print()
-    print(f"Gold Set: {report.name}  (v{report.version})")
-    print(f"{'─' * 60}")
+    click.echo("")
+    click.echo(f"Gold Set: {report.name}  (v{report.version})")
+    click.echo(f"{'─' * 60}")
     for qr in report.question_results:
         status_label = "PASS" if qr.passed else "FAIL"
-        print(
+        click.echo(
             f"  [{status_label}] {qr.id:8s} | cat={qr.category:20s} | "
             f"expected={qr.expected_answer!r}"
         )
         if not qr.passed:
-            print(f"            actual={qr.actual_answer!r}")
-    print(f"{'─' * 60}")
-    print(report.summary())
-    print()
+            click.echo(f"            actual={qr.actual_answer!r}")
+    click.echo(f"{'─' * 60}")
+    click.echo(report.summary())
+    click.echo("")
 
     # ------------------------------------------------------------------
     # Optional JSON output
@@ -158,16 +160,18 @@ def main() -> None:
         output_path.write_text(
             json.dumps(output_data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        print(f"Report written to: {output_path}")
+        click.echo(f"Report written to: {output_path}")
 
     # ------------------------------------------------------------------
     # Gate enforcement
     # ------------------------------------------------------------------
     if args.tier == "standard" and not report.meets_standard_threshold:
-        print(f"GATE FAILED: standard tier requires >={90}%% accuracy, got {report.score:.1%}")
+        click.echo(f"GATE FAILED: standard tier requires >={90}% accuracy, got {report.score:.1%}")
         sys.exit(1)
     elif args.tier == "enterprise" and not report.meets_enterprise_threshold:
-        print(f"GATE FAILED: enterprise tier requires >={70}%% accuracy, got {report.score:.1%}")
+        click.echo(
+            f"GATE FAILED: enterprise tier requires >={70}% accuracy, got {report.score:.1%}"
+        )
         sys.exit(1)
 
     sys.exit(0)
