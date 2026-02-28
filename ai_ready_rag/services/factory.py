@@ -16,6 +16,7 @@ from ai_ready_rag.services.settings_service import get_model_setting
 if TYPE_CHECKING:
     from ai_ready_rag.services.processing_service import ProcessingOptions
     from ai_ready_rag.services.protocols import ChunkerProtocol, VectorServiceProtocol
+    from ai_ready_rag.services.query_router import QueryRouter
 
 logger = logging.getLogger(__name__)
 
@@ -156,3 +157,18 @@ def get_chunker(
         )
     else:
         raise ValueError(f"Unknown chunker_backend: {backend}")
+
+
+def get_query_router() -> QueryRouter:
+    """Factory that returns a QueryRouter configured from application settings.
+
+    Returns:
+        QueryRouter instance with sql_confidence_threshold from settings
+        (defaults to 0.6 if setting is not present).
+    """
+    from ai_ready_rag.config import get_settings
+    from ai_ready_rag.services.query_router import QueryRouter
+
+    settings = get_settings()
+    sql_threshold = getattr(settings, "structured_query_confidence_threshold", 0.6)
+    return QueryRouter(sql_confidence_threshold=sql_threshold)
