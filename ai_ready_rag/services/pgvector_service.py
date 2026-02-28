@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -20,23 +19,9 @@ from sqlalchemy import text
 
 from ai_ready_rag.core.exceptions import EmbeddingError, SearchError
 from ai_ready_rag.db.database import SessionLocal
+from ai_ready_rag.services.vector_types import SearchResult
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class SearchResult:
-    """Single search result with metadata."""
-
-    chunk_id: str
-    document_id: str
-    document_name: str
-    chunk_text: str
-    chunk_index: int
-    score: float
-    page_number: int | None
-    section: str | None
-    tags: list[str] | None = field(default=None)
 
 
 class PgVectorService:

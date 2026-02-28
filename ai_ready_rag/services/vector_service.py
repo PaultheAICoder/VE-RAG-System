@@ -26,6 +26,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 from qdrant_client.http.models import Fusion, FusionQuery, Prefetch
 
 from ai_ready_rag.core.exceptions import EmbeddingError, IndexingError, SearchError
+from ai_ready_rag.services.vector_types import SearchResult
 from ai_ready_rag.services.vector_utils import generate_chunk_id
 
 logger = logging.getLogger(__name__)
@@ -69,21 +70,6 @@ class IndexResult:
     embedding_time_ms: float
     indexing_time_ms: float
     sparse_indexed: bool = True  # Default True for backward compat
-
-
-@dataclass
-class SearchResult:
-    """Single search result with metadata."""
-
-    chunk_id: str
-    document_id: str
-    document_name: str
-    chunk_text: str
-    chunk_index: int
-    score: float  # 0.0 to 1.0 (cosine similarity)
-    page_number: int | None
-    section: str | None
-    tags: list[str] | None = None  # For recency boost from year tags
 
 
 @dataclass
