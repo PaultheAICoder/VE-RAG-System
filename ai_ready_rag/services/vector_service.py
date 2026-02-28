@@ -20,10 +20,20 @@ try:
 except ImportError:
     SparseTextEmbedding = None
     FASTEMBED_AVAILABLE = False
-from qdrant_client import AsyncQdrantClient
-from qdrant_client.http import models
-from qdrant_client.http.exceptions import ResponseHandlingException
-from qdrant_client.http.models import Fusion, FusionQuery, Prefetch
+
+try:
+    from qdrant_client import AsyncQdrantClient
+    from qdrant_client.http import models
+    from qdrant_client.http.exceptions import ResponseHandlingException
+    from qdrant_client.http.models import Fusion, FusionQuery, Prefetch
+
+    QDRANT_AVAILABLE = True
+except ImportError:
+    AsyncQdrantClient = None  # type: ignore[assignment,misc]
+    models = None  # type: ignore[assignment]
+    ResponseHandlingException = Exception  # type: ignore[assignment,misc]
+    Fusion = FusionQuery = Prefetch = None  # type: ignore[assignment]
+    QDRANT_AVAILABLE = False
 
 from ai_ready_rag.core.exceptions import EmbeddingError, IndexingError, SearchError
 from ai_ready_rag.services.vector_types import SearchResult

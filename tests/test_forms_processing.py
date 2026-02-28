@@ -23,8 +23,6 @@ def _make_settings(**overrides) -> Settings:
         "forms_template_storage_path": "/tmp/forms/templates",
         "forms_db_path": ":memory:",
         "forms_template_require_approval": True,
-        "qdrant_url": "http://localhost:6333",
-        "qdrant_collection": "documents",
         "ollama_base_url": "http://localhost:11434",
         "embedding_model": "nomic-embed-text",
         "embedding_dimension": 768,

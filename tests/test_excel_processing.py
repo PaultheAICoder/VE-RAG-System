@@ -18,8 +18,6 @@ def _make_settings(**overrides) -> Settings:
     """Create test settings with ingestkit enabled."""
     defaults = {
         "use_ingestkit_excel": True,
-        "qdrant_url": "http://localhost:6333",
-        "qdrant_collection": "documents",
         "ollama_base_url": "http://localhost:11434",
         "embedding_model": "nomic-embed-text",
         "embedding_dimension": 768,
