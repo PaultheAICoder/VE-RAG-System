@@ -17,11 +17,12 @@ from ai_ready_rag.tenant.config import TenantConfig
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_SEARCH_DIRS = (
+# Prompt search order: tenant → module → core
+_PROMPT_SEARCH_DIRS = [
     "tenant-instances/{tenant_id}/prompts",
     "ai_ready_rag/modules/{module_id}/prompts",
     "ai_ready_rag/prompts",
-)
+]
 
 
 class TenantConfigResolver:
@@ -34,7 +35,8 @@ class TenantConfigResolver:
     """
 
     def __init__(
-        self, tenant_config_path_template: str = "tenant-instances/{tenant_id}/tenant.json"
+        self,
+        tenant_config_path_template: str = "tenant-instances/{tenant_id}/tenant.json",
     ) -> None:
         self._path_template = tenant_config_path_template
         self._cache: dict[str, TenantConfig] = {}
@@ -44,9 +46,12 @@ class TenantConfigResolver:
 
         Result is cached per tenant_id; call invalidate() to force a re-read.
         """
-        if tenant_id not in self._cache:
-            self._cache[tenant_id] = self._load(tenant_id)
-        return self._cache[tenant_id]
+        if tenant_id in self._cache:
+            return self._cache[tenant_id]
+
+        config = self._load(tenant_id)
+        self._cache[tenant_id] = config
+        return config
 
     def invalidate(self, tenant_id: str) -> None:
         """Remove cached config — forces re-read on next resolve()."""
@@ -60,10 +65,12 @@ class TenantConfigResolver:
                 "tenant.config.not_found",
                 extra={"path": str(path), "tenant_id": tenant_id},
             )
-            return TenantConfig()
+            return TenantConfig(tenant_id=tenant_id)
+
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            config = TenantConfig.model_validate(raw, strict=False)
+            raw["tenant_id"] = tenant_id
+            config = TenantConfig.model_validate(raw)
             logger.info("tenant.config.loaded", extra={"tenant_id": tenant_id})
             return config
         except Exception as exc:
@@ -71,7 +78,7 @@ class TenantConfigResolver:
                 "tenant.config.parse_error",
                 extra={"tenant_id": tenant_id, "error": str(exc)},
             )
-            return TenantConfig()
+            return TenantConfig(tenant_id=tenant_id)
 
 
 class PromptResolver:
@@ -94,7 +101,10 @@ class PromptResolver:
         """
         for dir_template in _PROMPT_SEARCH_DIRS:
             dir_path = Path(
-                dir_template.format(tenant_id=self._tenant_id, module_id=self._module_id)
+                dir_template.format(
+                    tenant_id=self._tenant_id,
+                    module_id=self._module_id,
+                )
             )
             candidate = dir_path / f"{prompt_name}.txt"
             if candidate.exists():
@@ -103,6 +113,7 @@ class PromptResolver:
                     extra={"name": prompt_name, "path": str(candidate)},
                 )
                 return candidate.read_text(encoding="utf-8")
+
         logger.debug("prompt.not_found", extra={"name": prompt_name})
         return None
 
@@ -111,7 +122,10 @@ class PromptResolver:
         names: set[str] = set()
         for dir_template in _PROMPT_SEARCH_DIRS:
             dir_path = Path(
-                dir_template.format(tenant_id=self._tenant_id, module_id=self._module_id)
+                dir_template.format(
+                    tenant_id=self._tenant_id,
+                    module_id=self._module_id,
+                )
             )
             if dir_path.exists():
                 names.update(p.stem for p in dir_path.glob("*.txt"))

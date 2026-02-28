@@ -1,0 +1,43 @@
+{
+  "account_name": "Marshall Wells Community Association",
+  "account_id": "test-marshall-wells-001",
+  "policies": [
+    {
+      "policy_number": "MW-PROP-2025-001",
+      "coverage_line": "property",
+      "carrier_name": "State Farm Fire and Casualty Company",
+      "effective_date": "2025-06-01",
+      "expiration_date": "2026-06-01",
+      "total_premium_usd": 48500.00,
+      "coverages": [
+        {"coverage_type": "property", "limit_amount": 12500000, "deductible_amount": 25000, "meets_fannie_mae": true, "meets_fha": true}
+      ]
+    },
+    {
+      "policy_number": "MW-GL-2025-001",
+      "coverage_line": "general_liability",
+      "carrier_name": "The Travelers Indemnity Company",
+      "effective_date": "2025-06-01",
+      "expiration_date": "2026-06-01",
+      "total_premium_usd": 8200.00,
+      "coverages": [
+        {"coverage_type": "general_liability", "limit_amount": 1000000, "deductible_amount": 0, "meets_fannie_mae": true, "meets_fha": true}
+      ]
+    },
+    {
+      "policy_number": "MW-FID-2025-001",
+      "coverage_line": "fidelity",
+      "carrier_name": "Hartford Fire Insurance Company",
+      "effective_date": "2025-06-01",
+      "expiration_date": "2026-06-01",
+      "total_premium_usd": 3100.00,
+      "coverages": [
+        {"coverage_type": "fidelity", "limit_amount": 250000, "deductible_amount": 1000, "meets_fannie_mae": true, "meets_fha": true}
+      ]
+    }
+  ],
+  "total_premium_usd": 59800.00,
+  "fannie_mae_eligible": true,
+  "fha_eligible": true,
+  "unit_count": 124
+}

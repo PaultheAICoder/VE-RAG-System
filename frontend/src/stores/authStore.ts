@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { apiClient } from '../api/client';
 import type { User } from '../types';
+import { useTenantStore } from './tenantStore';
 
 interface AuthState {
   token: string | null;
@@ -35,6 +36,8 @@ export const useAuthStore = create<AuthState>()(
             isAuthenticated: true,
             isLoading: false,
           });
+          // Load tenant config after successful login
+          void useTenantStore.getState().loadConfig(access_token);
         } catch (error) {
           set({
             error: error instanceof Error ? error.message : 'Login failed',
@@ -63,6 +66,8 @@ export const useAuthStore = create<AuthState>()(
         try {
           const user = await apiClient.get<User>('/api/auth/me');
           set({ user, isAuthenticated: true });
+          // Load tenant config after session restore
+          void useTenantStore.getState().loadConfig(token);
         } catch {
           set({ token: null, user: null, isAuthenticated: false });
         }

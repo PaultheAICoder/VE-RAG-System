@@ -15,6 +15,8 @@ python-dotenv>=1.0.0
 
 # ============== Vector Store ==============
 qdrant-client>=1.13.0
+pgvector>=0.3.0
+psycopg2-binary>=2.9.0
 
 # ============== Sparse Embeddings ==============
 fastembed==0.4.1
@@ -23,6 +25,9 @@ fastembed==0.4.1
 langchain>=0.3.0
 langchain-community>=0.3.0
 langchain-ollama>=0.2.0
+
+# ============== Claude / Anthropic API ==============
+anthropic>=0.40.0
 
 # ============== Evaluation Framework ==============
 ragas>=0.4.0,<0.5.0
@@ -39,12 +44,18 @@ markdown>=3.5.0
 # ============== Email Extraction ==============
 extract-msg>=0.48.0
 
+# ============== Database Migrations ==============
+alembic>=1.13.0
+
 # ============== Task Queue ==============
 arq>=0.26.0
 redis>=5.0.0
 
 # ============== Structured Logging ==============
 structlog>=24.0.0
+
+# ============== Security / Encryption ==============
+cryptography>=41.0.0
 
 # ============== HTML Sanitization ==============
 bleach>=6.0.0
@@ -61,6 +72,10 @@ pytest-asyncio>=0.23.0
 # Editable local installs for development
 -e ../ingestkit/packages/ingestkit-core
 -e ../ingestkit/packages/ingestkit-excel
+
+# ============== Document Rendering ==============
+reportlab>=4.0.0
+python-pptx>=0.6.23
 
 # ============== Optional: Full Docling ==============
 # Uncomment when you need OCR, table extraction, advanced parsing

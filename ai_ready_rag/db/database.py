@@ -173,6 +173,58 @@ _TRACKED_MIGRATIONS = [
             "ALTER TABLE documents ADD COLUMN source_path VARCHAR",
         ],
     ),
+    (
+        "enrichment_v1_tables",
+        [
+            """CREATE TABLE IF NOT EXISTS enrichment_synopses (
+                id VARCHAR PRIMARY KEY,
+                document_id VARCHAR NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                synopsis_text TEXT NOT NULL,
+                model_id VARCHAR NOT NULL,
+                prompt_version VARCHAR,
+                token_cost INTEGER,
+                cost_usd REAL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_enrichment_synopses_document_id ON enrichment_synopses(document_id)",
+            """CREATE TABLE IF NOT EXISTS enrichment_entities (
+                id VARCHAR PRIMARY KEY,
+                synopsis_id VARCHAR NOT NULL REFERENCES enrichment_synopses(id) ON DELETE CASCADE,
+                entity_type VARCHAR NOT NULL,
+                value VARCHAR NOT NULL,
+                canonical_value VARCHAR,
+                confidence REAL,
+                source_chunk_index INTEGER,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_enrichment_entities_synopsis_id ON enrichment_entities(synopsis_id)",
+            """CREATE TABLE IF NOT EXISTS review_items (
+                id VARCHAR PRIMARY KEY,
+                query_id VARCHAR,
+                answer_text TEXT,
+                confidence REAL,
+                reason VARCHAR,
+                status VARCHAR DEFAULT 'pending',
+                resolved_at DATETIME,
+                resolved_by VARCHAR REFERENCES users(id) ON DELETE SET NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_review_items_query_id ON review_items(query_id)",
+        ],
+    ),
+    (
+        "enrichment_v1_document_columns",
+        [
+            "ALTER TABLE documents ADD COLUMN synopsis_id VARCHAR REFERENCES enrichment_synopses(id) ON DELETE SET NULL",
+            "ALTER TABLE documents ADD COLUMN enrichment_status VARCHAR",
+            "ALTER TABLE documents ADD COLUMN enrichment_model VARCHAR",
+            "ALTER TABLE documents ADD COLUMN enrichment_version VARCHAR",
+            "ALTER TABLE documents ADD COLUMN enrichment_tokens_used INTEGER",
+            "ALTER TABLE documents ADD COLUMN enrichment_cost_usd REAL",
+            "ALTER TABLE documents ADD COLUMN enrichment_completed_at DATETIME",
+            "ALTER TABLE documents ADD COLUMN document_role VARCHAR",
+        ],
+    ),
 ]
 
 
@@ -203,6 +255,46 @@ def apply_tracked_migrations(eng) -> None:
             )
             conn.commit()
             logger.info("tracked.migration.applied", extra={"migration": name})
+
+
+def run_alembic_upgrade(revision: str = "head", scope: str = "core") -> None:
+    """Run Alembic migrations for the given scope.
+
+    - scope="core": runs core platform migrations from alembic/
+    - scope="module:{name}": runs module-specific migrations (future)
+
+    SQLite profiles use create_all() instead of Alembic.
+    """
+    import os
+
+    from alembic import command
+    from alembic.config import Config as AlembicConfig
+
+    url = settings.database_url
+    if url.startswith("sqlite"):
+        # SQLite dev path: create_all() is sufficient, skip Alembic
+        Base.metadata.create_all(bind=engine)
+        logger.info("alembic.skipped", extra={"reason": "sqlite", "scope": scope})
+        return
+
+    # PostgreSQL path
+    alembic_cfg = AlembicConfig("alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", url)
+
+    if scope.startswith("module:"):
+        module_name = scope.split(":", 1)[1]
+        # Module migrations use separate version tables (future)
+        alembic_cfg.set_main_option("version_table", f"alembic_version_{module_name}")
+        # Module migration dirs: modules/{name}/migrations/
+        migration_dir = os.path.join("ai_ready_rag", "modules", module_name, "migrations")
+        if os.path.isdir(migration_dir):
+            alembic_cfg.set_main_option("script_location", migration_dir)
+        else:
+            logger.debug("alembic.module.no_migrations", extra={"module": module_name})
+            return
+
+    command.upgrade(alembic_cfg, revision)
+    logger.info("alembic.upgraded", extra={"revision": revision, "scope": scope})
 
 
 def get_db() -> Generator[Session, None, None]:

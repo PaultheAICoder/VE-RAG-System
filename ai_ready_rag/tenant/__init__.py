@@ -1,1 +1,1 @@
-"""Tenant configuration resolution package."""
+"""Tenant configuration and prompt resolution system."""
