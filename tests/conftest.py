@@ -17,6 +17,29 @@ from ai_ready_rag.db.database import Base, get_db
 from ai_ready_rag.db.models import Tag, User
 from ai_ready_rag.main import app
 
+
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line(
+        "markers",
+        "requires_postgres: Test requires PostgreSQL + pgvector. Skipped when database_backend=sqlite.",
+    )
+
+
+def pytest_runtest_setup(item):
+    """Skip requires_postgres tests when running on SQLite backend."""
+    if "requires_postgres" in item.keywords:
+        from ai_ready_rag.config import get_settings
+
+        settings = get_settings()
+        database_backend = getattr(settings, "database_backend", "sqlite")
+        if database_backend != "postgresql":
+            pytest.skip(
+                f"requires PostgreSQL — current database_backend={database_backend!r}. "
+                "Set DATABASE_URL=postgresql://... and database_backend=postgresql to run."
+            )
+
+
 # Test database - in-memory SQLite with StaticPool for connection sharing
 TEST_DATABASE_URL = "sqlite:///:memory:"
 
@@ -245,3 +268,50 @@ def sample_tag(db, admin_user) -> Tag:
     db.flush()
     db.refresh(tag)
     return tag
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL fixtures (requires_postgres tests only)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def pg_engine():
+    """PostgreSQL engine for integration tests.
+
+    Requires:
+        DATABASE_URL env var pointing to a PostgreSQL instance
+        database_backend=postgresql in settings
+
+    Usage:
+        @pytest.mark.requires_postgres
+        def test_something(pg_db):
+            ...
+    """
+    import os
+
+    from sqlalchemy import create_engine as sa_create_engine
+
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url or "postgresql" not in database_url:
+        pytest.skip("pg_engine requires DATABASE_URL=postgresql://...")
+    engine = sa_create_engine(database_url)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def pg_db(pg_engine):
+    """PostgreSQL session with transaction rollback per test."""
+    from sqlalchemy.orm import sessionmaker as sa_sessionmaker
+
+    PgSession = sa_sessionmaker(bind=pg_engine, autocommit=False, autoflush=False)
+    connection = pg_engine.connect()
+    transaction = connection.begin()
+    session = PgSession(bind=connection)
+
+    yield session
+
+    session.close()
+    transaction.rollback()
+    connection.close()
