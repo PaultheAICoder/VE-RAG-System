@@ -236,3 +236,86 @@ class TestClaudeEnrichmentServiceUnit:
         assert r.model_id == "claude-sonnet-4-6"
         assert r.token_cost == 1234
         assert r.raw_json == {"summary": "test doc"}
+
+
+class TestPromptResolverIntegration:
+    """Tests that ClaudeEnrichmentService correctly uses PromptResolver."""
+
+    def test_loads_synopsis_prompt_from_core_dir(self, tmp_path, monkeypatch):
+        """Service picks up enrichment_synopsis.txt from core prompts directory."""
+        from ai_ready_rag.services.enrichment_service import ClaudeEnrichmentService
+
+        monkeypatch.chdir(tmp_path)
+        core_dir = tmp_path / "ai_ready_rag" / "prompts"
+        core_dir.mkdir(parents=True)
+        (core_dir / "enrichment_synopsis.txt").write_text("Custom synopsis prompt")
+        (core_dir / "enrichment_entities.txt").write_text("Custom entity prompt")
+
+        settings = MagicMock()
+        settings.claude_enrichment_enabled = True
+        settings.claude_api_key = "sk-ant-test"
+        settings.database_backend = "postgresql"
+
+        svc = ClaudeEnrichmentService(settings)
+        assert svc._synopsis_prompt == "Custom synopsis prompt"
+        assert svc._entity_prompt == "Custom entity prompt"
+
+    def test_falls_back_to_constant_when_no_prompt_file(self, tmp_path, monkeypatch):
+        """Service uses module-level constant when no prompt file exists."""
+        from ai_ready_rag.services.enrichment_service import (
+            ENTITY_EXTRACTION_PROMPT,
+            SYNOPSIS_SYSTEM_PROMPT,
+            ClaudeEnrichmentService,
+        )
+
+        monkeypatch.chdir(tmp_path)
+
+        settings = MagicMock()
+        settings.claude_enrichment_enabled = False
+        settings.database_backend = "sqlite"
+
+        svc = ClaudeEnrichmentService(settings)
+        assert svc._synopsis_prompt == SYNOPSIS_SYSTEM_PROMPT
+        assert svc._entity_prompt == ENTITY_EXTRACTION_PROMPT
+
+    def test_tenant_override_takes_precedence(self, tmp_path, monkeypatch):
+        """Tenant-level prompt overrides the core prompt for enrichment_synopsis."""
+        from ai_ready_rag.services.enrichment_service import ClaudeEnrichmentService
+
+        monkeypatch.chdir(tmp_path)
+
+        # Core prompt
+        core_dir = tmp_path / "ai_ready_rag" / "prompts"
+        core_dir.mkdir(parents=True)
+        (core_dir / "enrichment_synopsis.txt").write_text("Core synopsis prompt")
+        (core_dir / "enrichment_entities.txt").write_text("Core entity prompt")
+
+        # Tenant override
+        tenant_dir = tmp_path / "tenant-instances" / "default" / "prompts"
+        tenant_dir.mkdir(parents=True)
+        (tenant_dir / "enrichment_synopsis.txt").write_text("Tenant synopsis override")
+
+        settings = MagicMock()
+        settings.claude_enrichment_enabled = False
+        settings.database_backend = "sqlite"
+
+        svc = ClaudeEnrichmentService(settings, tenant_id="default")
+        # Tenant override takes precedence for synopsis
+        assert svc._synopsis_prompt == "Tenant synopsis override"
+        # No tenant override for entities — falls through to core
+        assert svc._entity_prompt == "Core entity prompt"
+
+    def test_list_available_returns_enrichment_prompts(self, tmp_path, monkeypatch):
+        """PromptResolver.list_available() includes both enrichment prompt names."""
+        from ai_ready_rag.tenant.resolver import PromptResolver
+
+        monkeypatch.chdir(tmp_path)
+        core_dir = tmp_path / "ai_ready_rag" / "prompts"
+        core_dir.mkdir(parents=True)
+        (core_dir / "enrichment_synopsis.txt").write_text("synopsis")
+        (core_dir / "enrichment_entities.txt").write_text("entities")
+
+        resolver = PromptResolver(tenant_id="default", module_id="core")
+        available = resolver.list_available()
+        assert "enrichment_synopsis" in available
+        assert "enrichment_entities" in available
