@@ -36,7 +36,7 @@ from ai_ready_rag.services.rag_constants import (
     STOPWORDS,
 )
 from ai_ready_rag.services.settings_service import get_rag_setting
-from ai_ready_rag.services.vector_service import SearchResult
+from ai_ready_rag.services.vector_types import SearchResult
 
 if TYPE_CHECKING:
     from ai_ready_rag.services.protocols import VectorServiceProtocol

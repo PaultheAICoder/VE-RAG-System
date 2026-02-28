@@ -17,7 +17,7 @@ from ai_ready_rag.db.models.base import document_tags
 from ai_ready_rag.db.models.document import Document
 from ai_ready_rag.db.models.user import Tag
 from ai_ready_rag.services.forms_processing_service import ACORD_25_GROUPS
-from ai_ready_rag.services.vector_service import SearchResult
+from ai_ready_rag.services.vector_types import SearchResult
 
 logger = logging.getLogger(__name__)
 

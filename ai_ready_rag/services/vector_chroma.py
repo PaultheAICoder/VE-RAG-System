@@ -6,7 +6,7 @@ from typing import Any
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 
-from ai_ready_rag.services.vector_service import SearchResult
+from ai_ready_rag.services.vector_types import SearchResult
 
 logger = logging.getLogger(__name__)
 

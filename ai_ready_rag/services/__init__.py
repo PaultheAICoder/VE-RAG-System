@@ -22,9 +22,9 @@ from ai_ready_rag.services.vector_service import (
     CollectionStats,
     HealthStatus,
     IndexResult,
-    SearchResult,
     VectorService,
 )
+from ai_ready_rag.services.vector_types import SearchResult
 from ai_ready_rag.services.vector_utils import (
     RESERVED_TAGS,
     generate_chunk_id,
