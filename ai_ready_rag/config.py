@@ -373,6 +373,9 @@ class Settings(BaseSettings):
     auto_tagging_llm_timeout_seconds: int = 30
     auto_tagging_llm_max_retries: int = 1
 
+    # Vertical modules to load at startup (comma-separated in env: ACTIVE_MODULES=ca,insurance)
+    active_modules: list[str] = []
+
     # Document Processing
     enable_ocr: bool | None = None  # None = use profile default
     ocr_language: str = "eng"
