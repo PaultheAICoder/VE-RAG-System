@@ -1,5 +1,7 @@
 """Tests for authentication endpoints."""
 
+from datetime import datetime, timedelta
+
 
 class TestSetup:
     """Setup wizard tests."""
@@ -109,4 +111,75 @@ class TestLogout:
     def test_logout_unauthenticated(self, client):
         """Test logout without auth."""
         response = client.post("/api/auth/logout")
+        assert response.status_code == 401
+
+
+class TestAccountLockout:
+    """Account lockout tests."""
+
+    def test_failed_login_increments_counter(self, client, db, admin_user):
+        """Failed login attempt increments failed_login_attempts."""
+        assert admin_user.failed_login_attempts == 0
+        client.post(
+            "/api/auth/login", json={"email": "admin@test.com", "password": "WrongPassword123"}
+        )
+        db.refresh(admin_user)
+        assert admin_user.failed_login_attempts == 1
+
+    def test_lockout_after_max_attempts(self, client, db, admin_user):
+        """Account is locked after lockout_attempts (5) consecutive failures."""
+        for _ in range(5):
+            client.post(
+                "/api/auth/login",
+                json={"email": "admin@test.com", "password": "WrongPassword123"},
+            )
+        db.refresh(admin_user)
+        # After 5 failures the counter resets to 0 and locked_until is set
+        assert admin_user.locked_until is not None
+        assert admin_user.failed_login_attempts == 0
+        assert admin_user.locked_until > datetime.utcnow()
+
+    def test_locked_account_returns_423(self, client, db, admin_user):
+        """Locked account returns HTTP 423."""
+        # Lock the account directly
+        admin_user.locked_until = datetime.utcnow() + timedelta(minutes=15)
+        db.commit()
+
+        response = client.post(
+            "/api/auth/login", json={"email": "admin@test.com", "password": "AdminPassword123"}
+        )
+        assert response.status_code == 423
+        assert "locked" in response.json()["detail"].lower()
+
+    def test_successful_login_resets_counter(self, client, db, admin_user):
+        """Successful login resets failed_login_attempts and locked_until."""
+        # Set some failures
+        admin_user.failed_login_attempts = 3
+        db.commit()
+
+        response = client.post(
+            "/api/auth/login", json={"email": "admin@test.com", "password": "AdminPassword123"}
+        )
+        assert response.status_code == 200
+        db.refresh(admin_user)
+        assert admin_user.failed_login_attempts == 0
+        assert admin_user.locked_until is None
+
+    def test_expired_lockout_allows_login(self, client, db, admin_user):
+        """Account with expired locked_until can log in successfully."""
+        # Set lockout to the past
+        admin_user.locked_until = datetime.utcnow() - timedelta(minutes=1)
+        db.commit()
+
+        response = client.post(
+            "/api/auth/login", json={"email": "admin@test.com", "password": "AdminPassword123"}
+        )
+        assert response.status_code == 200
+
+    def test_nonexistent_user_not_affected_by_lockout(self, client):
+        """Login attempt for nonexistent user returns 401 without error."""
+        response = client.post(
+            "/api/auth/login",
+            json={"email": "ghost@test.com", "password": "WrongPassword123"},
+        )
         assert response.status_code == 401

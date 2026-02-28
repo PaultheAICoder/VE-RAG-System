@@ -1,7 +1,7 @@
 """Authentication endpoints."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
@@ -32,6 +32,23 @@ async def login(
     """Authenticate user and return JWT token."""
     user = db.query(User).filter(User.email == credentials.email).first()
 
+    # Check account lockout BEFORE password verification (only if user exists)
+    if user and user.locked_until and user.locked_until > datetime.utcnow():
+        logger.warning(
+            "login_failed",
+            extra={
+                "email": credentials.email,
+                "reason": "account_locked",
+                "locked_until": user.locked_until.isoformat(),
+                "client_ip": request.client.host if request.client else None,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Account locked. Try again after {user.locked_until.strftime('%Y-%m-%d %H:%M:%S')} UTC",
+        )
+
+    # Validate credentials
     if not user or not verify_password(credentials.password, user.password_hash):
         logger.warning(
             "login_failed",
@@ -41,6 +58,21 @@ async def login(
                 "client_ip": request.client.host if request.client else None,
             },
         )
+        # Increment failed attempt counter if user exists
+        if user:
+            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+            if user.failed_login_attempts >= settings.lockout_attempts:
+                user.locked_until = datetime.utcnow() + timedelta(minutes=settings.lockout_minutes)
+                user.failed_login_attempts = 0
+                logger.warning(
+                    "account_locked",
+                    extra={
+                        "email": credentials.email,
+                        "user_id": user.id,
+                        "locked_until": user.locked_until.isoformat(),
+                    },
+                )
+            db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password"
         )
@@ -62,6 +94,10 @@ async def login(
     token = create_access_token(data={"sub": user.id, "email": user.email, "role": user.role})
     jwt_hours = get_security_setting("jwt_expiration_hours", settings.jwt_expiration_hours)
     expires_in = jwt_hours * 3600
+
+    # Reset lockout counters on successful login
+    user.failed_login_attempts = 0
+    user.locked_until = None
 
     # Update last login
     user.last_login = datetime.utcnow()
