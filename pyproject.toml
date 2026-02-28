@@ -19,6 +19,7 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "integration: marks tests as integration tests (require Qdrant + Ollama)",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "requires_postgres: marks tests that require a live PostgreSQL + pgvector instance",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
