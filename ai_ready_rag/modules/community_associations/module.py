@@ -50,12 +50,18 @@ def register(registry: ModuleRegistry) -> None:
     # 2. Entity-to-table map (used by QueryRouter for SQL generation)
     registry.register_entity_map("community_associations", CA_ENTITY_TO_TABLE_MAP)
 
-    # 3. SQL templates (implemented in #365)
-    sql_templates_yaml = module_dir / "sql_templates.yaml"
-    if sql_templates_yaml.exists():
-        registry.register_sql_templates("community_associations", str(sql_templates_yaml))
-    else:
-        logger.debug("CA sql_templates.yaml not yet available — skipping template registration")
+    # 3. SQL templates — load from catalog (implemented in #365, wired in #426)
+    try:
+        from ai_ready_rag.modules.community_associations.sql_templates.catalog import (
+            TEMPLATE_CATALOG,
+        )
+
+        if TEMPLATE_CATALOG:
+            registry.register_sql_templates("community_associations", TEMPLATE_CATALOG)
+        else:
+            logger.debug("CA TEMPLATE_CATALOG is empty — skipping template registration")
+    except ImportError:
+        logger.debug("CA sql_templates catalog not yet available — skipping template registration")
 
     # 4. Compliance checker (implemented in #363)
     try:
@@ -77,6 +83,4 @@ def register(registry: ModuleRegistry) -> None:
     except ImportError:
         logger.debug("CA API router not yet implemented — skipping")
 
-    logger.info(
-        "Community Associations module registered (partial — pending #357, #363, #365, #373)"
-    )
+    logger.info("Community Associations module registered (partial — pending #357, #363, #373)")
