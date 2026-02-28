@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 
 from ai_ready_rag.services.enrichment_service import (
@@ -20,6 +21,13 @@ from ai_ready_rag.services.enrichment_service import (
 logger = logging.getLogger(__name__)
 
 _SUBPROCESS_TIMEOUT = 120  # seconds
+
+
+def _clean_env() -> dict:
+    """Return os.environ with CLAUDECODE unset so claude -p can run outside an active session."""
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    return env
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -70,6 +78,7 @@ class ClaudeCliEnrichmentBackend:
             capture_output=True,
             text=True,
             timeout=_SUBPROCESS_TIMEOUT,
+            env=_clean_env(),
         )
 
         if result.returncode != 0:
@@ -107,6 +116,7 @@ class ClaudeCliEnrichmentBackend:
             capture_output=True,
             text=True,
             timeout=_SUBPROCESS_TIMEOUT,
+            env=_clean_env(),
         )
 
         if result.returncode != 0:

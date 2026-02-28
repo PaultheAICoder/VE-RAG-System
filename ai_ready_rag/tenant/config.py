@@ -88,6 +88,7 @@ class FeatureFlags(BaseModel):
     ca_board_presentations: bool = False
     structured_query_enabled: bool = False
     claude_enrichment_enabled: bool = False
+    claude_query_enabled: bool = False
 
 
 class BrandingConfig(BaseModel):

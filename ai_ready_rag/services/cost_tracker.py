@@ -91,39 +91,40 @@ class CostTracker:
             self._persist(record)
 
     def _persist(self, record: UsageRecord) -> None:
-        """Persist to claude_usage_log table."""
+        """Persist to claude_usage_log table.
+
+        Uses a nested transaction (SAVEPOINT) so a failure here cannot abort
+        the caller's outer transaction — cost logging is best-effort.
+        """
         try:
             from sqlalchemy import text
 
-            self._db.execute(
-                text("""
-                    INSERT INTO claude_usage_log
-                        (model_id, input_tokens, output_tokens, cost_usd,
-                         operation, document_id, session_id, tenant_id, recorded_at)
-                    VALUES
-                        (:model_id, :input_tokens, :output_tokens, :cost_usd,
-                         :operation, :document_id, :session_id, :tenant_id, :recorded_at)
-                """),
-                {
-                    "model_id": record.model_id,
-                    "input_tokens": record.input_tokens,
-                    "output_tokens": record.output_tokens,
-                    "cost_usd": record.cost_usd,
-                    "operation": record.operation,
-                    "document_id": record.document_id,
-                    "session_id": record.session_id,
-                    "tenant_id": record.tenant_id,
-                    "recorded_at": record.recorded_at or datetime.utcnow(),
-                },
-            )
-            self._db.commit()
+            # Use a savepoint so any failure only rolls back this INSERT,
+            # not the caller's entire transaction (e.g. the enrichment pipeline).
+            with self._db.begin_nested():
+                self._db.execute(
+                    text("""
+                        INSERT INTO claude_usage_log
+                            (model_id, input_tokens, output_tokens, cost_usd,
+                             operation, document_id, session_id, tenant_id, recorded_at)
+                        VALUES
+                            (:model_id, :input_tokens, :output_tokens, :cost_usd,
+                             :operation, :document_id, :session_id, :tenant_id, :recorded_at)
+                    """),
+                    {
+                        "model_id": record.model_id,
+                        "input_tokens": record.input_tokens,
+                        "output_tokens": record.output_tokens,
+                        "cost_usd": record.cost_usd,
+                        "operation": record.operation,
+                        "document_id": record.document_id,
+                        "session_id": record.session_id,
+                        "tenant_id": record.tenant_id,
+                        "recorded_at": record.recorded_at or datetime.utcnow(),
+                    },
+                )
         except Exception as exc:
             logger.warning("cost_tracker.persist_failed", extra={"error": str(exc)})
-            if self._db:
-                try:
-                    self._db.rollback()
-                except Exception:
-                    pass
 
     def check_daily_cap(self, tenant_id: str = "default") -> SpendSummary:
         """Return daily spend summary. Uses in-memory if no DB."""
