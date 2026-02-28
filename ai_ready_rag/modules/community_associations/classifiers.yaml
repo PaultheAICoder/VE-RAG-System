@@ -1,0 +1,332 @@
+# Community Associations Document Type Classifiers
+# Loaded by ModuleRegistry.register_document_classifiers() at startup
+#
+# ambiguity_threshold: if top-two scores differ by < this, route to review queue
+module_id: community_associations
+ambiguity_threshold: 0.10
+
+document_types:
+
+  # ─── 6 CA Governing Document Types ────────────────────────────────────────
+
+  - document_type: ccr
+    display_name: "CC&Rs (Covenants, Conditions & Restrictions)"
+    description: "Recorded declaration establishing use restrictions and insurance obligations for the community"
+    confidence_threshold: 0.80
+    extraction_prompt: "prompts/ccr_bylaws.txt"
+    patterns:
+      filename:
+        - "cc&r"
+        - "ccr"
+        - "covenants"
+        - "declaration"
+        - "restrictions"
+      content_keywords:
+        - "covenants, conditions and restrictions"
+        - "declaration of covenants"
+        - "homeowners association"
+        - "insurance requirements"
+        - "replacement cost"
+        - "condominium declaration"
+        - "master deed"
+      negative_keywords:
+        - "loss run"
+        - "certificate of insurance"
+        - "premium"
+        - "quote"
+
+  - document_type: bylaws
+    display_name: "Bylaws"
+    description: "Governing document defining HOA operational procedures and officer responsibilities"
+    confidence_threshold: 0.80
+    extraction_prompt: "prompts/ccr_bylaws.txt"
+    patterns:
+      filename:
+        - "bylaws"
+        - "by-laws"
+        - "by_laws"
+      content_keywords:
+        - "bylaws of"
+        - "by-laws of"
+        - "board of directors"
+        - "annual meeting"
+        - "quorum"
+        - "homeowners association bylaws"
+      negative_keywords:
+        - "loss run"
+        - "certificate of insurance"
+
+  - document_type: reserve_study
+    display_name: "Reserve Study"
+    description: "Professional assessment of reserve fund adequacy for long-term capital repairs"
+    confidence_threshold: 0.82
+    extraction_prompt: "prompts/reserve_study.txt"
+    patterns:
+      filename:
+        - "reserve study"
+        - "reserve_study"
+        - "reserve-study"
+        - "reserve analysis"
+        - "reserve fund"
+      content_keywords:
+        - "reserve study"
+        - "percent funded"
+        - "fully funded balance"
+        - "replacement cost new"
+        - "annual contribution"
+        - "funding plan"
+        - "reserve specialist"
+        - "component list"
+      negative_keywords:
+        - "loss run"
+        - "premium"
+        - "certificate"
+
+  - document_type: appraisal
+    display_name: "Insurance Appraisal"
+    description: "Professional property valuation for insurance replacement cost purposes"
+    confidence_threshold: 0.82
+    extraction_prompt: "prompts/appraisal.txt"
+    patterns:
+      filename:
+        - "appraisal"
+        - "valuation"
+        - "replacement cost"
+      content_keywords:
+        - "replacement cost new"
+        - "insured value"
+        - "total insured replacement value"
+        - "appraisal date"
+        - "building components"
+        - "cost approach"
+        - "marshall & swift"
+        - "rsmeans"
+      negative_keywords:
+        - "loss run"
+        - "premium"
+        - "reserve study"
+        - "percent funded"
+
+  - document_type: board_minutes
+    display_name: "Board Meeting Minutes"
+    description: "Official record of HOA board decisions including insurance-related resolutions"
+    confidence_threshold: 0.78
+    extraction_prompt: "prompts/board_minutes.txt"
+    patterns:
+      filename:
+        - "minutes"
+        - "board minutes"
+        - "meeting minutes"
+      content_keywords:
+        - "board meeting"
+        - "minutes of"
+        - "motion to"
+        - "seconded by"
+        - "vote"
+        - "resolution"
+        - "quorum"
+        - "present at the meeting"
+      negative_keywords:
+        - "loss run"
+        - "certificate of insurance"
+
+  - document_type: unit_owner_letter
+    display_name: "Unit Owner Letter"
+    description: "Letter to unit owners regarding HO-6 coverage requirements"
+    confidence_threshold: 0.75
+    extraction_prompt: "prompts/unit_owner_letter.txt"
+    patterns:
+      filename:
+        - "unit owner"
+        - "owner letter"
+        - "ho-6"
+        - "ho6"
+        - "homeowner letter"
+      content_keywords:
+        - "unit owner"
+        - "ho-6"
+        - "homeowners insurance"
+        - "personal property"
+        - "required to maintain"
+        - "liability coverage"
+        - "walls-in coverage"
+      negative_keywords:
+        - "loss run"
+        - "certificate of insurance"
+
+  # ─── 9 Insurance Document Types ───────────────────────────────────────────
+
+  - document_type: policy
+    display_name: "Insurance Policy"
+    description: "Full insurance policy document including declarations, forms, and endorsements"
+    confidence_threshold: 0.80
+    extraction_prompt: null
+    patterns:
+      filename:
+        - "policy"
+        - "insurance policy"
+      content_keywords:
+        - "insurance policy"
+        - "declarations page"
+        - "insuring agreement"
+        - "policy number"
+        - "named insured"
+        - "policy period"
+        - "premium"
+      negative_keywords:
+        - "certificate of insurance"
+        - "reserve study"
+
+  - document_type: certificate
+    display_name: "Certificate of Insurance"
+    description: "ACORD certificate or evidence of insurance"
+    confidence_threshold: 0.85
+    extraction_prompt: null
+    patterns:
+      filename:
+        - "certificate"
+        - "cert"
+        - "acord 25"
+        - "acord 27"
+        - "acord25"
+        - "acord27"
+        - "coi"
+        - "evidence of insurance"
+      content_keywords:
+        - "certificate of insurance"
+        - "this certificate is issued"
+        - "certificate holder"
+        - "acord"
+        - "evidence of insurance"
+        - "additional insured"
+      negative_keywords: []
+
+  - document_type: loss_run
+    display_name: "Loss Run Report"
+    description: "Claims history report from an insurance carrier"
+    confidence_threshold: 0.85
+    extraction_prompt: null
+    patterns:
+      filename:
+        - "loss run"
+        - "loss_run"
+        - "loss-run"
+        - "claims history"
+      content_keywords:
+        - "loss run"
+        - "loss history"
+        - "claims history"
+        - "open claims"
+        - "closed claims"
+        - "incurred losses"
+        - "paid to date"
+      negative_keywords:
+        - "reserve study"
+        - "percent funded"
+
+  - document_type: endorsement
+    display_name: "Policy Endorsement"
+    description: "Amendment or rider modifying an existing insurance policy"
+    confidence_threshold: 0.78
+    extraction_prompt: null
+    patterns:
+      filename:
+        - "endorsement"
+        - "rider"
+        - "amendment"
+      content_keywords:
+        - "endorsement"
+        - "it is agreed that"
+        - "this endorsement modifies"
+        - "policy is amended"
+      negative_keywords: []
+
+  - document_type: proposal
+    display_name: "Insurance Proposal"
+    description: "Coverage proposal or quote from a broker or carrier"
+    confidence_threshold: 0.78
+    extraction_prompt: null
+    patterns:
+      filename:
+        - "proposal"
+        - "quote"
+        - "renewal quote"
+        - "coverage proposal"
+      content_keywords:
+        - "proposal"
+        - "proposed coverage"
+        - "renewal terms"
+        - "coverage options"
+        - "total estimated premium"
+        - "option a"
+        - "option b"
+      negative_keywords:
+        - "certificate of insurance"
+
+  - document_type: submission
+    display_name: "Insurance Submission"
+    description: "Risk submission or application sent to carriers for quoting"
+    confidence_threshold: 0.78
+    extraction_prompt: null
+    patterns:
+      filename:
+        - "submission"
+        - "acord 80"
+        - "acord80"
+        - "acord 24"
+        - "application"
+      content_keywords:
+        - "submission"
+        - "acord"
+        - "applicant information"
+        - "risk description"
+        - "prior carrier"
+      negative_keywords: []
+
+  - document_type: bind_order
+    display_name: "Bind Order / Binder"
+    description: "Temporary evidence of insurance coverage while policy is being issued"
+    confidence_threshold: 0.80
+    extraction_prompt: null
+    patterns:
+      filename:
+        - "bind order"
+        - "binder"
+        - "binding"
+      content_keywords:
+        - "bind order"
+        - "binder"
+        - "binding authority"
+        - "coverage bound"
+        - "effective immediately"
+      negative_keywords: []
+
+  - document_type: correspondence
+    display_name: "Correspondence / Letter"
+    description: "General insurance-related correspondence, letters, or emails"
+    confidence_threshold: 0.65
+    extraction_prompt: null
+    patterns:
+      filename:
+        - "letter"
+        - "correspondence"
+        - "email"
+        - "notice"
+      content_keywords:
+        - "dear"
+        - "sincerely"
+        - "regarding"
+        - "please find"
+      negative_keywords:
+        - "loss run"
+        - "certificate of insurance"
+
+  - document_type: unknown
+    display_name: "Unknown / Unclassified"
+    description: "Fallback type when no classifier meets the confidence threshold"
+    confidence_threshold: 0.0
+    extraction_prompt: null
+    patterns:
+      filename: []
+      content_keywords: []
+      negative_keywords: []

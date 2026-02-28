@@ -1,0 +1,32 @@
+{
+  "module_id": "community_associations",
+  "display_name": "Community Associations",
+  "version": "1.0",
+  "description": "Insurance document extraction and compliance checking for HOA/condo community associations",
+  "author": "VaultIQ",
+  "feature_flags": {
+    "ca_enabled": true,
+    "ca_auto_renewal": true,
+    "ca_compliance_check": true,
+    "ca_unit_owner_letters": true,
+    "ca_board_presentations": true
+  },
+  "fannie_mae_governance": {
+    "version": "2026-Q1",
+    "next_review": "2027-01-01",
+    "reviewer": "compliance-team",
+    "reference": "https://singlefamily.fanniemae.com/media/document/pdf/selling-guide"
+  },
+  "dependencies": {
+    "core_min_version": "0.5.0",
+    "python": ">=3.12",
+    "required_services": ["postgresql", "claude_enrichment"]
+  },
+  "extension_points": [
+    "document_classifiers",
+    "entity_map",
+    "sql_templates",
+    "compliance_checker",
+    "api_router"
+  ]
+}

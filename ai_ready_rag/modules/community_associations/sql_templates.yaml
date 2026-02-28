@@ -1,0 +1,424 @@
+# Community Associations SQL Template Catalog
+# Registered by ModuleRegistry.register_sql_templates() at startup
+# All templates use parameterized bindings (:param_name), no string interpolation
+# All templates include LIMIT :row_cap enforced by QueryRouter (default 1000)
+# Templates are READ-ONLY — no DML statements
+
+module_id: community_associations
+default_row_cap: 1000
+default_timeout_seconds: 5
+
+templates:
+
+  # ─── Primary Templates (8) ─────────────────────────────────────────────────
+
+  - name: ca_coverage_by_account_line
+    display_name: "Coverage limits and deductibles by line of business"
+    trigger_phrases:
+      - "limit"
+      - "deductible"
+      - "coverage"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: line_of_business
+        type: TEXT
+        required: false
+        default: null
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        p.policy_number,
+        p.carrier_name,
+        p.line_of_business,
+        c.coverage_type,
+        c.limit_amount,
+        c.deductible_amount,
+        c.deductible_type,
+        p.effective_date,
+        p.expiration_date
+      FROM insurance_coverages c
+      JOIN insurance_policies p ON c.policy_id = p.id
+      WHERE p.account_id = :account_id
+        AND p.is_active = true
+        AND p.is_deleted = false
+        AND c.is_deleted = false
+        AND (:line_of_business IS NULL OR p.line_of_business = :line_of_business)
+      ORDER BY p.line_of_business, c.coverage_type
+      LIMIT :row_cap
+
+  - name: ca_carrier_lookup
+    display_name: "Carrier and policy number lookup"
+    trigger_phrases:
+      - "carrier"
+      - "insurer"
+      - "who insures"
+      - "policy number"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        p.policy_number,
+        p.carrier_name,
+        p.line_of_business,
+        p.effective_date,
+        p.expiration_date,
+        p.premium_amount,
+        p.broker_name
+      FROM insurance_policies p
+      WHERE p.account_id = :account_id
+        AND p.is_deleted = false
+      ORDER BY p.line_of_business, p.inception_date DESC
+      LIMIT :row_cap
+
+  - name: ca_premium_query
+    display_name: "Premium amounts by line"
+    trigger_phrases:
+      - "premium"
+      - "cost"
+      - "rate"
+      - "how much does"
+      - "total premium"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        p.line_of_business,
+        p.carrier_name,
+        p.policy_number,
+        p.premium_amount,
+        p.effective_date,
+        p.expiration_date
+      FROM insurance_policies p
+      WHERE p.account_id = :account_id
+        AND p.is_active = true
+        AND p.is_deleted = false
+      ORDER BY p.premium_amount DESC
+      LIMIT :row_cap
+
+  - name: ca_policy_dates
+    display_name: "Policy effective and expiration dates"
+    trigger_phrases:
+      - "expiration"
+      - "expires"
+      - "renewal"
+      - "effective"
+      - "when does"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        p.policy_number,
+        p.line_of_business,
+        p.carrier_name,
+        p.effective_date,
+        p.expiration_date,
+        (p.expiration_date::date - CURRENT_DATE) AS days_until_expiration,
+        p.is_active
+      FROM insurance_policies p
+      WHERE p.account_id = :account_id
+        AND p.is_deleted = false
+      ORDER BY p.expiration_date ASC
+      LIMIT :row_cap
+
+  - name: ca_claims_history
+    display_name: "Claims and loss history"
+    trigger_phrases:
+      - "claims"
+      - "losses"
+      - "loss history"
+      - "incidents"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: cutoff_date
+        type: DATE
+        required: false
+        default: "5 years ago"
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        cl.claim_number,
+        cl.loss_date,
+        cl.claim_type,
+        cl.description,
+        cl.amount_paid,
+        cl.amount_reserved,
+        cl.status,
+        cl.closed_date,
+        p.line_of_business,
+        p.carrier_name
+      FROM insurance_claims cl
+      JOIN insurance_policies p ON cl.policy_id = p.id
+      WHERE p.account_id = :account_id
+        AND cl.loss_date >= COALESCE(:cutoff_date::date, CURRENT_DATE - INTERVAL '5 years')
+        AND cl.is_deleted = false
+      ORDER BY cl.loss_date DESC
+      LIMIT :row_cap
+
+  - name: ca_compliance_gap
+    display_name: "Insurance requirements compliance gaps"
+    trigger_phrases:
+      - "compliance"
+      - "cc&r"
+      - "requirement"
+      - "missing coverage"
+      - "gap"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        r.requirement_text,
+        r.coverage_line,
+        r.min_limit,
+        r.limit_type,
+        r.requirement_source,
+        r.external_standard,
+        r.section_reference,
+        r.is_met,
+        r.gap_description
+      FROM insurance_requirements r
+      WHERE r.account_id = :account_id
+        AND r.is_met = false
+        AND r.superseded_at IS NULL
+        AND r.is_deleted = false
+      ORDER BY r.coverage_line, r.min_limit DESC
+      LIMIT :row_cap
+
+  - name: ca_coverage_schedule
+    display_name: "Full coverage schedule (all lines)"
+    trigger_phrases:
+      - "coverage schedule"
+      - "all lines"
+      - "program summary"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        p.line_of_business,
+        p.carrier_name,
+        p.policy_number,
+        p.effective_date,
+        p.expiration_date,
+        p.premium_amount,
+        c.coverage_type,
+        c.limit_amount,
+        c.deductible_amount
+      FROM insurance_policies p
+      LEFT JOIN insurance_coverages c ON c.policy_id = p.id AND c.is_deleted = false
+      WHERE p.account_id = :account_id
+        AND p.is_active = true
+        AND p.is_deleted = false
+      ORDER BY p.line_of_business, c.coverage_type
+      LIMIT :row_cap
+
+  - name: ca_comparison_by_line
+    display_name: "Year-over-year coverage comparison"
+    trigger_phrases:
+      - "compare"
+      - "vs"
+      - "versus"
+      - "difference between"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        p.line_of_business,
+        p.carrier_name,
+        p.policy_number,
+        p.effective_date,
+        p.expiration_date,
+        p.premium_amount,
+        c.coverage_type,
+        c.limit_amount,
+        c.deductible_amount,
+        p.is_active
+      FROM insurance_policies p
+      LEFT JOIN insurance_coverages c ON c.policy_id = p.id AND c.is_deleted = false
+      WHERE p.account_id = :account_id
+        AND p.is_deleted = false
+      ORDER BY p.line_of_business, p.effective_date DESC, c.coverage_type
+      LIMIT :row_cap
+
+  # ─── Secondary Templates (4) ────────────────────────────────────────────────
+
+  - name: ca_reserve_status
+    display_name: "Reserve fund status (most recent study)"
+    trigger_phrases:
+      - "reserve study"
+      - "percent funded"
+      - "reserve fund"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1
+    sql: |
+      SELECT
+        rs.study_date,
+        rs.study_firm,
+        rs.percent_funded,
+        rs.fully_funded_balance,
+        rs.actual_reserve_balance,
+        rs.annual_contribution,
+        rs.replacement_cost_new,
+        rs.component_count,
+        rs.study_type,
+        rs.funding_plan
+      FROM ca_reserve_studies rs
+      WHERE rs.account_id = :account_id
+        AND rs.is_deleted = false
+      ORDER BY rs.study_date DESC
+      LIMIT :row_cap
+
+  - name: ca_requirements_by_source
+    display_name: "Insurance requirements by source document"
+    trigger_phrases:
+      - "what do the cc&rs require"
+      - "requirements by source"
+      - "fannie mae requirements"
+      - "fha requirements"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: requirement_source
+        type: TEXT
+        required: false
+        default: null
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        r.requirement_text,
+        r.coverage_line,
+        r.min_limit,
+        r.limit_type,
+        r.requirement_source,
+        r.external_standard,
+        r.section_reference,
+        r.is_met
+      FROM insurance_requirements r
+      WHERE r.account_id = :account_id
+        AND r.superseded_at IS NULL
+        AND r.is_deleted = false
+        AND (:requirement_source IS NULL OR r.requirement_source = :requirement_source)
+      ORDER BY r.requirement_source, r.coverage_line
+      LIMIT :row_cap
+
+  - name: ca_unit_owner_status
+    display_name: "Unit owner HO-6 letter status"
+    trigger_phrases:
+      - "unit owner letters"
+      - "which units need letters"
+      - "ho-6 status"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        uo.unit_number,
+        uo.ho6_required,
+        uo.minimum_coverage_amount,
+        lb.batch_date AS last_letter_date,
+        lb.status AS letter_status
+      FROM ca_unit_owners uo
+      LEFT JOIN LATERAL (
+        SELECT lbi.batch_id, b.batch_date, b.status
+        FROM ca_letter_batch_items lbi
+        JOIN ca_letter_batches b ON b.id = lbi.batch_id
+        WHERE lbi.unit_owner_id = uo.id
+          AND b.is_deleted = false
+        ORDER BY b.batch_date DESC
+        LIMIT 1
+      ) lb ON true
+      WHERE uo.account_id = :account_id
+        AND uo.is_deleted = false
+      ORDER BY uo.unit_number
+      LIMIT :row_cap
+
+  - name: ca_board_resolutions
+    display_name: "Board resolutions related to insurance"
+    trigger_phrases:
+      - "board resolutions"
+      - "board approved"
+      - "board voted"
+    params:
+      - name: account_id
+        type: TEXT
+        required: true
+      - name: limit
+        type: INTEGER
+        required: false
+        default: 20
+      - name: row_cap
+        type: INTEGER
+        required: false
+        default: 1000
+    sql: |
+      SELECT
+        br.meeting_date,
+        br.resolution_type,
+        br.description,
+        br.motion_by,
+        br.vote_result,
+        br.effective_date
+      FROM ca_board_resolutions br
+      WHERE br.account_id = :account_id
+        AND br.is_deleted = false
+      ORDER BY br.meeting_date DESC
+      LIMIT LEAST(:limit, :row_cap)

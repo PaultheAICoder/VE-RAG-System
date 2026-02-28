@@ -1,11 +1,57 @@
 """Configuration management using Pydantic settings."""
 
+import logging
 from functools import lru_cache
 from typing import Any, Literal
 
 from pydantic_settings import BaseSettings
 
-# Profile defaults for laptop and spark deployments
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Model Governance — Issue #379
+# Pinned Claude model IDs — do not use aliases or short names
+# ---------------------------------------------------------------------------
+
+CLAUDE_ENRICHMENT_MODEL = "claude-sonnet-4-6"
+CLAUDE_QUERY_MODEL_SIMPLE = "claude-haiku-4-5-20251001"
+CLAUDE_QUERY_MODEL_COMPLEX = "claude-sonnet-4-6"
+
+VALID_CLAUDE_MODELS: frozenset[str] = frozenset(
+    {
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+    }
+)
+
+REJECTED_CLAUDE_ALIASES: frozenset[str] = frozenset(
+    {
+        "claude-sonnet",
+        "sonnet",
+        "claude-haiku",
+        "haiku",
+        "claude-3",
+        "claude-3-sonnet",
+        "claude-3-haiku",
+    }
+)
+
+
+def validate_claude_model_id(model_id: str, field: str) -> None:
+    """Raise ValueError if model_id is an alias or unknown Claude model."""
+    if model_id in REJECTED_CLAUDE_ALIASES:
+        raise ValueError(
+            f"Model alias '{model_id}' is not permitted in {field}. "
+            f"Use a pinned ID from VALID_CLAUDE_MODELS."
+        )
+    if model_id.startswith("claude-") and model_id not in VALID_CLAUDE_MODELS:
+        raise ValueError(
+            f"Unknown Claude model ID '{model_id}' in {field}. "
+            f"Valid IDs: {sorted(VALID_CLAUDE_MODELS)}"
+        )
+
+
+# Profile defaults for laptop, spark, and hosted deployments
 PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
     "laptop": {
         "vector_backend": "chroma",
@@ -28,9 +74,15 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         # ingestkit - disabled on laptop
         "use_ingestkit_image": False,
         "use_ingestkit_email": False,
+        # Deployment tier and feature flags
+        "deployment_tier": "enterprise",
+        "claude_enrichment_enabled": False,
+        "claude_query_enabled": False,
+        "structured_query_enabled": False,
+        "database_backend": "sqlite",
     },
     "spark": {
-        "vector_backend": "qdrant",
+        "vector_backend": "pgvector",
         "chunker_backend": "docling",
         "enable_ocr": True,
         "chat_model": "qwen3-rag",
@@ -54,6 +106,25 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         # ingestkit-image / ingestkit-email - enabled on Spark
         "use_ingestkit_image": True,
         "use_ingestkit_email": True,
+        # Deployment tier and feature flags
+        "deployment_tier": "enterprise",
+        "claude_enrichment_enabled": True,
+        "claude_query_enabled": False,
+        "structured_query_enabled": True,
+        "database_backend": "postgresql",
+        "claude_enrichment_model": "claude-sonnet-4-6",
+    },
+    "hosted": {
+        "deployment_tier": "standard",
+        "claude_enrichment_enabled": True,
+        "claude_query_enabled": True,
+        "structured_query_enabled": True,
+        "database_backend": "postgresql",
+        "vector_backend": "pgvector",
+        "claude_enrichment_model": "claude-sonnet-4-6",
+        "claude_query_model_simple": "claude-haiku-4-5-20251001",
+        "claude_query_model_complex": "claude-sonnet-4-6",
+        "chat_model": "qwen3-rag",
     },
 }
 
@@ -118,7 +189,10 @@ class Settings(BaseSettings):
     skip_setup_wizard: bool = False  # Set to True to bypass setup check for automated deployments
 
     # Profile Selection
-    env_profile: Literal["laptop", "spark"] = "laptop"
+    env_profile: Literal["laptop", "spark", "hosted"] = "laptop"
+
+    # Deployment tier — set by profile defaults
+    deployment_tier: Literal["standard", "enterprise"] | None = None  # None = use profile default
 
     # Pipeline Backends (None = use profile default)
     vector_backend: Literal["chroma", "qdrant", "pgvector"] | None = None
@@ -299,6 +373,9 @@ class Settings(BaseSettings):
     auto_tagging_llm_timeout_seconds: int = 30
     auto_tagging_llm_max_retries: int = 1
 
+    # Vertical modules to load at startup (comma-separated in env: ACTIVE_MODULES=ca,insurance)
+    active_modules: list[str] = []
+
     # Document Processing
     enable_ocr: bool | None = None  # None = use profile default
     ocr_language: str = "eng"
@@ -307,6 +384,48 @@ class Settings(BaseSettings):
     include_image_descriptions: bool = True
     chunk_size: int = 512  # Optimal for retrieval recall (400-512 tokens per research)
     chunk_overlap: int = 80  # ~15% overlap for boundary coverage
+
+    # ---------------------------------------------------------------------------
+    # Claude Enrichment (both tiers) — Issue #374
+    # ---------------------------------------------------------------------------
+    claude_enrichment_enabled: bool | None = None  # None = use profile default
+    claude_api_key: str | None = None  # from ANTHROPIC_API_KEY env var
+    claude_enrichment_model: str = CLAUDE_ENRICHMENT_MODEL
+    claude_enrichment_batch_size: int = 8
+    claude_enrichment_max_retries: int = 3
+    claude_enrichment_timeout: int = 60
+    claude_enrichment_cost_limit_usd: float = 10.0  # daily cap
+
+    # ---------------------------------------------------------------------------
+    # Claude Query (Standard tier primary) — Issue #374
+    # ---------------------------------------------------------------------------
+    claude_query_enabled: bool | None = None  # None = use profile default
+    claude_query_model_simple: str = CLAUDE_QUERY_MODEL_SIMPLE
+    claude_query_model_complex: str = CLAUDE_QUERY_MODEL_COMPLEX
+    claude_query_cost_limit_usd: float = 50.0  # monthly cap
+
+    # ---------------------------------------------------------------------------
+    # Database / Vector backend — Issue #374
+    # ---------------------------------------------------------------------------
+    database_backend: Literal["sqlite", "postgresql"] | None = None  # None = use profile default
+    pgvector_dimension: int = 768
+    pgvector_index_type: str = "ivfflat"
+    pgvector_lists: int = 100
+    pgvector_probes: int = 10
+
+    # ---------------------------------------------------------------------------
+    # Query Router — Issue #374
+    # ---------------------------------------------------------------------------
+    structured_query_enabled: bool | None = None  # None = use profile default
+    structured_query_row_cap: int = 1000
+    structured_query_timeout_seconds: int = 5
+
+    # ---------------------------------------------------------------------------
+    # Tenant / Module — Issue #374
+    # ---------------------------------------------------------------------------
+    active_modules: list[str] = ["core"]
+    tenant_config_path: str = "tenant-instances/{tenant_id}/tenant.json"
+    vaultiq_encryption_key: str | None = None  # from VAULTIQ_ENCRYPTION_KEY env var
 
     def model_post_init(self, __context: Any) -> None:
         """Apply profile defaults after Pydantic initialization."""
@@ -317,6 +436,19 @@ class Settings(BaseSettings):
             current = getattr(self, key, None)
             if current is None:
                 object.__setattr__(self, key, default_value)
+
+        # Model governance validation — Issue #379
+        # Log CRITICAL if a bad model ID is configured; don't raise so the app
+        # can still start while Claude integration is not yet wired in.
+        for field, value in [
+            ("claude_enrichment_model", self.claude_enrichment_model),
+            ("claude_query_model_simple", self.claude_query_model_simple),
+            ("claude_query_model_complex", self.claude_query_model_complex),
+        ]:
+            try:
+                validate_claude_model_id(value, field)
+            except ValueError as exc:
+                logger.critical("Model governance violation in settings.%s: %s", field, exc)
 
     class Config:
         env_file = ".env"
