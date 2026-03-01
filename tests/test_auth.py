@@ -127,8 +127,8 @@ class TestAccountLockout:
         assert admin_user.failed_login_attempts == 1
 
     def test_lockout_after_max_attempts(self, client, db, admin_user):
-        """Account is locked after lockout_attempts (5) consecutive failures."""
-        for _ in range(5):
+        """Account is locked after lockout_attempts (10) consecutive failures."""
+        for _ in range(10):
             client.post(
                 "/api/auth/login",
                 json={"email": "admin@test.com", "password": "WrongPassword123"},

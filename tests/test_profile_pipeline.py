@@ -34,28 +34,24 @@ class TestProfileSettings:
         )
 
         assert settings.env_profile == "laptop"
-        assert settings.vector_backend == "chroma"
-        assert settings.chunker_backend == "simple"
-        assert settings.enable_ocr is False
+        assert settings.vector_backend == "pgvector"
+        assert settings.chunker_backend == "docling"
+        assert settings.enable_ocr is True
         assert settings.chat_model == "llama3.2:latest"
 
     def test_spark_profile_defaults(self):
         """Spark profile applies correct defaults."""
-        with patch.dict(
-            os.environ,
-            {"ENV_PROFILE": "spark"},
-            clear=False,
-        ):
-            from ai_ready_rag.config import Settings, get_settings
+        from ai_ready_rag.config import Settings, get_settings
 
-            get_settings.cache_clear()
-            settings = Settings()
+        get_settings.cache_clear()
+        # Use _env_file=None to isolate from project .env overrides
+        settings = Settings(env_profile="spark", _env_file=None)
 
-            assert settings.env_profile == "spark"
-            assert settings.vector_backend == "qdrant"
-            assert settings.chunker_backend == "docling"
-            assert settings.enable_ocr is True
-            assert settings.chat_model == "qwen3-rag"
+        assert settings.env_profile == "spark"
+        assert settings.vector_backend == "pgvector"
+        assert settings.chunker_backend == "docling"
+        assert settings.enable_ocr is True
+        assert settings.chat_model == "qwen3-rag"
 
     def test_env_overrides_profile_default(self):
         """Individual env vars override profile defaults."""
@@ -63,7 +59,7 @@ class TestProfileSettings:
             os.environ,
             {
                 "ENV_PROFILE": "laptop",
-                "VECTOR_BACKEND": "qdrant",  # Override
+                "CHUNKER_BACKEND": "simple",  # Override chunker
             },
             clear=False,
         ):
@@ -73,8 +69,8 @@ class TestProfileSettings:
             settings = Settings()
 
             assert settings.env_profile == "laptop"
-            assert settings.vector_backend == "qdrant"  # Overridden
-            assert settings.chunker_backend == "simple"  # Still default
+            assert settings.vector_backend == "pgvector"  # Profile default
+            assert settings.chunker_backend == "simple"  # Overridden
 
     def test_missing_profile_defaults_to_laptop(self):
         """Missing ENV_PROFILE defaults to laptop."""
@@ -122,16 +118,16 @@ class TestVectorServiceFactory:
 
         assert isinstance(service, ChromaVectorService)
 
-    def test_spark_returns_qdrant(self):
-        """Spark profile returns VectorService (Qdrant)."""
+    def test_spark_returns_pgvector(self):
+        """Spark profile returns PgVectorService."""
         from ai_ready_rag.config import Settings
         from ai_ready_rag.services.factory import get_vector_service
-        from ai_ready_rag.services.vector_service import VectorService
+        from ai_ready_rag.services.pgvector_service import PgVectorService
 
-        settings = Settings(env_profile="spark", vector_backend="qdrant")
+        settings = Settings(env_profile="spark")
         service = get_vector_service(settings)
 
-        assert isinstance(service, VectorService)
+        assert isinstance(service, PgVectorService)
 
     def test_none_backend_raises(self):
         """None vector_backend raises ValueError."""

@@ -109,10 +109,33 @@ def forms_db(tmp_path):
 
 @pytest.fixture
 def forms_service(forms_db):
-    """Create a FormsQueryService with test DB."""
+    """Create a FormsQueryService backed by a mock PostgreSQL connection.
+
+    FormsQueryService now uses PostgreSQL (psycopg2) instead of SQLite.
+    We patch psycopg2.connect to return a mock cursor seeded with the same
+    test data that was loaded into the SQLite fixture.
+    """
+    from unittest.mock import patch
+
     settings = MagicMock()
-    settings.forms_db_path = str(forms_db)
-    return FormsQueryService(settings)
+    settings.database_url = "postgresql://fake/testdb"
+
+    # Mirror the SQLite fixture data as a dict (RealDictCursor returns dicts)
+    _row = {
+        "_ingest_key": "test-key-001",
+        "F[0].P1[0].NamedInsured_FullName_A[0]": "Bethany Terrace HOA",
+        "F[0].P1[0].GeneralLiability_EachOccurrence_LimitAmount_A[0]": "1,000,000",
+        "F[0].P1[0].Policy_GeneralLiability_PolicyNumberIdentifier_A[0]": "HOA1000028015-02",
+        "F[0].P1[0].Producer_ContactName[0]": "John Smith",
+        "F[0].P1[0].WorkersCompensation_StatutoryLimits[0]": "500,000",
+    }
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = _row
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+
+    with patch("psycopg2.connect", return_value=mock_conn):
+        yield FormsQueryService(settings)
 
 
 @pytest.fixture

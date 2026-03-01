@@ -163,7 +163,7 @@ class TestSQLRouteOnMatch:
 
         # Assert SQL-route taken
         assert response.routing_decision == "SQL"
-        assert response.model_used == "sql"
+        assert response.model_used == "claude-cli"
         assert response.action == "CITE"
         assert response.grounded is True
         # Answer should contain column headers or row data

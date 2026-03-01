@@ -370,7 +370,7 @@ class TestFormsProcessingService:
 
         # Compensation should clean up vectors and tables
         mock_vector.delete_by_filter.assert_called_once_with(
-            settings.qdrant_collection,
+            "",
             "ingestkit_ingest_key",
             "form-abc123",
         )

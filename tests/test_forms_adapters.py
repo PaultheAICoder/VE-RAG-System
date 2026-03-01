@@ -1,11 +1,10 @@
 """Unit tests for forms adapter protocol implementations.
 
-Tests VERagFormDBAdapter, VERagOCRAdapter, and VERagVLMAdapter security
-and protocol compliance.
+Tests VERagFormDBAdapter (PostgreSQL), VERagOCRAdapter, and VERagVLMAdapter
+security and protocol compliance.
 """
 
-import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,23 +12,26 @@ import pytest
 class TestVERagFormDBAdapter:
     """Tests for VERagFormDBAdapter security and protocol compliance."""
 
+    def _make_adapter(self, database_url: str = "postgresql://fake/testdb"):
+        """Create adapter with mocked psycopg2 (avoids real DB connection)."""
+        from ai_ready_rag.services.ingestkit_adapters import VERagFormDBAdapter
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cur
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+
+        with patch("psycopg2.connect", return_value=mock_conn):
+            return VERagFormDBAdapter(database_url=database_url)
+
     @pytest.mark.unit
-    def test_forms_identifier_validation(self, tmp_path):
-        """VERagFormDBAdapter should validate table names via ingestkit-forms."""
-        # Create a valid data/ directory structure for path validation
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        db_path = str(data_dir / "forms_data.db")
+    def test_forms_identifier_validation(self):
+        """VERagFormDBAdapter.check_table_name validates via ingestkit-forms."""
+        adapter = self._make_adapter()
 
-        with patch(
-            "ai_ready_rag.services.ingestkit_adapters.VERagFormDBAdapter._validate_path",
-            return_value=db_path,
-        ):
-            from ai_ready_rag.services.ingestkit_adapters import VERagFormDBAdapter
-
-            adapter = VERagFormDBAdapter(db_path=db_path)
-
-        # Test check_table_name with mocked validate_table_name
         with patch("ingestkit_forms.validate_table_name") as mock_validate:
             # Valid identifier
             mock_validate.return_value = None
@@ -46,42 +48,60 @@ class TestVERagFormDBAdapter:
                 adapter.check_table_name("DROP TABLE users")
 
     @pytest.mark.unit
-    def test_forms_path_traversal_rejected(self):
-        """VERagFormDBAdapter should reject paths outside data/ directory."""
-        from ai_ready_rag.services.ingestkit_adapters import VERagFormDBAdapter
+    def test_forms_check_table_name_calls_ingestkit(self):
+        """check_table_name delegates to ingestkit_forms.validate_table_name."""
+        adapter = self._make_adapter()
 
-        # Attempt path traversal
-        with pytest.raises(ValueError, match="must be under data/"):
-            VERagFormDBAdapter(db_path="/etc/passwd")
+        with patch("ingestkit_forms.validate_table_name", return_value=None) as mock_validate:
+            adapter.check_table_name("acord_25")
 
-        with pytest.raises(ValueError, match="must be under data/"):
-            VERagFormDBAdapter(db_path="../../../etc/passwd")
+        mock_validate.assert_called_once_with("acord_25")
 
     @pytest.mark.unit
-    def test_forms_migration_idempotent(self, tmp_path):
-        """Running _ensure_db() twice should not error."""
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        db_path = str(data_dir / "forms_data.db")
+    def test_forms_schema_is_forms_data(self):
+        """Adapter stores all tables under the forms_data schema."""
+        adapter = self._make_adapter()
+        assert adapter._SCHEMA == "forms_data"
 
-        with patch(
-            "ai_ready_rag.services.ingestkit_adapters.VERagFormDBAdapter._validate_path",
-            return_value=db_path,
-        ):
-            from ai_ready_rag.services.ingestkit_adapters import VERagFormDBAdapter
+    @pytest.mark.unit
+    def test_forms_ensure_schema_called_on_init(self):
+        """_ensure_schema runs CREATE SCHEMA IF NOT EXISTS on construction."""
+        from ai_ready_rag.services.ingestkit_adapters import VERagFormDBAdapter
 
-            # Create twice — should not error
-            adapter1 = VERagFormDBAdapter(db_path=db_path)
-            adapter2 = VERagFormDBAdapter(db_path=db_path)
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cur
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
 
-            # Both should have valid db path
-            assert adapter1._db_path == db_path
-            assert adapter2._db_path == db_path
+        with patch("psycopg2.connect", return_value=mock_conn):
+            VERagFormDBAdapter(database_url="postgresql://fake/db")
 
-            # File should exist with 0600 permissions
-            assert os.path.exists(db_path)
-            stat = os.stat(db_path)
-            assert oct(stat.st_mode & 0o777) == "0o600"
+        executed = [c[0][0] for c in mock_cur.execute.call_args_list]
+        assert any("CREATE SCHEMA IF NOT EXISTS" in sql for sql in executed)
+
+    @pytest.mark.unit
+    def test_forms_migration_idempotent(self):
+        """Constructing VERagFormDBAdapter twice does not error."""
+        from ai_ready_rag.services.ingestkit_adapters import VERagFormDBAdapter
+
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.__enter__ = MagicMock(return_value=mock_cur)
+        mock_cur.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cur
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+
+        with patch("psycopg2.connect", return_value=mock_conn):
+            adapter1 = VERagFormDBAdapter(database_url="postgresql://fake/db")
+            adapter2 = VERagFormDBAdapter(database_url="postgresql://fake/db")
+
+        # Both should be created without error
+        assert adapter1._SCHEMA == "forms_data"
+        assert adapter2._SCHEMA == "forms_data"
 
 
 class TestVERagOCRAdapter:

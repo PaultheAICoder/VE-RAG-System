@@ -11,7 +11,8 @@ class TestAutoTaggingConfig:
 
     def test_default_settings(self):
         """All auto-tagging settings have correct defaults."""
-        settings = Settings()
+        # Use _env_file=None to isolate from project .env file overrides
+        settings = Settings(_env_file=None)
 
         # Feature settings
         assert settings.auto_tagging_enabled is False
@@ -34,7 +35,7 @@ class TestAutoTaggingConfig:
 
     def test_auto_tagging_disabled_by_default(self):
         """Auto-tagging is disabled by default."""
-        settings = Settings()
+        settings = Settings(_env_file=None)
         assert settings.auto_tagging_enabled is False
 
     def test_env_var_overrides(self, monkeypatch):

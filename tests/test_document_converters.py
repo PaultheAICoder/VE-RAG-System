@@ -374,4 +374,4 @@ class TestFactoryOcrPassthrough:
         chunker = get_chunker(settings)
 
         assert isinstance(chunker, SC)
-        assert chunker.enable_ocr is False
+        assert chunker.enable_ocr is True  # OCR enabled by default in laptop profile

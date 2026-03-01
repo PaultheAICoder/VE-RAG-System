@@ -401,10 +401,12 @@ class TestIngestKitRegistryWrite:
             adapter._register_table_in_registry("inventory_report", df)
 
         # Verify cursor.execute was called with INSERT SQL
+        # Phase 2 adds dual-write: first excel_table_registry, then document_table_registry.
+        # call_args returns only the last call; use call_args_list to find the first.
         assert mock_cursor.execute.called
-        call_sql = mock_cursor.execute.call_args[0][0]
-        assert "INSERT INTO excel_table_registry" in call_sql
-        assert "ON CONFLICT" in call_sql
+        all_sqls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        assert any("INSERT INTO excel_table_registry" in sql for sql in all_sqls)
+        assert any("ON CONFLICT" in sql for sql in all_sqls)
 
     def test_registry_write_contains_correct_table_name(self):
         """_register_table_in_registry includes correct table_name in params."""
@@ -465,8 +467,12 @@ class TestIngestKitRegistryWrite:
             adapter._access_tags = ["finance", "accounting"]
             adapter._register_table_in_registry("finance_table", df)
 
-        call_params = mock_cursor.execute.call_args[0][1]
-        # table_metadata is the 8th param (index 7)
+        # Phase 2 dual-write: first call is excel_table_registry, second is document_table_registry.
+        # Find the excel_table_registry call (first call in call_args_list).
+        all_calls = mock_cursor.execute.call_args_list
+        excel_call = next(c for c in all_calls if "INSERT INTO excel_table_registry" in c[0][0])
+        call_params = excel_call[0][1]
+        # table_metadata is the 8th param (index 7) in excel_table_registry INSERT
         table_metadata_json = call_params[7]
         table_metadata = json.loads(table_metadata_json)
         assert table_metadata["access_tags"] == ["finance", "accounting"]
