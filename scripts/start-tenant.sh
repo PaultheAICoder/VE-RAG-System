@@ -149,7 +149,14 @@ finally:
     db.close()
 PYTHON
 
-# Stamp alembic at head so future incremental migrations apply correctly
+# create_all covers all SQLAlchemy-modeled tables (001, 003-005, 007-009).
+# Migrations 002 and 006 create chunk_vectors + HNSW index — raw SQL not
+# in any model, so create_all misses them. Strategy:
+#   1. Stamp 001 (its tables now exist via create_all)
+#   2. upgrade 006 (runs 002→006: chunk_vectors table + HNSW index)
+#   3. stamp head (marks 007-009 as applied — create_all already did them)
+alembic stamp 001
+alembic upgrade 006
 alembic stamp head
 echo "✓ Schema ready"
 
