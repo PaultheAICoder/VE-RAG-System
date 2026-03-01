@@ -405,3 +405,18 @@ def pg_db(pg_engine):
     session.close()
     transaction.rollback()
     connection.close()
+
+
+# ---------------------------------------------------------------------------
+# xdist safety
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_module_registry():
+    """Reset ModuleRegistry singleton between tests for xdist worker safety."""
+    from ai_ready_rag.modules.registry import ModuleRegistry
+
+    ModuleRegistry.reset()
+    yield
+    ModuleRegistry.reset()
