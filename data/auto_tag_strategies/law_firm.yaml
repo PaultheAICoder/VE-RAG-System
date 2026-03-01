@@ -24,6 +24,8 @@ namespaces:
     display: "Practice Area"
     color: "#f43f5e"
 
+path_offset: 1
+
 path_rules:
   - namespace: "client"
     level: 0

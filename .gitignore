@@ -35,8 +35,10 @@ Thumbs.db
 .claude/memory/session-*.md
 .claude/memory/postmortems/
 
-# Database
-data/
+# Database / runtime data (uploads, vectors, dbs)
+# Use data/* (not data/) so we can whitelist subdirectories with !
+data/*
+!data/auto_tag_strategies/
 *.db
 issues/
 frontend/.vite/

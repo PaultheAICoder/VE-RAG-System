@@ -30,6 +30,8 @@ namespaces:
     color: "#f43f5e"
     description: "Type of insurance coverage"
 
+path_offset: 1
+
 path_rules:
   - namespace: "client"
     level: 0
