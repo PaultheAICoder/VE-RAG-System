@@ -439,6 +439,10 @@ class Settings(BaseSettings):
     nl2sql_sample_token_budget: int = 2000
     nl2sql_max_prompt_tokens: int = 8000
 
+    # Table lazy registration — UNIFIED_TABLE_INGEST_v1 §6.8 / Issue #475
+    table_lazy_register: bool = False
+    table_lazy_register_lookback_days: int = 7
+
     # ---------------------------------------------------------------------------
     # Tenant / Module — Issue #374
     # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
@@ -94,6 +94,7 @@ from ai_ready_rag.schemas.admin import (
     ModelLimitsResponse,
     ModelsResponse,
     OCRStatus,
+    OrphanTableInfo,
     ProcessingOptionsRequest,
     ProcessingOptionsResponse,
     ProcessingQueueStatus,
@@ -128,6 +129,8 @@ from ai_ready_rag.schemas.admin import (
     SynonymListResponse,
     SynonymResponse,
     SynonymUpdate,
+    TableOrphanDropResponse,
+    TableReconcileResponse,
     TesseractStatus,
     TopQueryItem,
     TopQueryResponse,
@@ -4823,3 +4826,68 @@ async def reject_review_item(
         resolved_at=item.resolved_at,
         reviewer_id=item.reviewer_id,
     )
+
+
+# =============================================================================
+# Table Orphan Reconciliation — Issue #475
+# =============================================================================
+
+
+@router.get("/tables/reconcile", response_model=TableReconcileResponse)
+async def reconcile_tables(
+    current_user: User = Depends(require_admin),
+    settings=Depends(get_settings),
+):
+    """Identify orphaned tables. PostgreSQL only."""
+    if "postgresql" not in str(settings.database_url):
+        raise HTTPException(status_code=400, detail="Table reconciliation requires PostgreSQL")
+    from ai_ready_rag.services.table_extraction_metrics import get_table_metrics
+    from ai_ready_rag.services.table_orphan_service import TableOrphanService
+
+    svc = TableOrphanService(settings.database_url)
+    orphans = svc.find_orphans()
+    total = svc.total_table_count()
+    get_table_metrics().set_orphaned_count(len(orphans))
+    return TableReconcileResponse(
+        orphaned_tables=[OrphanTableInfo(**o) for o in orphans],
+        total_tables_scanned=total,
+        orphaned_count=len(orphans),
+    )
+
+
+@router.post("/tables/orphans/{table_name}/drop", response_model=TableOrphanDropResponse)
+async def drop_orphan_table(
+    table_name: str,
+    schema_name: str = Query(default="document_tables", pattern="^(document_tables|excel_tables)$"),
+    current_user: User = Depends(require_admin),
+    settings=Depends(get_settings),
+):
+    """Drop a confirmed orphan table. Must appear in /tables/reconcile results."""
+    if "postgresql" not in str(settings.database_url):
+        raise HTTPException(status_code=400, detail="Requires PostgreSQL")
+    from ai_ready_rag.services.table_orphan_service import TableOrphanService
+
+    svc = TableOrphanService(settings.database_url)
+    orphans = svc.find_orphans()
+    orphan_keys = {(o["table_name"], o["schema_name"]) for o in orphans}
+    if (table_name, schema_name) not in orphan_keys:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Table {schema_name}.{table_name} is not a confirmed orphan",
+        )
+    svc.drop_table(schema_name, table_name)
+    return TableOrphanDropResponse(
+        success=True,
+        dropped_table_name=table_name,
+        dropped_schema_name=schema_name,
+    )
+
+
+@router.get("/metrics", response_class=PlainTextResponse)
+async def get_table_metrics_endpoint(
+    current_user: User = Depends(require_admin),
+):
+    """Prometheus text-format metrics for table extraction pipeline."""
+    from ai_ready_rag.services.table_extraction_metrics import get_table_metrics
+
+    return get_table_metrics().prometheus_text()

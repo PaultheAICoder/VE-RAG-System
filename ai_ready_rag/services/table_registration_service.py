@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -21,23 +23,48 @@ class TableRegistrationService:
     Called once at startup by main.py (lifespan). Safe to call again (idempotent).
     """
 
-    def __init__(self, database_url: str, tenant_id: str = "default") -> None:
+    def __init__(self, database_url: str, tenant_id: str = "default", settings=None) -> None:
         self._database_url = database_url
         self._tenant_id = tenant_id
+        self._settings = settings
 
     def discover_and_register_all(self) -> int:
         """Query both registries and register all tables as NL2SQL SQL templates.
 
         document_table_registry rows win over excel_table_registry on conflict.
         All registered tables use column_signals path (no trigger phrases).
+        Emits SLO warnings if registration exceeds 5s (<=100 tables) or 30s (>100 tables).
 
         Returns:
             Total number of SQL templates registered.
         """
+        start = time.monotonic()
         rows = self._fetch_all_rows()
         if not rows:
             logger.info("table_registration_service: no tables found in any registry")
             return 0
+
+        total = len(rows)
+
+        # Lazy mode gate (spec §6.8)
+        lazy = getattr(self._settings, "table_lazy_register", False) if self._settings else False
+        if total > 500 and lazy:
+            lookback = (
+                getattr(self._settings, "table_lazy_register_lookback_days", 7)
+                if self._settings
+                else 7
+            )
+            logger.warning(
+                "table_registration: lazy_mode total=%d>500, filtering to last %d days",
+                total,
+                lookback,
+            )
+            rows = self._filter_recent(rows, lookback)
+        elif total > 100:
+            logger.warning(
+                "table_registration: large_registry total=%d>100, startup may be slow",
+                total,
+            )
 
         registered = 0
         for row in rows:
@@ -51,12 +78,39 @@ class TableRegistrationService:
                     exc,
                 )
 
+        duration = time.monotonic() - start
+        if duration > 30.0:
+            logger.warning(
+                "table_registration.slo_violation: %.2fs > 30s SLO (%d tables)"
+                " — consider TABLE_LAZY_REGISTER=true",
+                duration,
+                total,
+            )
+        elif duration > 5.0 and total <= 100:
+            logger.warning(
+                "table_registration.slo_violation: %.2fs > 5s SLO (%d tables)",
+                duration,
+                total,
+            )
+
         logger.info(
-            "table_registration_service: registered %d templates (tenant=%s)",
+            "table_registration_service: registered %d templates (tenant=%s) in %.2fs",
             registered,
             self._tenant_id,
+            duration,
         )
         return registered
+
+    def _filter_recent(self, rows: list[dict], lookback_days: int) -> list[dict]:
+        """Filter rows to only those updated within the lookback window."""
+        cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+        filtered = [r for r in rows if r.get("updated_at") and r["updated_at"] > cutoff]
+        logger.info(
+            "lazy_register.filter: kept=%d skipped=%d",
+            len(filtered),
+            len(rows) - len(filtered),
+        )
+        return filtered
 
     def _fetch_all_rows(self) -> list[dict]:
         """Fetch rows from both registries, with document_table_registry winning on conflict."""

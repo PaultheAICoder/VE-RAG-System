@@ -130,6 +130,7 @@ async def lifespan(app: FastAPI):
         _trs = TableRegistrationService(
             database_url=settings.database_url,
             tenant_id="default",
+            settings=settings,
         )
         _n_unified = _trs.discover_and_register_all()
         logger.info("table_registration_service: registered %d templates", _n_unified)
