@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import type { ReviewItem, ReviewQueueListResponse, ReviewItemResolveResponse } from '../types';
+import type { ReviewQueueListResponse, ReviewItemResolveResponse } from '../types';
 
 /**
  * List review queue items (admin only).

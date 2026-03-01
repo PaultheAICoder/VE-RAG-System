@@ -204,23 +204,46 @@ export function DocumentsView() {
     setSelectedIds(new Set());
   }, [documentIds]);
 
-  // Check if any documents are processing or pending
+  // Check if any visible documents are processing or pending
   const isProcessingActive = documents.some(
     (doc) => doc.status === 'processing' || doc.status === 'pending'
   );
+
+  // Global processing check — independent of current filters.
+  // Catches the case where the user has a status/tag filter active that hides
+  // pending/processing docs, so isProcessingActive is false even though work
+  // is happening. Polls at a slower rate to avoid excess API calls.
+  const [hasGlobalProcessing, setHasGlobalProcessing] = useState(false);
+  const GLOBAL_CHECK_INTERVAL = 5000;
+
+  useEffect(() => {
+    const checkGlobal = () => {
+      Promise.all([
+        listDocuments({ limit: 1, status: 'processing' }),
+        listDocuments({ limit: 1, status: 'pending' }),
+      ]).then(([proc, pend]) => {
+        setHasGlobalProcessing(proc.total > 0 || pend.total > 0);
+      }).catch(() => {});
+    };
+
+    checkGlobal();
+    const id = setInterval(checkGlobal, GLOBAL_CHECK_INTERVAL);
+    return () => clearInterval(id);
+  }, []);
+
+  // Drive polling from either visible docs or global state
+  const shouldPoll = isProcessingActive || hasGlobalProcessing;
 
   // Auto-refresh when processing is active
   const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    // Clear existing interval
     if (refreshIntervalRef.current) {
       clearInterval(refreshIntervalRef.current);
       refreshIntervalRef.current = null;
     }
 
-    // Set up auto-refresh only when processing is active
-    if (isProcessingActive) {
+    if (shouldPoll) {
       refreshIntervalRef.current = setInterval(() => {
         // Silent refresh - don't show loading state
         listDocuments({
@@ -247,7 +270,7 @@ export function DocumentsView() {
         clearInterval(refreshIntervalRef.current);
       }
     };
-  }, [isProcessingActive, page, search, selectedTagId, status, sortBy, sortOrder, namespaceFilter]);
+  }, [shouldPoll, page, search, selectedTagId, status, sortBy, sortOrder, namespaceFilter]);
 
   // Handle sort
   const handleSort = (field: string) => {

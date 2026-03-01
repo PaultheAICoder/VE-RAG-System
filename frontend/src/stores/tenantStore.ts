@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { TenantConfig, DEFAULT_TENANT_CONFIG, fetchTenantConfig } from '../api/tenant';
+import type { TenantConfig } from '../api/tenant';
+import { DEFAULT_TENANT_CONFIG, fetchTenantConfig } from '../api/tenant';
 
 interface TenantState {
   config: TenantConfig;
