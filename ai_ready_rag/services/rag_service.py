@@ -1966,6 +1966,7 @@ class RAGService:
         query: str,
         db: Session,
         elapsed_ms: float,
+        user_tags: list[str] | None = None,
     ) -> RAGResponse:
         """Execute a SQL-routed structured query and return a formatted RAGResponse.
 
@@ -1974,6 +1975,7 @@ class RAGService:
             query: Original user query string
             db: Database session for executing SQL
             elapsed_ms: Elapsed time so far (for total latency in response)
+            user_tags: User's access tags for defense-in-depth tag validation
 
         Returns:
             RAGResponse with SQL-derived answer and routing_decision="SQL"
@@ -1994,6 +1996,20 @@ class RAGService:
             )
             return self._insufficient_context_response(self.default_model, elapsed_ms, "SQL")
 
+        # Defense-in-depth: TagPredicateValidator (AND logic, issubset)
+        try:
+            from ai_ready_rag.services.sql_access_control import (
+                AccessDeniedError,
+                TagPredicateValidator,
+            )
+
+            TagPredicateValidator().validate(sql_template, user_tags)
+        except ImportError:
+            pass
+        except AccessDeniedError as exc:
+            logger.warning("sql_route.access_denied: template=%s reason=%s", template_name, exc)
+            return self._insufficient_context_response(self.default_model, elapsed_ms, "SQL")
+
         # NL2SQL path: templates with column_signals need Claude to generate the SQL
         if sql_template.column_signals is not None:
             return await self._execute_nl2sql_route(
@@ -2002,6 +2018,7 @@ class RAGService:
                 db=db,
                 elapsed_ms=elapsed_ms,
                 sql_template=sql_template,
+                user_tags=user_tags,
             )
 
         row_cap = getattr(self.settings, "structured_query_row_cap", 100)
@@ -2153,6 +2170,99 @@ class RAGService:
         # Fallback: return formatted table if Claude fails
         return data_text
 
+    def _load_row_value_samples(
+        self,
+        table_name: str,
+        schema_name: str,
+        db: Session,
+        tenant_id: str = "default",
+    ) -> dict[str, list[str]]:
+        """Load row_value_samples from document_table_registry for an NL2SQL table.
+        Returns {} on any failure (never raises). Graceful fallback if Phase 1 not deployed.
+        """
+        import json
+
+        try:
+            from ai_ready_rag.db.models.document_table_registry import DocumentTableRegistry
+
+            registry_row = (
+                db.query(DocumentTableRegistry)
+                .filter(
+                    DocumentTableRegistry.tenant_id == tenant_id,
+                    DocumentTableRegistry.schema_name == schema_name,
+                    DocumentTableRegistry.table_name == table_name,
+                )
+                .first()
+            )
+
+            if registry_row is None or not registry_row.row_value_samples:
+                return {}
+
+            samples = json.loads(registry_row.row_value_samples)
+            return samples if isinstance(samples, dict) else {}
+
+        except ImportError:
+            logger.debug("nl2sql.document_table_registry_unavailable")
+            return {}
+        except Exception as exc:
+            logger.warning("nl2sql.registry_lookup_failed: table=%s error=%s", table_name, exc)
+            return {}
+
+    def _truncate_samples_to_budget(
+        self,
+        row_value_samples: dict[str, list[str]],
+        columns: list[str],
+        query: str,
+    ) -> dict[str, list[str]]:
+        """Truncate row value samples to fit within the configured token budget.
+        Spec §6.6 truncation order. Never raises — returns best-effort dict.
+        """
+        settings = self.settings
+        max_cols: int = getattr(settings, "nl2sql_max_prompt_columns", 20)
+        max_samples: int = getattr(settings, "nl2sql_max_samples_per_column", 20)
+        budget_tokens: int = getattr(settings, "nl2sql_sample_token_budget", 2000)
+        budget_chars: int = budget_tokens * 4  # 1 token ≈ 4 chars
+
+        def _est(d: dict[str, list[str]]) -> int:
+            return sum(len(k) + sum(len(str(v)) + 4 for v in vs) + 6 for k, vs in d.items())
+
+        query_lower = query.lower()
+
+        # Step 1+2: cap per-column, drop zero-sample columns
+        capped: dict[str, list[str]] = {}
+        for col in columns[:max_cols]:
+            if col not in row_value_samples:
+                continue
+            str_vals = [str(s) for s in row_value_samples[col] if s is not None and str(s).strip()]
+            if str_vals:
+                capped[col] = str_vals[:max_samples]
+
+        if _est(capped) <= budget_chars:
+            return capped
+
+        # Step 3: reduce samples/col down to 5 minimum
+        MIN_SAMPLES = 5
+        for target in range(max_samples - 1, MIN_SAMPLES - 1, -1):
+            reduced = {col: vals[:target] for col, vals in capped.items()}
+            if _est(reduced) <= budget_chars:
+                return reduced
+
+        # Step 4: prioritize columns mentioned in query
+        result: dict[str, list[str]] = {}
+        for col, vals in capped.items():
+            candidate = {**result, col: vals[:MIN_SAMPLES]}
+            if col.lower() in query_lower and _est(candidate) <= budget_chars:
+                result[col] = vals[:MIN_SAMPLES]
+        for col, vals in capped.items():
+            if col not in result:
+                candidate = {**result, col: vals[:MIN_SAMPLES]}
+                if _est(candidate) <= budget_chars:
+                    result[col] = vals[:MIN_SAMPLES]
+
+        if _est(result) > budget_chars:
+            logger.warning("nl2sql.token_budget_exceeded_after_truncation: columns=%d", len(result))
+        return result
+
     async def _execute_nl2sql_route(
         self,
         decision: RoutingDecision,
@@ -2160,6 +2270,8 @@ class RAGService:
         db: Session,
         elapsed_ms: float,
         sql_template: SQLTemplate,
+        user_tags: list[str] | None = None,
+        tenant_id: str = "default",
     ) -> RAGResponse:
         """Execute NL2SQL: generate SQL via Claude, validate, run it, synthesize answer.
 
@@ -2185,23 +2297,72 @@ class RAGService:
         column_signals = sql_template.column_signals or {}
         columns = [k for k in column_signals if k != "__quantitative__"]
 
+        # Defense-in-depth: TagPredicateValidator (AND logic, issubset)
+        try:
+            from ai_ready_rag.services.sql_access_control import (
+                AccessDeniedError,
+                TagPredicateValidator,
+            )
+
+            TagPredicateValidator().validate(sql_template, user_tags)
+        except ImportError:
+            pass
+        except AccessDeniedError as exc:
+            logger.warning("nl2sql.access_denied: template=%s reason=%s", template_name, exc)
+            return self._insufficient_context_response(self.default_model, elapsed_ms, "SQL")
+
         # 1. Build schema context for Claude
         # Extract table name from template name (template name is "excel_<table_name>")
         table_name = template_name
+        schema_name = "excel_tables"
         if template_name.startswith("excel_"):
             table_name = template_name[len("excel_") :]
 
+        # Phase 3 — load and truncate row value samples
+        row_value_samples = self._load_row_value_samples(
+            table_name=table_name,
+            schema_name=schema_name,
+            db=db,
+            tenant_id=tenant_id,
+        )
+        truncated_samples = self._truncate_samples_to_budget(
+            row_value_samples=row_value_samples,
+            columns=columns,
+            query=query,
+        )
+
+        # Build "Known column values" section
+        sample_section = ""
+        if truncated_samples:
+            sample_lines = []
+            for col in columns:
+                if col not in truncated_samples or not truncated_samples[col]:
+                    continue
+                formatted = '", "'.join(str(v) for v in truncated_samples[col])
+                sample_lines.append(f'  "{col}": ["{formatted}"]')
+            if sample_lines:
+                sample_section = (
+                    "\nKnown column values (use ONLY these exact values in WHERE clauses):\n"
+                    + "\n".join(sample_lines)
+                    + "\n"
+                )
+
         table_display = table_name.replace("_", " ")
         quoted_cols = ", ".join(f'"{c}"' for c in columns)
+        exact_value_rule = (
+            "- Use ONLY the exact values shown above in WHERE clauses\n" if sample_section else ""
+        )
         schema_context = (
             f"You are generating a PostgreSQL SELECT query for a specific table.\n\n"
             f'Table: excel_tables."{table_name}" ({table_display})\n'
-            f"Available columns: {quoted_cols}\n\n"
-            f"Rules:\n"
+            f"Available columns: {quoted_cols}\n"
+            f"{sample_section}"
+            f"\nRules:\n"
             f'- Query ONLY excel_tables."{table_name}" (do not reference other tables)\n'
             f"- Use ILIKE for text search on string columns\n"
             f"- Quote all column names with double quotes\n"
             f"- Include LIMIT 200\n"
+            f"{exact_value_rule}"
             f"- Return ONLY the SQL statement, no explanation, no markdown"
         )
 
@@ -2467,7 +2628,9 @@ class RAGService:
                     )
 
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
-                return await self._execute_sql_route(sql_decision, request.query, db, elapsed_ms)
+                return await self._execute_sql_route(
+                    sql_decision, request.query, db, elapsed_ms, user_tags=request.user_tags
+                )
 
         # 1.5 Run query router (if retrieve_and_direct mode enabled)
         routing_decision: str | None = None
