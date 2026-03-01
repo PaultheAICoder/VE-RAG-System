@@ -418,6 +418,43 @@ class ProcessingService:
                         e,
                     )
 
+            # Phase 4: Extract structured tables from Docling output
+            # Only runs for PostgreSQL (not SQLite dev) and when enabled.
+            # NEVER fails document processing — always wrapped in try/except.
+            if getattr(self.settings, "extract_document_tables", True) and "postgresql" in str(
+                self.settings.database_url
+            ):
+                try:
+                    from ai_ready_rag.services.table_extraction_adapter import (
+                        TableExtractionAdapter,
+                    )
+
+                    # Retrieve the Docling result stored by DoclingChunker (if applicable).
+                    # Non-Docling chunkers (SimpleChunker) don't set this attribute → None.
+                    docling_doc = getattr(chunker, "last_docling_result", None)
+
+                    access_tags = [tag.name for tag in document.tags]
+                    adapter = TableExtractionAdapter(self.settings.database_url, self.settings)
+                    table_names = adapter.extract_and_persist(
+                        docling_document=docling_doc,
+                        document=document,
+                        source_format=file_path.suffix.lower().lstrip("."),
+                        access_tags=access_tags,
+                    )
+                    if table_names:
+                        logger.info(
+                            "table_extraction: extracted %d tables from %s",
+                            len(table_names),
+                            document.id,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "table_extraction.processing_hook_failed: doc=%s error=%s",
+                        document.id,
+                        exc,
+                    )
+                    # Never fail document processing due to table extraction
+
             # Calculate processing time
             processing_time_ms = int((time.perf_counter() - start_time) * 1000)
 
