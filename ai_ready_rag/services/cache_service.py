@@ -777,7 +777,7 @@ class CacheService:
                     func.count().label("access_count"),
                     func.max(CacheAccessLog.accessed_at).label("last_accessed"),
                 )
-                .group_by(CacheAccessLog.query_hash)
+                .group_by(CacheAccessLog.query_hash, CacheAccessLog.query_text)
                 .order_by(func.count().desc())
                 .limit(limit)
                 .all()
