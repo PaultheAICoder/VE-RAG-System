@@ -2069,15 +2069,18 @@ class RAGService:
         from ai_ready_rag.db.models.document import Document
 
         base = template_name.removeprefix("excel_")
-        # Try substring match: "AR_Aging_Report_Dec2024" matches "AR_Aging_Report_Dec2024.xlsx"
-        doc = db.query(Document).filter(Document.filename.ilike(f"%{base}%")).first()
+        # P&L uses a synthetic template name — map to the actual file prefix
+        if base == "pl_financials":
+            base = "PL_Statements"
+        # Excel files are stored as filename="original.xlsx"; the user-visible name
+        # lives in original_filename (e.g. "AR_Aging_Report_Dec2024.xlsx").
+        doc = db.query(Document).filter(Document.original_filename.ilike(f"%{base}%")).first()
         if doc is None:
-            # Fallback: replace underscores with spaces for display name
             return None
         return Citation(
             source_id=f"{doc.id}:0",
             document_id=doc.id,
-            document_name=doc.filename,
+            document_name=doc.original_filename,
             chunk_index=0,
             page_number=None,
             section="Structured Data",
