@@ -219,10 +219,10 @@ class QueryRouter:
         if not quantitative_hit:
             return 0.0
 
-        # Check column name signals (exclude __quantitative__ sentinel key)
+        # Check column name signals (exclude sentinel keys)
         column_hit = False
         for col_key, synonyms in column_signals.items():
-            if col_key == "__quantitative__":
+            if col_key.startswith("__"):
                 continue
             for syn in synonyms:
                 if re.search(r"\b" + re.escape(syn.lower()) + r"\b", query_lower):
@@ -231,7 +231,18 @@ class QueryRouter:
             if column_hit:
                 break
 
-        # Score: 0.5 base + 0.25 column bonus = 0.75 total (above 0.6 threshold)
+        # Score: 0.5 base + 0.25 column bonus = 0.75 total (above 0.6 threshold).
+        # When a column hit AND the table name also appears in the query, add a
+        # 0.10 tiebreaker bonus (0.85) so Budget_2025 beats AR_Aging when the user
+        # says "budget" even if both templates share quantitative column signals.
         base = 0.5
         column_bonus = 0.25 if column_hit else 0.0
-        return base + column_bonus
+        table_bonus = 0.0
+        if column_hit:
+            table_signals = column_signals.get("__table__", [])
+            table_hit = any(
+                sig and re.search(r"\b" + re.escape(sig.lower()) + r"\b", query_lower)
+                for sig in table_signals
+            )
+            table_bonus = 0.10 if table_hit else 0.0
+        return base + column_bonus + table_bonus
