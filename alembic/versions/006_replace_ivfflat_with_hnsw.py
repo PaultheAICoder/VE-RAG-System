@@ -30,7 +30,7 @@ def upgrade() -> None:
 
     # Create HNSW index — works for any number of rows, better recall
     op.execute(
-        "CREATE INDEX ix_chunk_vectors_hnsw ON chunk_vectors "
+        "CREATE INDEX IF NOT EXISTS ix_chunk_vectors_hnsw ON chunk_vectors "
         "USING hnsw (vector_embedding vector_cosine_ops) "
         "WITH (m = 16, ef_construction = 64)"
     )

@@ -149,15 +149,30 @@ finally:
     db.close()
 PYTHON
 
-# create_all covers all SQLAlchemy-modeled tables (001, 003-005, 007-009).
-# Migrations 002 and 006 create chunk_vectors + HNSW index — raw SQL not
-# in any model, so create_all misses them. Strategy:
-#   1. Stamp 001 (its tables now exist via create_all)
-#   2. upgrade 006 (runs 002→006: chunk_vectors table + HNSW index)
-#   3. stamp head (marks 007-009 as applied — create_all already did them)
-alembic stamp 001
-alembic upgrade 006
-alembic stamp head
+# Determine migration strategy based on whether the DB was previously initialised.
+# If alembic_version has no rows the DB is brand-new (init_db just ran create_all
+# but hasn't been stamped yet).  Bootstrap sequence:
+#   1. stamp 001  — create_all already built those tables
+#   2. upgrade 006 — runs 002→006: chunk_vectors + HNSW index (not in any model)
+#   3. stamp head  — marks 007-009 applied (create_all already built them)
+# Migrations 002 and 009 are idempotent (skip if table already exists), so this
+# is safe to re-run even if a previous attempt partially completed.
+#
+# If alembic_version already has a row the DB is an existing instance; just
+# upgrade normally to head.
+CURRENT_VERSION=$(pg_exec -d "$DB_NAME" -tc \
+    "SELECT version_num FROM alembic_version LIMIT 1" 2>/dev/null \
+    | tr -d ' \n' || echo "")
+
+if [ -z "$CURRENT_VERSION" ]; then
+    echo "  New database — running bootstrap migrations..."
+    alembic stamp 001
+    alembic upgrade 006
+    alembic stamp head
+else
+    echo "  Existing database at $CURRENT_VERSION — upgrading to head..."
+    alembic upgrade head
+fi
 echo "✓ Schema ready"
 
 # ── Pre-flight ────────────────────────────────────────────────────────────────
