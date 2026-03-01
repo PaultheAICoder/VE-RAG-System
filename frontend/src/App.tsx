@@ -26,7 +26,7 @@ const LoginPage = () => {
     console.log('Demo login clicked');
     try {
       console.log('Calling login...');
-      await login('admin@test.com', 'npassword2002!');
+      await login('admin@test.com', 'npassword2002');
       console.log('Login successful');
     } catch (err) {
       console.error('Login error:', err);
