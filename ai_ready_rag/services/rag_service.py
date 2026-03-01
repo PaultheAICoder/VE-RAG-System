@@ -2037,6 +2037,8 @@ class RAGService:
             },
         )
 
+        citation = self._citation_for_sql_template(template_name, db)
+        citations = [citation] if citation else []
         return RAGResponse(
             answer=answer,
             confidence=ConfidenceScore(
@@ -2045,15 +2047,43 @@ class RAGService:
                 coverage_score=1.0,
                 llm_score=95,
             ),
-            citations=[],
+            citations=citations,
             action="CITE",
             route_to=None,
             model_used="claude-cli",
             context_chunks_used=len(rows),
             context_tokens_used=0,
             generation_time_ms=elapsed_ms,
-            grounded=True,
+            grounded=bool(citations),
             routing_decision="SQL",
+        )
+
+    def _citation_for_sql_template(self, template_name: str, db: Session) -> Citation | None:
+        """Return a Citation pointing to the uploaded document backing a SQL template.
+
+        Strips the "excel_" prefix from the template name and searches the documents
+        table for a file whose name contains that string (case-insensitive).  Returns
+        None if no matching document is found (e.g. table was loaded outside the normal
+        ingest pipeline).
+        """
+        from ai_ready_rag.db.models.document import Document
+
+        base = template_name.removeprefix("excel_")
+        # Try substring match: "AR_Aging_Report_Dec2024" matches "AR_Aging_Report_Dec2024.xlsx"
+        doc = db.query(Document).filter(Document.filename.ilike(f"%{base}%")).first()
+        if doc is None:
+            # Fallback: replace underscores with spaces for display name
+            return None
+        return Citation(
+            source_id=f"{doc.id}:0",
+            document_id=doc.id,
+            document_name=doc.filename,
+            chunk_index=0,
+            page_number=None,
+            section="Structured Data",
+            relevance_score=1.0,
+            snippet=f"Structured data from {doc.filename}",
+            snippet_full=f"SQL query result from uploaded Excel file: {doc.filename}",
         )
 
     async def _synthesize_sql_answer(self, query: str, data_text: str) -> str:
@@ -2189,6 +2219,8 @@ class RAGService:
             },
         )
 
+        citation = self._citation_for_sql_template(template_name, db)
+        citations = [citation] if citation else []
         return RAGResponse(
             answer=answer,
             confidence=ConfidenceScore(
@@ -2197,14 +2229,14 @@ class RAGService:
                 coverage_score=1.0,
                 llm_score=90,
             ),
-            citations=[],
+            citations=citations,
             action="CITE",
             route_to=None,
             model_used="claude-cli",
             context_chunks_used=len(rows),
             context_tokens_used=0,
             generation_time_ms=elapsed_ms,
-            grounded=True,
+            grounded=bool(citations),
             routing_decision="SQL",
         )
 
