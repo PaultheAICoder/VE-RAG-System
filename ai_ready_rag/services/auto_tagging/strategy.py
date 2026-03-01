@@ -84,6 +84,7 @@ class AutoTagStrategy:
         version: str,
         namespaces: dict[str, NamespaceConfig],
         path_rules: list[PathRule],
+        path_offset: int = 0,
         document_types: dict[str, DocumentTypeConfig],
         entity_extraction: EntityExtractionConfig | None,
         topic_extraction: TopicExtractionConfig | None,
@@ -96,6 +97,7 @@ class AutoTagStrategy:
         self.version = version
         self.namespaces = namespaces
         self.path_rules = path_rules
+        self.path_offset = path_offset
         self.document_types = document_types
         self.entity_extraction = entity_extraction
         self.topic_extraction = topic_extraction
@@ -151,6 +153,7 @@ class AutoTagStrategy:
             version=validated.strategy.version,
             namespaces=validated.namespaces,
             path_rules=compiled_rules,
+            path_offset=validated.path_offset,
             document_types=validated.document_types,
             entity_extraction=validated.entity_extraction,
             topic_extraction=validated.topic_extraction,
@@ -162,8 +165,11 @@ class AutoTagStrategy:
         """Apply path rules to extract tags from folder structure.
 
         Strips the filename from the path (last component if it contains a dot),
-        then splits by '/' into folder components. Each PathRule is applied by
-        its level index.
+        then splits by '/' into folder components. If path_offset > 0, that many
+        leading folders are skipped before applying level indices — so level 0
+        in a rule refers to the folder at position path_offset in the original path.
+        Each PathRule is then applied by its level index into the (possibly offset)
+        folder list.
         """
         if not source_path or not source_path.strip():
             return []
@@ -176,6 +182,12 @@ class AutoTagStrategy:
 
         if "." in parts[-1]:
             parts = parts[:-1]
+
+        if not parts:
+            return []
+
+        if self.path_offset:
+            parts = parts[self.path_offset :]
 
         if not parts:
             return []

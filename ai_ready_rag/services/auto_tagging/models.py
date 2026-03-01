@@ -103,6 +103,7 @@ class StrategyYAML(BaseModel):
     document_types: dict[str, DocumentTypeConfig]
     llm_prompt: str
     path_rules: list[dict] = []
+    path_offset: int = 0
     entity_extraction: EntityExtractionConfig | None = None
     topic_extraction: TopicExtractionConfig | None = None
     email_patterns: list[EmailPattern] = []
