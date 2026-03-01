@@ -936,6 +936,29 @@ class ReconcileResponse(BaseModel):
 
 
 # =============================================================================
+# Table Orphan Reconciliation — Issue #475
+# =============================================================================
+
+
+class OrphanTableInfo(BaseModel):
+    table_name: str
+    schema_name: str
+    reason: str
+
+
+class TableReconcileResponse(BaseModel):
+    orphaned_tables: list[OrphanTableInfo]
+    total_tables_scanned: int
+    orphaned_count: int
+
+
+class TableOrphanDropResponse(BaseModel):
+    success: bool
+    dropped_table_name: str
+    dropped_schema_name: str
+
+
+# =============================================================================
 # Review Queue (Issue #383)
 # =============================================================================
 

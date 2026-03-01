@@ -332,6 +332,10 @@ class Settings(BaseSettings):
         "msg",
     ]
 
+    # CSV dual-path ingest — UNIFIED_TABLE_INGEST_v1 §6.5
+    csv_dual_path_enabled: bool = True
+    csv_max_file_size_mb: int = 100
+
     # ingestkit-excel integration
     use_ingestkit_excel: bool = False  # Feature flag (off by default)
     excel_classification_model: str = "claude-sonnet-4-6"  # Claude is primary LLM
@@ -389,6 +393,7 @@ class Settings(BaseSettings):
     include_image_descriptions: bool = True
     chunk_size: int = 512  # Optimal for retrieval recall (400-512 tokens per research)
     chunk_overlap: int = 80  # ~15% overlap for boundary coverage
+    extract_document_tables: bool = True  # Enable PDF/image table extraction via Docling
 
     # ---------------------------------------------------------------------------
     # Claude Enrichment (both tiers) — Issue #374
@@ -427,6 +432,16 @@ class Settings(BaseSettings):
     structured_query_row_cap: int = 1000
     structured_query_timeout_seconds: int = 5
     structured_query_confidence_threshold: float = 0.6
+
+    # NL2SQL Prompt Size Controls — UNIFIED_TABLE_INGEST_v1 §6.6
+    nl2sql_max_prompt_columns: int = 20
+    nl2sql_max_samples_per_column: int = 20
+    nl2sql_sample_token_budget: int = 2000
+    nl2sql_max_prompt_tokens: int = 8000
+
+    # Table lazy registration — UNIFIED_TABLE_INGEST_v1 §6.8 / Issue #475
+    table_lazy_register: bool = False
+    table_lazy_register_lookback_days: int = 7
 
     # ---------------------------------------------------------------------------
     # Tenant / Module — Issue #374

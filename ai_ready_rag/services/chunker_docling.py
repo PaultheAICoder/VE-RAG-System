@@ -38,6 +38,10 @@ class DoclingChunker:
         self._converter = None
         self._chunker = None
         self._tokenizer = None
+        # Stores the most recent Docling ConversionResult after chunk_document() completes.
+        # Used by ProcessingService (Phase 4) to extract structured tables via
+        # TableExtractionAdapter without changing the ChunkerProtocol return type.
+        self.last_docling_result: object | None = None
 
     def _get_converter(self):
         """Lazy-load Docling converter."""
@@ -192,6 +196,9 @@ class DoclingChunker:
 
         # Convert document
         result = converter.convert(str(path))
+
+        # Store result for Phase 4 table extraction (TableExtractionAdapter reads this)
+        self.last_docling_result = result
 
         # Chunk with HybridChunker
         chunks = []

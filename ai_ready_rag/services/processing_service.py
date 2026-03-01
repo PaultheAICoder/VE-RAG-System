@@ -237,6 +237,41 @@ class ProcessingService:
                 # else: fallback to standard chunker pipeline below
                 logger.info("Falling back to standard chunker for %s", document.id)
 
+            # Route CSV files to CsvProcessingService if enabled
+            if file_path.suffix.lower() == ".csv" and getattr(
+                self.settings, "csv_dual_path_enabled", True
+            ):
+                from ai_ready_rag.services.csv_processing_service import CsvProcessingService
+
+                access_tags = (
+                    [tag.name for tag in document.tags] if hasattr(document, "tags") else []
+                )
+                tenant_id = getattr(self.settings, "default_tenant_id", "default")
+                csv_svc = CsvProcessingService(self.settings)
+                result, should_fallback = await csv_svc.process_csv(
+                    document, db, access_tags, tenant_id
+                )
+                if not should_fallback and result is not None:
+                    processing_time_ms = int((time.perf_counter() - start_time) * 1000)
+                    if result.success:
+                        document.status = "ready"
+                        document.chunk_count = result.chunk_count
+                        document.processing_time_ms = processing_time_ms
+                    else:
+                        document.status = "failed"
+                        document.error_message = result.error_message
+                        document.processing_time_ms = processing_time_ms
+                    db.commit()
+                    return ProcessingResult(
+                        success=result.success,
+                        chunk_count=result.chunk_count,
+                        page_count=result.page_count,
+                        word_count=result.word_count,
+                        processing_time_ms=processing_time_ms,
+                        error_message=result.error_message,
+                    )
+                logger.info("csv.routing.fallback: document_id=%s", document.id)
+
             # Resolve per-document chunk size based on tags
             chunk_size_override: int | None = None
             doc_tag_names = [tag.name.lower() for tag in document.tags]
@@ -417,6 +452,43 @@ class ProcessingService:
                         document.id,
                         e,
                     )
+
+            # Phase 4: Extract structured tables from Docling output
+            # Only runs for PostgreSQL (not SQLite dev) and when enabled.
+            # NEVER fails document processing — always wrapped in try/except.
+            if getattr(self.settings, "extract_document_tables", True) and "postgresql" in str(
+                self.settings.database_url
+            ):
+                try:
+                    from ai_ready_rag.services.table_extraction_adapter import (
+                        TableExtractionAdapter,
+                    )
+
+                    # Retrieve the Docling result stored by DoclingChunker (if applicable).
+                    # Non-Docling chunkers (SimpleChunker) don't set this attribute → None.
+                    docling_doc = getattr(chunker, "last_docling_result", None)
+
+                    access_tags = [tag.name for tag in document.tags]
+                    adapter = TableExtractionAdapter(self.settings.database_url, self.settings)
+                    table_names = adapter.extract_and_persist(
+                        docling_document=docling_doc,
+                        document=document,
+                        source_format=file_path.suffix.lower().lstrip("."),
+                        access_tags=access_tags,
+                    )
+                    if table_names:
+                        logger.info(
+                            "table_extraction: extracted %d tables from %s",
+                            len(table_names),
+                            document.id,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "table_extraction.processing_hook_failed: doc=%s error=%s",
+                        document.id,
+                        exc,
+                    )
+                    # Never fail document processing due to table extraction
 
             # Calculate processing time
             processing_time_ms = int((time.perf_counter() - start_time) * 1000)

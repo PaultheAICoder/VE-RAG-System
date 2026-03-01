@@ -367,6 +367,10 @@ class VERagPostgresStructuredDB:
         The ``access_tags`` from the document are stored in ``table_metadata``
         JSON so the ExcelTablesService can enforce tag-based access control
         on the NL2SQL path at query time.
+
+        Also performs a dual-write to ``document_table_registry`` (Phase 2 unified
+        pipeline). The dual-write is wrapped in its own try/except so it never
+        breaks ingest when the new table does not yet exist.
         """
         import uuid as _uuid
         from datetime import datetime
@@ -418,6 +422,79 @@ class VERagPostgresStructuredDB:
             )
         except Exception as exc:
             logger.warning("excel_table_registry.write_failed: %s", exc)
+
+        # Dual-write to document_table_registry (unified pipeline, Phase 2).
+        # Wrapped in its own try/except — silently skips if the table does not
+        # exist yet (backward compat with DBs that have not run migration 009).
+        self._write_to_document_registry(df, table_name, self._SCHEMA)
+
+    def _write_to_document_registry(
+        self,
+        df,
+        table_name: str,
+        schema_name: str,
+        doc_id: str | None = None,
+        doc_name: str | None = None,
+    ) -> None:
+        """Upsert a row into document_table_registry with row_value_samples.
+
+        Silently skips (logs WARNING) if the table does not exist so that
+        deployments without migration 009 continue to function.
+        """
+        import uuid as _uuid
+
+        from ai_ready_rag.utils.signal_canon import sample_row_values
+
+        try:
+            columns = list(df.columns.astype(str))
+            column_types = {str(col): str(dtype) for col, dtype in df.dtypes.items()}
+            row_samples = sample_row_values(df)
+            tenant_id = getattr(self, "_tenant_id", "default")
+
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO document_table_registry
+                            (id, tenant_id, table_name, schema_name, source_format,
+                             columns, column_types, row_value_samples,
+                             document_id, document_name, row_count,
+                             created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                        ON CONFLICT (tenant_id, schema_name, table_name)
+                        DO UPDATE SET
+                            columns = EXCLUDED.columns,
+                            column_types = EXCLUDED.column_types,
+                            row_value_samples = EXCLUDED.row_value_samples,
+                            document_id = EXCLUDED.document_id,
+                            document_name = EXCLUDED.document_name,
+                            row_count = EXCLUDED.row_count,
+                            updated_at = NOW()
+                        """,
+                        (
+                            str(_uuid.uuid4()),
+                            tenant_id,
+                            table_name,
+                            schema_name,
+                            "excel",
+                            json.dumps(columns),
+                            json.dumps(column_types),
+                            json.dumps(row_samples),
+                            doc_id,
+                            doc_name,
+                            len(df),
+                        ),
+                    )
+                conn.commit()
+            logger.info(
+                "document_table_registry.written: table=%s schema=%s rows=%d samples_cols=%d",
+                table_name,
+                schema_name,
+                len(df),
+                len(row_samples),
+            )
+        except Exception as exc:
+            logger.warning("document_table_registry.write_failed: %s", exc)
 
     def drop_table(self, table_name: str) -> None:
         with self._connect() as conn:
