@@ -79,6 +79,7 @@ async def enqueue_document_processing(
                 document_id,
                 processing_options_dict,
                 delete_existing,
+                _queue_name=settings.arq_queue_name,
             )
             logger.info(f"Enqueued document {document_id} via ARQ (job: {job.job_id})")
             return job.job_id

@@ -2088,7 +2088,9 @@ async def start_reindex(
     redis = await get_redis_pool()
     if redis:
         try:
-            await redis.enqueue_job("reindex_knowledge_base", job.id)
+            await redis.enqueue_job(
+                "reindex_knowledge_base", job.id, _queue_name=get_settings().arq_queue_name
+            )
             logger.info(f"Reindex job {job.id} enqueued via ARQ")
         except Exception as e:
             logger.warning(f"ARQ enqueue failed for reindex, falling back: {e}")
@@ -2890,7 +2892,9 @@ async def upload_warming_file(
     # Enqueue ARQ job (Redis verified available above by is_redis_available)
     try:
         redis = await get_redis_pool()
-        await redis.enqueue_job("process_warming_batch", batch.id)
+        await redis.enqueue_job(
+            "process_warming_batch", batch.id, _queue_name=get_settings().arq_queue_name
+        )
     except Exception as e:
         logger.warning(f"ARQ enqueue failed for batch {batch.id}: {e}")
 
@@ -2981,7 +2985,9 @@ async def add_manual_warming_queries(
     # Enqueue ARQ job (Redis verified available above by is_redis_available)
     try:
         redis = await get_redis_pool()
-        await redis.enqueue_job("process_warming_batch", batch.id)
+        await redis.enqueue_job(
+            "process_warming_batch", batch.id, _queue_name=get_settings().arq_queue_name
+        )
     except Exception as e:
         logger.warning(f"ARQ enqueue failed for batch {batch.id}: {e}")
 
@@ -3490,7 +3496,9 @@ async def retry_batch_failed_queries(
     try:
         redis = await get_redis_pool()
         if redis:
-            await redis.enqueue_job("process_warming_batch", batch.id)
+            await redis.enqueue_job(
+                "process_warming_batch", batch.id, _queue_name=get_settings().arq_queue_name
+            )
     except Exception as e:
         logger.warning(f"ARQ enqueue failed for batch retry {batch.id}: {e}")
 
@@ -3564,7 +3572,9 @@ async def retry_single_query(
     try:
         redis = await get_redis_pool()
         if redis:
-            await redis.enqueue_job("process_warming_batch", batch.id)
+            await redis.enqueue_job(
+                "process_warming_batch", batch.id, _queue_name=get_settings().arq_queue_name
+            )
     except Exception as e:
         logger.warning(f"ARQ enqueue failed for single query retry {batch.id}: {e}")
 

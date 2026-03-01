@@ -215,6 +215,11 @@ class Settings(BaseSettings):
     arq_health_check_interval: int = 60  # Seconds between worker health checks
     use_arq_worker: bool = True  # Set False to bypass ARQ and use BackgroundTasks
 
+    @property
+    def arq_queue_name(self) -> str:
+        """Per-tenant ARQ queue — prevents job theft when multiple tenants share Redis."""
+        return f"arq:queue:{self.default_tenant_id}"
+
     # Vector Service
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "documents"

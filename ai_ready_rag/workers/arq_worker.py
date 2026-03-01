@@ -49,6 +49,7 @@ class EmbeddedArqWorker:
         self._worker = Worker(
             functions=[process_document, reindex_knowledge_base, process_warming_batch],
             redis_pool=self._redis_pool,
+            queue_name=self._settings.arq_queue_name,
             max_jobs=self._settings.arq_max_jobs,
             job_timeout=self._settings.arq_job_timeout,
             health_check_interval=self._settings.arq_health_check_interval,
