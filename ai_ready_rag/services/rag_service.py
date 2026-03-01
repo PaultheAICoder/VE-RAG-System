@@ -2126,12 +2126,18 @@ class RAGService:
         if template_name.startswith("excel_"):
             table_name = template_name[len("excel_") :]
 
+        table_display = table_name.replace("_", " ")
+        quoted_cols = ", ".join(f'"{c}"' for c in columns)
         schema_context = (
-            f'Table: excel_tables."{table_name}"\n'
-            f"Columns: {', '.join(str(c) for c in columns)}\n"
-            f"Write a safe PostgreSQL SELECT query to answer this question.\n"
-            f"Use ILIKE for text matching. Quote column names with double quotes.\n"
-            f"Return ONLY the SQL, no explanation, no markdown."
+            f"You are generating a PostgreSQL SELECT query for a specific table.\n\n"
+            f'Table: excel_tables."{table_name}" ({table_display})\n'
+            f"Available columns: {quoted_cols}\n\n"
+            f"Rules:\n"
+            f'- Query ONLY excel_tables."{table_name}" (do not reference other tables)\n'
+            f"- Use ILIKE for text search on string columns\n"
+            f"- Quote all column names with double quotes\n"
+            f"- Include LIMIT 200\n"
+            f"- Return ONLY the SQL statement, no explanation, no markdown"
         )
 
         # 2. Generate SQL via Claude

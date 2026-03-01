@@ -182,7 +182,12 @@ class ExcelTablesService:
                 col_types = {}
 
             access_tags = row.get("access_tags", [])
-            if self._is_pl_table(col_list):
+            # When column names are generic numeric indices ("0", "1"), sample
+            # actual row values to detect P&L tables from header-less workbooks.
+            sample_values: list[str] | None = None
+            if col_list and all(c.isdigit() for c in col_list):
+                sample_values = self._sample_first_column(table_name, schema_name, col_list[0])
+            if self._is_pl_table(col_list, sample_values=sample_values):
                 pl_tables.append(table_name)
             else:
                 non_pl_rows.append(
@@ -292,11 +297,38 @@ class ExcelTablesService:
     # Classification helpers
     # -----------------------------------------------------------------------
 
-    def _is_pl_table(self, col_list: list[str]) -> bool:
-        """Return True if the column list looks like a P&L financial table."""
+    def _is_pl_table(self, col_list: list[str], sample_values: list[str] | None = None) -> bool:
+        """Return True if the column list looks like a P&L financial table.
+
+        Falls back to checking sampled row values when column names are generic
+        (e.g. "0", "1" from header-less workbooks like PL_Statements).
+        """
         col_lower = {c.lower() for c in col_list}
         overlap = col_lower & _PL_COLUMN_INDICATORS
-        return len(overlap) >= 2
+        if len(overlap) >= 2:
+            return True
+        if sample_values:
+            val_lower = {v.lower() for v in sample_values}
+            return len(val_lower & _PL_COLUMN_INDICATORS) >= 2
+        return False
+
+    def _sample_first_column(self, table_name: str, schema_name: str, first_col: str) -> list[str]:
+        """Return up to 30 non-null string values from the first column of a table.
+
+        Used as a fallback for P&L detection when column names are generic.
+        Returns [] on any error.
+        """
+        try:
+            import psycopg2
+
+            conn = psycopg2.connect(self._database_url)
+            with conn.cursor() as cur:
+                cur.execute(f'SELECT "{first_col}" FROM {schema_name}."{table_name}" LIMIT 30')
+                rows = cur.fetchall()
+            conn.close()
+            return [str(r[0]) for r in rows if r[0] is not None]
+        except Exception:
+            return []
 
     def _compute_column_signals(
         self, table_name: str, columns: list[str], column_types: dict
@@ -324,6 +356,15 @@ class ExcelTablesService:
             if "_" in col:
                 synonyms.append(col.lower())
             signals[col] = synonyms
+
+        # Table name tokens — helps QueryRouter disambiguate between tables
+        # with overlapping column names (e.g. Budget_2025 vs AR_Aging_Report).
+        # Stored under __table__ sentinel so _score_quantitative_signals can
+        # give a tiebreaker bonus when the table name appears in the query.
+        table_lower = table_name.lower()
+        table_display = table_lower.replace("_", " ").strip()
+        table_tokens = [t for t in table_lower.split("_") if len(t) > 1]
+        signals["__table__"] = list(dict.fromkeys([table_display] + table_tokens))
 
         # Always add quantitative signals under sentinel key
         signals["__quantitative__"] = list(QUANTITATIVE_SIGNALS)
