@@ -492,11 +492,76 @@ class VERagFormDBAdapter:
     def _qualified(self, table_name: str) -> str:
         return f'"{self._SCHEMA}"."{table_name}"'
 
+    # PostgreSQL silently truncates identifiers longer than 63 bytes.
+    # When two ACORD field names share the same 63-char prefix, the truncation
+    # produces duplicate column names and raises "specified more than once".
+    _PG_MAX_IDENTIFIER_LEN = 63
+
+    @staticmethod
+    def _deduplicate_identifier(name: str, seen: dict[str, int]) -> str:
+        """Truncate ``name`` to PG limit and append a suffix on collision.
+
+        ``seen`` maps a (potentially already-truncated) base name to the next
+        available integer suffix.  The dict is mutated in place so the caller
+        can accumulate state across multiple column names.
+        """
+        limit = VERagFormDBAdapter._PG_MAX_IDENTIFIER_LEN
+        truncated = name[:limit]
+        if truncated not in seen:
+            seen[truncated] = 1
+            return truncated
+        # Collision — find a suffix that fits within the limit
+        n = seen[truncated]
+        seen[truncated] = n + 1
+        suffix = f"_{n}"
+        base = name[: limit - len(suffix)]
+        candidate = base + suffix
+        # Ensure the suffixed name is also tracked to avoid future collisions
+        seen.setdefault(candidate, 1)
+        return candidate
+
+    @classmethod
+    def _sanitize_identifiers(cls, sql: str) -> str:
+        """Rewrite any double-quoted identifier longer than 63 chars.
+
+        Parses quoted identifiers in ``sql`` (e.g. ``"F[0].P1[0].SomeLong..."``)
+        and replaces colliding truncations with a ``_N`` sequential suffix so that
+        PostgreSQL never sees two identifiers that map to the same 63-char prefix.
+
+        Only replaces identifiers that actually exceed the limit to minimise diff.
+        """
+        import re
+
+        seen: dict[str, int] = {}
+        limit = cls._PG_MAX_IDENTIFIER_LEN
+
+        def replace_identifier(m: re.Match) -> str:
+            ident = m.group(1)  # content inside the double quotes
+            if len(ident) <= limit:
+                seen.setdefault(ident, 1)
+                return f'"{ident}"'
+            new_ident = cls._deduplicate_identifier(ident, seen)
+            if new_ident != ident:
+                logger.debug(
+                    "forms.column_truncated: '%s' → '%s'",
+                    ident[:40],
+                    new_ident,
+                )
+            return f'"{new_ident}"'
+
+        return re.sub(r'"([^"]*)"', replace_identifier, sql)
+
     def execute_sql(self, sql: str, params: tuple | None = None) -> None:
-        """Execute a SQL statement (CREATE TABLE, ALTER TABLE, INSERT)."""
+        """Execute a SQL statement (CREATE TABLE, ALTER TABLE, INSERT).
+
+        Long column names are sanitized before execution: PostgreSQL silently
+        truncates identifiers to 63 bytes, which causes "specified more than
+        once" errors when two ACORD field names share the same 63-char prefix.
+        """
         # Translate SQLite-style ? placeholders to psycopg2 %s
         if params:
             sql = sql.replace("?", "%s")
+        sql = self._sanitize_identifiers(sql)
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, params or ())
