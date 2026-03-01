@@ -123,6 +123,17 @@ async def lifespan(app: FastAPI):
         n = ExcelTablesService(settings.database_url).discover_and_register_all()
         logger.info("excel_tables_service: registered %d sql templates", n)
 
+    # Unified table registration — reads both registries, no P&L special-casing
+    if "postgresql" in str(settings.database_url):
+        from ai_ready_rag.services.table_registration_service import TableRegistrationService
+
+        _trs = TableRegistrationService(
+            database_url=settings.database_url,
+            tenant_id="default",
+        )
+        _n_unified = _trs.discover_and_register_all()
+        logger.info("table_registration_service: registered %d templates", _n_unified)
+
     # Verify evaluation tables exist (fail-fast if eval_enabled and tables missing)
     if settings.eval_enabled:
         from sqlalchemy import inspect as sa_inspect
