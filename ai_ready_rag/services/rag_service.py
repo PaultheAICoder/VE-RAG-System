@@ -2026,6 +2026,11 @@ class RAGService:
                 for row in rows[:row_cap]
             ]
             data_text = f"{header}\n" + "\n".join(body_lines)
+            # Append precomputed column totals so Claude never has to do arithmetic
+            totals = self._compute_column_totals(columns, rows[:row_cap])
+            if totals:
+                totals_lines = "\n".join(f"  {col}: {val:,.0f}" for col, val in totals.items())
+                data_text += f"\n\nPrecomputed column totals (use these exact values — do not re-calculate):\n{totals_lines}"
             answer = await self._synthesize_sql_answer(query, data_text)
 
         logger.info(
@@ -2088,6 +2093,33 @@ class RAGService:
             snippet=f"Structured data from {doc.filename}",
             snippet_full=f"SQL query result from uploaded Excel file: {doc.filename}",
         )
+
+    def _compute_column_totals(self, columns: list[str], rows: list) -> dict[str, float]:
+        """Sum numeric columns in SQL result rows, skipping non-numeric values.
+
+        Returns a dict of {column_name: total} for columns that have at least
+        one numeric value.  Columns that look like years (4-digit integers) or
+        that contain only non-numeric data are excluded.
+        """
+        totals: dict[str, float] = {}
+        for col_idx, col in enumerate(columns):
+            values: list[float] = []
+            for row in rows:
+                cell = row[col_idx]
+                if cell is None:
+                    continue
+                try:
+                    fval = float(str(cell).replace(",", "").replace("$", "").strip())
+                    values.append(fval)
+                except (ValueError, TypeError):
+                    pass
+            if not values:
+                continue
+            # Skip columns that look like year identifiers (all 4-digit integers ~1900-2100)
+            if all(1900 <= v <= 2100 for v in values):
+                continue
+            totals[col] = sum(values)
+        return totals
 
     async def _synthesize_sql_answer(self, query: str, data_text: str) -> str:
         """Ask Claude to synthesize a natural-language answer from SQL result data."""

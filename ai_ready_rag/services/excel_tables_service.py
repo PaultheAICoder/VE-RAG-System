@@ -42,6 +42,20 @@ _PL_TRIGGER_PHRASES = [
     "manufacturing overhead",
     "income before taxes",
     "interest expense",
+    "income tax",
+    "income tax expense",
+    "tax expense",
+    "taxes",
+    "depreciation",
+    "amortization",
+    "selling expenses",
+    "general and administrative",
+    "g&a",
+    "net sales",
+    "total expenses",
+    "total costs",
+    "other income",
+    "other expense",
 ]
 
 # Column names that strongly indicate a P&L financial table
@@ -58,9 +72,13 @@ _PL_COLUMN_INDICATORS = {
     "year",
     "income before taxes",
     "interest expense",
+    "income tax expense",
     "materials",
     "direct labor",
     "manufacturing overhead",
+    "depreciation",
+    "net sales",
+    "total expenses",
 }
 
 _PL_TEMPLATE_NAME = "excel_pl_financials"
