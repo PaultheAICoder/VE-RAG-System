@@ -182,7 +182,7 @@ class Settings(BaseSettings):
 
     # Security
     password_min_length: int = 12
-    lockout_attempts: int = 5
+    lockout_attempts: int = 10
     lockout_minutes: int = 15
     bcrypt_rounds: int = 12
 
