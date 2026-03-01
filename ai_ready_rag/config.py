@@ -332,6 +332,10 @@ class Settings(BaseSettings):
         "msg",
     ]
 
+    # CSV dual-path ingest — UNIFIED_TABLE_INGEST_v1 §6.5
+    csv_dual_path_enabled: bool = True
+    csv_max_file_size_mb: int = 100
+
     # ingestkit-excel integration
     use_ingestkit_excel: bool = False  # Feature flag (off by default)
     excel_classification_model: str = "claude-sonnet-4-6"  # Claude is primary LLM
