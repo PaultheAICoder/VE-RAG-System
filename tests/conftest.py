@@ -59,18 +59,48 @@ def setup_database():
     Base.metadata.drop_all(bind=engine)
 
 
-@pytest.fixture(scope="function")
-def db(setup_database):
-    """Provide a transactional database session that rolls back after each test."""
+@pytest.fixture(scope="module")
+def db_connection(setup_database):
+    """Module-scoped connection holding an outer transaction for savepoint rollback.
+
+    This connection persists for the entire test module. The outer transaction
+    is never committed — it is rolled back when the module finishes, ensuring
+    all data created by module-scoped fixtures is cleaned up.
+    """
     connection = engine.connect()
     transaction = connection.begin()
-    session = TestingSessionLocal(bind=connection)
-
-    yield session
-
-    session.close()
+    yield connection
     transaction.rollback()
     connection.close()
+
+
+@pytest.fixture(scope="module")
+def _module_db(db_connection):
+    """Module-scoped session for creating shared fixtures (users, tokens, etc.).
+
+    This session shares the module-level connection so that objects created
+    here are visible to the per-test savepoint sessions (they share the same
+    underlying SQLite connection via StaticPool).
+    """
+    session = TestingSessionLocal(bind=db_connection)
+    yield session
+    session.close()
+
+
+@pytest.fixture(scope="function")
+def db(db_connection):
+    """Per-test session using a SAVEPOINT so mutations roll back after each test.
+
+    Each test gets a fresh savepoint nested inside the module-level outer
+    transaction. On teardown the savepoint is rolled back, undoing any
+    mutations (e.g. failed_login_attempts, is_active, locked_until changes in
+    test_auth.py) without disturbing module-scoped fixture data.
+    """
+    savepoint = db_connection.begin_nested()  # SAVEPOINT
+    session = TestingSessionLocal(bind=db_connection)
+    yield session
+    session.close()
+    savepoint.rollback()  # Roll back to SAVEPOINT; outer transaction stays open
 
 
 @pytest.fixture(scope="function")
@@ -91,9 +121,15 @@ def client(db):
     app.dependency_overrides.clear()
 
 
-@pytest.fixture(scope="function")
-def admin_user(db) -> User:
-    """Create an admin user for testing."""
+# ---------------------------------------------------------------------------
+# Module-scoped internal user fixtures — created once per module.
+# These hold canonical user objects in _module_db (the outer-transaction session).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _module_admin_user(_module_db) -> User:
+    """Create admin user once per module, flushed into outer transaction."""
     user = User(
         email="admin@test.com",
         display_name="Test Admin",
@@ -101,15 +137,15 @@ def admin_user(db) -> User:
         role="admin",
         is_active=True,
     )
-    db.add(user)
-    db.flush()  # Flush to get ID without committing
-    db.refresh(user)
+    _module_db.add(user)
+    _module_db.flush()
+    _module_db.refresh(user)
     return user
 
 
-@pytest.fixture(scope="function")
-def regular_user(db) -> User:
-    """Create a regular user for testing."""
+@pytest.fixture(scope="module")
+def _module_regular_user(_module_db) -> User:
+    """Create regular user once per module, flushed into outer transaction."""
     user = User(
         email="user@test.com",
         display_name="Test User",
@@ -117,43 +153,15 @@ def regular_user(db) -> User:
         role="user",
         is_active=True,
     )
-    db.add(user)
-    db.flush()
-    db.refresh(user)
+    _module_db.add(user)
+    _module_db.flush()
+    _module_db.refresh(user)
     return user
 
 
-@pytest.fixture(scope="function")
-def admin_token(admin_user) -> str:
-    """Get JWT token for admin user."""
-    return create_access_token(
-        data={"sub": admin_user.id, "email": admin_user.email, "role": admin_user.role}
-    )
-
-
-@pytest.fixture(scope="function")
-def user_token(regular_user) -> str:
-    """Get JWT token for regular user."""
-    return create_access_token(
-        data={"sub": regular_user.id, "email": regular_user.email, "role": regular_user.role}
-    )
-
-
-@pytest.fixture(scope="function")
-def admin_headers(admin_token) -> dict:
-    """Authorization headers for admin."""
-    return {"Authorization": f"Bearer {admin_token}"}
-
-
-@pytest.fixture(scope="function")
-def user_headers(user_token) -> dict:
-    """Authorization headers for regular user."""
-    return {"Authorization": f"Bearer {user_token}"}
-
-
-@pytest.fixture(scope="function")
-def customer_admin_user(db) -> User:
-    """Create a customer admin user for testing."""
+@pytest.fixture(scope="module")
+def _module_customer_admin_user(_module_db) -> User:
+    """Create customer admin user once per module, flushed into outer transaction."""
     user = User(
         email="customer_admin@test.com",
         display_name="Customer Admin",
@@ -161,33 +169,15 @@ def customer_admin_user(db) -> User:
         role="customer_admin",
         is_active=True,
     )
-    db.add(user)
-    db.flush()
-    db.refresh(user)
+    _module_db.add(user)
+    _module_db.flush()
+    _module_db.refresh(user)
     return user
 
 
-@pytest.fixture(scope="function")
-def customer_admin_token(customer_admin_user) -> str:
-    """Get JWT token for customer admin user."""
-    return create_access_token(
-        data={
-            "sub": customer_admin_user.id,
-            "email": customer_admin_user.email,
-            "role": customer_admin_user.role,
-        }
-    )
-
-
-@pytest.fixture(scope="function")
-def customer_admin_headers(customer_admin_token) -> dict:
-    """Authorization headers for customer admin."""
-    return {"Authorization": f"Bearer {customer_admin_token}"}
-
-
-@pytest.fixture(scope="function")
-def system_admin_user(db) -> User:
-    """Create a system admin user for testing (explicit system_admin role)."""
+@pytest.fixture(scope="module")
+def _module_system_admin_user(_module_db) -> User:
+    """Create system admin user once per module, flushed into outer transaction."""
     user = User(
         email="system_admin@test.com",
         display_name="System Admin",
@@ -195,28 +185,128 @@ def system_admin_user(db) -> User:
         role="system_admin",
         is_active=True,
     )
-    db.add(user)
-    db.flush()
-    db.refresh(user)
+    _module_db.add(user)
+    _module_db.flush()
+    _module_db.refresh(user)
     return user
 
 
+# ---------------------------------------------------------------------------
+# Per-test user fixtures — merge module-level user into the per-test session.
+# This makes db.refresh(admin_user) and direct attribute mutation work
+# correctly within each test's savepoint scope.
+# ---------------------------------------------------------------------------
+
+
 @pytest.fixture(scope="function")
-def system_admin_token(system_admin_user) -> str:
-    """Get JWT token for system admin user."""
+def admin_user(db, _module_admin_user) -> User:
+    """Return admin user merged into the per-test db session.
+
+    Merging ensures db.refresh(admin_user) and direct attribute mutations
+    (e.g. admin_user.is_active = False + db.commit()) work correctly in tests.
+    The per-test savepoint rollback restores DB state after each test.
+    """
+    return db.merge(_module_admin_user)
+
+
+@pytest.fixture(scope="function")
+def regular_user(db, _module_regular_user) -> User:
+    """Return regular user merged into the per-test db session."""
+    return db.merge(_module_regular_user)
+
+
+@pytest.fixture(scope="function")
+def customer_admin_user(db, _module_customer_admin_user) -> User:
+    """Return customer admin user merged into the per-test db session."""
+    return db.merge(_module_customer_admin_user)
+
+
+@pytest.fixture(scope="function")
+def system_admin_user(db, _module_system_admin_user) -> User:
+    """Return system admin user merged into the per-test db session."""
+    return db.merge(_module_system_admin_user)
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped token and header fixtures — stateless JWTs, no DB dependency.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def admin_token(_module_admin_user) -> str:
+    """Get JWT token for admin user (module-scoped)."""
     return create_access_token(
         data={
-            "sub": system_admin_user.id,
-            "email": system_admin_user.email,
-            "role": system_admin_user.role,
+            "sub": _module_admin_user.id,
+            "email": _module_admin_user.email,
+            "role": _module_admin_user.role,
         }
     )
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="module")
+def user_token(_module_regular_user) -> str:
+    """Get JWT token for regular user (module-scoped)."""
+    return create_access_token(
+        data={
+            "sub": _module_regular_user.id,
+            "email": _module_regular_user.email,
+            "role": _module_regular_user.role,
+        }
+    )
+
+
+@pytest.fixture(scope="module")
+def customer_admin_token(_module_customer_admin_user) -> str:
+    """Get JWT token for customer admin user (module-scoped)."""
+    return create_access_token(
+        data={
+            "sub": _module_customer_admin_user.id,
+            "email": _module_customer_admin_user.email,
+            "role": _module_customer_admin_user.role,
+        }
+    )
+
+
+@pytest.fixture(scope="module")
+def system_admin_token(_module_system_admin_user) -> str:
+    """Get JWT token for system admin user (module-scoped)."""
+    return create_access_token(
+        data={
+            "sub": _module_system_admin_user.id,
+            "email": _module_system_admin_user.email,
+            "role": _module_system_admin_user.role,
+        }
+    )
+
+
+@pytest.fixture(scope="module")
+def admin_headers(admin_token) -> dict:
+    """Authorization headers for admin (module-scoped)."""
+    return {"Authorization": f"Bearer {admin_token}"}
+
+
+@pytest.fixture(scope="module")
+def user_headers(user_token) -> dict:
+    """Authorization headers for regular user (module-scoped)."""
+    return {"Authorization": f"Bearer {user_token}"}
+
+
+@pytest.fixture(scope="module")
+def customer_admin_headers(customer_admin_token) -> dict:
+    """Authorization headers for customer admin (module-scoped)."""
+    return {"Authorization": f"Bearer {customer_admin_token}"}
+
+
+@pytest.fixture(scope="module")
 def system_admin_headers(system_admin_token) -> dict:
-    """Authorization headers for system admin."""
+    """Authorization headers for system admin (module-scoped)."""
     return {"Authorization": f"Bearer {system_admin_token}"}
+
+
+# ---------------------------------------------------------------------------
+# Fixtures kept at scope="function" — mutated by tests or test-specific data.
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="function")
