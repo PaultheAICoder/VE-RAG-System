@@ -20,6 +20,7 @@ from ai_ready_rag.db.models.cache import (
 )
 from ai_ready_rag.db.models.chat import ChatMessage, ChatSession
 from ai_ready_rag.db.models.document import Document
+from ai_ready_rag.db.models.document_table_registry import DocumentTableRegistry
 from ai_ready_rag.db.models.enrichment import EnrichmentEntity, EnrichmentSynopsis
 from ai_ready_rag.db.models.evaluation import (
     DatasetSample,
@@ -69,4 +70,5 @@ __all__ = [
     "EnrichmentEntity",
     "ReviewItem",
     "ExcelTableRegistry",
+    "DocumentTableRegistry",
 ]
