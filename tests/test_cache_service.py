@@ -968,12 +968,14 @@ class TestDatabaseTables:
 
 
 class TestCacheWarming:
+    @pytest.mark.requires_postgres
     def test_get_top_queries_empty(self, db):
         """Empty access log returns empty list."""
         service = CacheService(db)
         result = service.get_top_queries(limit=10)
         assert result == []
 
+    @pytest.mark.requires_postgres
     def test_get_top_queries_returns_sorted(self, db):
         """Queries returned in descending order by access count."""
         from ai_ready_rag.db.models import CacheAccessLog
@@ -1008,6 +1010,7 @@ class TestCacheWarming:
         assert result[1]["query_text"] == "less popular query"
         assert result[1]["access_count"] == 2
 
+    @pytest.mark.requires_postgres
     def test_get_top_queries_respects_limit(self, db):
         """Limit parameter restricts result count."""
         from ai_ready_rag.db.models import CacheAccessLog
@@ -1027,6 +1030,7 @@ class TestCacheWarming:
 
         assert len(result) == 3
 
+    @pytest.mark.requires_postgres
     def test_get_top_queries_limit_exceeds_data(self, db):
         """Limit > available queries returns all available."""
         from ai_ready_rag.db.models import CacheAccessLog
@@ -1046,6 +1050,7 @@ class TestCacheWarming:
 
         assert len(result) == 2
 
+    @pytest.mark.requires_postgres
     def test_get_top_queries_includes_last_accessed(self, db):
         """Result includes last_accessed timestamp."""
         from ai_ready_rag.db.models import CacheAccessLog
@@ -1065,6 +1070,7 @@ class TestCacheWarming:
         assert result[0]["last_accessed"] is not None
         assert isinstance(result[0]["last_accessed"], datetime)
 
+    @pytest.mark.requires_postgres
     def test_get_top_queries_counts_hits_and_misses(self, db):
         """Both hits and misses contribute to access_count."""
         from ai_ready_rag.db.models import CacheAccessLog

@@ -421,17 +421,22 @@ async def get_live_stats(
         .scalar()
     )
 
-    # Hourly breakdown (last 24h) — SQLite strftime
+    # Hourly breakdown (last 24h) — dialect-aware hour bucketing
+    _is_pg = getattr(get_settings(), "database_backend", "sqlite") == "postgresql"
+    if _is_pg:
+        hour_expr = func.date_trunc("hour", LiveEvaluationScore.created_at).label("hour")
+    else:
+        hour_expr = func.strftime("%Y-%m-%dT%H:00:00", LiveEvaluationScore.created_at).label("hour")
     hourly_rows = (
         db.query(
-            func.strftime("%Y-%m-%dT%H:00:00", LiveEvaluationScore.created_at).label("hour"),
+            hour_expr,
             func.count(LiveEvaluationScore.id).label("count"),
             func.avg(LiveEvaluationScore.faithfulness).label("avg_faithfulness"),
             func.avg(LiveEvaluationScore.answer_relevancy).label("avg_answer_relevancy"),
         )
         .filter(LiveEvaluationScore.created_at >= cutoff_24h)
-        .group_by("hour")
-        .order_by("hour")
+        .group_by(hour_expr)
+        .order_by(hour_expr)
         .all()
     )
 
