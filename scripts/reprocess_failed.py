@@ -21,7 +21,7 @@ def main():
     parser.add_argument("--host", default="172.16.20.51", help="Server host (default: Spark)")
     parser.add_argument("--port", default="8502", help="Server port (default: 8502)")
     parser.add_argument("--email", default="admin@test.com", help="Login email")
-    parser.add_argument("--password", default="npassword2002!", help="Login password")
+    parser.add_argument("--password", default="npassword2002", help="Login password")
     parser.add_argument(
         "--include-pending", action="store_true", help="Also wait for pending docs to finish"
     )

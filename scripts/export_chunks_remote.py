@@ -297,7 +297,7 @@ def main():
     parser.add_argument("--host", default="172.16.20.51", help="Server host (default: Spark)")
     parser.add_argument("--port", default="8502", help="Server port (default: 8502)")
     parser.add_argument("--email", default="admin@test.com", help="Login email")
-    parser.add_argument("--password", default="npassword2002!", help="Login password")
+    parser.add_argument("--password", default="npassword2002", help="Login password")
     parser.add_argument("--ollama-url", default=None, help="Ollama URL (default: same host:11434)")
     parser.add_argument("--qdrant-url", default=None, help="Qdrant URL (default: same host:6333)")
     parser.add_argument("--model", default="qwen3:8b", help="Ollama model for questions")

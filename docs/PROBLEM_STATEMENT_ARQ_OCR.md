@@ -163,7 +163,7 @@ The embedded ARQ worker runs tasks as coroutines on FastAPI's event loop. `async
 
 1. SSH to Spark: `ssh spark`
 2. Server running at `/srv/VE-RAG-System` on port 8502
-3. Login: `admin@test.com` / `npassword2002!`
+3. Login: `admin@test.com` / `npassword2002`
 4. Find any PDF with status "failed" or "pending"
 5. POST `/api/documents/{id}/reprocess`
 6. Wait 20 seconds, GET `/api/documents/{id}`

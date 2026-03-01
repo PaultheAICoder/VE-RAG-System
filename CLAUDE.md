@@ -52,7 +52,7 @@ ruff format ai_ready_rag tests
 **Development Server:** `http://localhost:8502`
 
 **Test Credentials:**
-- **Admin:** admin@test.com / npassword2002!
+- **Admin:** admin@test.com / npassword2002
 
 **Environment Variables** (defaults work for local development):
 - `OLLAMA_BASE_URL` - Ollama server (default: http://localhost:11434)
