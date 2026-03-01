@@ -21,6 +21,65 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _synopsis_to_chunk_text(synopsis_text: str, document_name: str) -> str:
+    """Convert enrichment synopsis JSON into a dense, human-readable chunk suitable
+    for embedding and vector retrieval.
+
+    The synopsis is stored as a JSON blob produced by Claude. Parsing it into
+    natural language ensures that coverage limits, entity names, and key dates
+    appear verbatim in the indexed text and are therefore retrievable by semantic
+    search.  Falls back to raw synopsis text if JSON parsing fails.
+    """
+    try:
+        raw = synopsis_text.strip()
+        # Strip markdown code fences if present (```json ... ```)
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1]
+            raw = raw.rsplit("```", 1)[0]
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return f"DOCUMENT SYNOPSIS: {document_name}\n\n{synopsis_text}"
+
+    lines: list[str] = [f"DOCUMENT SYNOPSIS: {document_name}"]
+
+    if doc_type := data.get("document_type"):
+        lines.append(f"Document Type: {doc_type}")
+
+    if summary := data.get("summary"):
+        lines.append(f"\nSummary: {summary}")
+
+    if coverage_lines := data.get("coverage_lines"):
+        lines.append("\nCoverage Lines:")
+        for cl in coverage_lines:
+            lines.append(f"  - {cl}")
+
+    if amounts := data.get("amounts"):
+        lines.append("\nCoverage Limits:")
+        for amt in amounts:
+            label = amt.get("label", "")
+            amount = amt.get("amount", "")
+            currency = amt.get("currency", "USD")
+            lines.append(
+                f"  - {label}: {currency} {amount:,.0f}"
+                if isinstance(amount, (int, float))
+                else f"  - {label}: {amount}"
+            )
+
+    if entities := data.get("key_entities"):
+        lines.append("\nKey Entities:")
+        for ent in entities:
+            etype = ent.get("type", "")
+            evalue = ent.get("value", "")
+            lines.append(f"  - {etype}: {evalue}")
+
+    if dates := data.get("date_references"):
+        lines.append("\nDates:")
+        for d in dates:
+            lines.append(f"  - {d}")
+
+    return "\n".join(lines)
+
+
 @dataclass
 class ProcessingOptions:
     """Per-upload processing options (optional overrides)."""
@@ -421,6 +480,30 @@ class ProcessingService:
                     )
                     if synopsis:
                         document.synopsis_id = synopsis.id
+                        # Index the synopsis as a searchable chunk so retrieval
+                        # can find coverage limits, entity names, and key dates
+                        # that may be missing from the raw Docling-parsed chunks.
+                        synopsis_chunk_text = _synopsis_to_chunk_text(
+                            synopsis.synopsis_text,
+                            document.original_filename or document.filename,
+                        )
+                        try:
+                            await self.vector_service.add_synopsis_chunk(
+                                document_id=document.id,
+                                document_name=document.original_filename or document.filename,
+                                synopsis_text=synopsis_chunk_text,
+                                tags=tag_names,
+                                uploaded_by=document.uploaded_by,
+                            )
+                            logger.info(
+                                "synopsis_chunk_indexed",
+                                extra={"document_id": document.id},
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "synopsis_chunk_index_failed",
+                                extra={"document_id": document.id, "error": str(exc)},
+                            )
                     document.enrichment_status = "completed"
                 except Exception as exc:
                     logger.warning(

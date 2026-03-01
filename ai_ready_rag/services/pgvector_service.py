@@ -155,6 +155,78 @@ class PgVectorService:
         logger.info("pgvector.document.indexed", extra={"doc": document_id, "chunks": indexed})
         return indexed
 
+    async def add_synopsis_chunk(
+        self,
+        document_id: str,
+        document_name: str,
+        synopsis_text: str,
+        tags: list[str],
+        uploaded_by: str,
+        tenant_id: str | None = None,
+    ) -> None:
+        """Insert a synthetic synopsis chunk into chunk_vectors.
+
+        The synopsis is produced by Claude enrichment and contains coverage limits,
+        entity names, and key dates that are often absent from raw Docling chunks.
+        Indexing it as a separate chunk (chunk_index=9999) makes this information
+        retrievable via vector search without disturbing the original chunk set.
+        """
+        effective_tenant = tenant_id or self._tenant_id
+        embedding = await self._embed(synopsis_text)
+        embedding_json = json.dumps(embedding)
+        vector_str = f"[{','.join(str(x) for x in embedding)}]"
+        metadata = {
+            "tags": tags,
+            "document_name": document_name,
+            "uploaded_by": uploaded_by,
+            "chunk_type": "synopsis",
+        }
+        chunk_id = str(uuid.uuid4())
+        with SessionLocal() as db:
+            # Remove any previous synopsis chunk for this document
+            db.execute(
+                text(
+                    "DELETE FROM chunk_vectors WHERE document_id = :doc_id AND chunk_index = 9999"
+                ),
+                {"doc_id": document_id},
+            )
+            try:
+                db.execute(
+                    text(
+                        "INSERT INTO chunk_vectors "
+                        "(id, document_id, chunk_index, chunk_text, metadata_, tenant_id, embedding, vector_embedding) "
+                        "VALUES (:id, :doc_id, 9999, :text, :meta, :tenant, :emb, CAST(:vec AS vector))"
+                    ),
+                    {
+                        "id": chunk_id,
+                        "doc_id": document_id,
+                        "text": synopsis_text,
+                        "meta": json.dumps(metadata),
+                        "tenant": effective_tenant,
+                        "emb": embedding_json,
+                        "vec": vector_str,
+                    },
+                )
+            except Exception:
+                db.rollback()
+                db.execute(
+                    text(
+                        "INSERT INTO chunk_vectors "
+                        "(id, document_id, chunk_index, chunk_text, metadata_, tenant_id, embedding) "
+                        "VALUES (:id, :doc_id, 9999, :text, :meta, :tenant, :emb)"
+                    ),
+                    {
+                        "id": chunk_id,
+                        "doc_id": document_id,
+                        "text": synopsis_text,
+                        "meta": json.dumps(metadata),
+                        "tenant": effective_tenant,
+                        "emb": embedding_json,
+                    },
+                )
+            db.commit()
+        logger.info("pgvector.synopsis_chunk.indexed", extra={"doc": document_id})
+
     async def search(
         self,
         query: str,
