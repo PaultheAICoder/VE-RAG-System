@@ -15,6 +15,8 @@ namespaces:
     display: "Document Type"
     color: "#10b981"
 
+path_offset: 1
+
 path_rules:
   - namespace: "client"
     level: 0
