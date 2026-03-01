@@ -114,6 +114,11 @@ class QueryRouter:
         best_template: str | None = None
         best_confidence: float = 0.0
         best_phrases: list[str] = []
+        # Set to True once a trigger-phrase template wins so that column_signals
+        # templates cannot override it.  Trigger phrases are authoritative domain
+        # vocabulary (e.g. "revenue" → P&L); a generic quantitative+column score
+        # (e.g. "total" + AR aging "Total" column → 0.75) must not beat them.
+        best_via_trigger: bool = False
 
         query_lower = query.lower()
 
@@ -137,9 +142,13 @@ class QueryRouter:
                     best_confidence = confidence
                     best_template = name
                     best_phrases = matched
+                    best_via_trigger = True
 
-            elif template.column_signals is not None:
-                # No phrase match — try quantitative signal scoring for NL2SQL templates
+            elif template.column_signals is not None and not best_via_trigger:
+                # column_signals templates only compete when no trigger-phrase template
+                # has already won.  This prevents tables like AR_Aging from outbidding
+                # the P&L template on queries like "total revenue" (which contain both a
+                # quantitative signal and a matching column name in AR_Aging).
                 signal_confidence = self._score_quantitative_signals(
                     query_lower, template.column_signals
                 )
