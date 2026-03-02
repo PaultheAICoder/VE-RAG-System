@@ -263,7 +263,7 @@ class PgVectorService:
                         "ORDER BY vector_embedding <=> CAST(:emb AS vector) "
                         "LIMIT :limit"
                     ),
-                    {"emb": embedding_str, "tenant": tenant_id, "limit": limit * 6},
+                    {"emb": embedding_str, "tenant": tenant_id, "limit": limit * 12},
                 ).fetchall()
             except Exception:
                 # Fall back to JSON embedding comparison (no pgvector)

@@ -666,10 +666,14 @@ class FormsProcessingService:
 
         prompt = (
             f"You are reviewing a {template_name} insurance form. "
-            "Summarize the key coverage details in 3-5 sentences covering: "
-            "insured name, policy number (if present), insurer(s), "
-            "coverage types, dollar limits for each coverage, and effective dates. "
-            "Be precise — include all dollar amounts exactly as given.\n\n"
+            "Write a plain-text retrieval-optimized summary (no markdown, no bullet points, no bold). "
+            "Start with: 'Coverage limits for [insured name] — [form type] (COI):' "
+            "then list every coverage type with its exact dollar limit "
+            "(e.g. General Liability Each Occurrence $1,000,000, General Aggregate $2,000,000, "
+            "Auto Liability Combined Single Limit $1,000,000, etc.). "
+            "Include policy number and effective dates. "
+            "Use plain sentences, include the words 'coverage limits', 'COI', and the insured name. "
+            "Do not use markdown formatting.\n\n"
             f"Form fields:\n{field_text}"
         )
 
