@@ -238,7 +238,7 @@ class QueryIntent:
     confidence: float  # 0.0-1.0
     forms_eligible: bool = False  # True when intent matches structured form data
     intent_labels: list[str] | None = None  # All matched labels e.g. ["active_policy", "gl"]
-    entity_name: str | None = None  # Detected entity/insured name from query
+    entity_name: str | None = None  # Customer tag for entity isolation e.g. "client:walnut-creek"
 
 
 # Insurance domain intent patterns: (compiled_regex, preferred_tags, label)
@@ -468,27 +468,16 @@ _ENTITY_CACHE_TTL: float = 300.0  # 5 minutes
 
 
 def _get_known_entities(db: Session, tenant_id: str = "default") -> list[str]:
-    """Load distinct insured_name values from chunk metadata. Cached 5 min."""
-    import time
-
-    from sqlalchemy import text
+    """Load customer tag names (client:*) from tags table. Cached 5 min."""
+    from ai_ready_rag.db.models.user import Tag
 
     global _ENTITY_CACHE_TIME
     now = time.monotonic()
     if tenant_id in _ENTITY_CACHE and (now - _ENTITY_CACHE_TIME) < _ENTITY_CACHE_TTL:
         return _ENTITY_CACHE[tenant_id]
     try:
-        rows = db.execute(
-            text(
-                "SELECT DISTINCT metadata_::jsonb->>'insured_name' AS entity_name "
-                "FROM chunk_vectors "
-                "WHERE tenant_id = :tenant "
-                "  AND metadata_::jsonb->>'insured_name' IS NOT NULL "
-                "  AND metadata_::jsonb->>'insured_name' != ''"
-            ),
-            {"tenant": tenant_id},
-        ).fetchall()
-        entities = [r[0] for r in rows if r[0]]
+        tags = db.query(Tag).filter(Tag.name.like("client:%")).all()
+        entities = [tag.name for tag in tags]
     except Exception:
         entities = []
     _ENTITY_CACHE[tenant_id] = entities
@@ -497,13 +486,20 @@ def _get_known_entities(db: Session, tenant_id: str = "default") -> list[str]:
 
 
 def detect_entity_in_query(query: str, db: Session, tenant_id: str = "default") -> str | None:
-    """Return the known entity name that appears in the query, or None."""
-    entities = _get_known_entities(db, tenant_id)
-    query_lower = query.lower()
-    matches = [e for e in entities if e.lower() in query_lower]
-    if not matches:
-        return None
-    return max(matches, key=len)  # Longest match = most specific
+    """Return the customer tag (client:*) detected in the query, or None.
+
+    Uses existing _get_tag_patterns() word-boundary regex matching.
+    Returns None if zero or multiple customer tags match (avoids wrong customer).
+    """
+    patterns = _get_tag_patterns(db)
+    matched = [
+        tag_name
+        for tag_name, namespace, pattern in patterns
+        if namespace == "client" and pattern.search(query)
+    ]
+    if len(matched) == 1:
+        return matched[0]  # e.g., "client:walnut-creek"
+    return None  # Zero or multiple matches: no entity isolation
 
 
 def extract_key_terms(text: str) -> set[str]:

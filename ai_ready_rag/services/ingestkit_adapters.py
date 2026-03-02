@@ -51,7 +51,6 @@ class VERagVectorStoreAdapter:
         tags: list[str],
         uploaded_by: str,
         tenant_id: str = "default",
-        entity_name: str | None = None,
     ) -> None:
         self._database_url = database_url
         self._embedding_dimension = embedding_dimension
@@ -61,11 +60,6 @@ class VERagVectorStoreAdapter:
         self._uploaded_by = uploaded_by
         self._tenant_id = tenant_id
         self._uploaded_at = datetime.now(UTC).isoformat()
-        self._entity_name = entity_name
-
-    def set_entity_name(self, name: str | None) -> None:
-        """Set the insured entity name for metadata injection into chunks."""
-        self._entity_name = name
 
     def ensure_collection(self, collection: str, vector_size: int) -> None:
         """No-op — chunk_vectors table is managed by Alembic migrations."""
@@ -125,8 +119,6 @@ class VERagVectorStoreAdapter:
                         metadata["ingestkit_columns"] = meta.columns
                     if hasattr(meta, "sheet_name"):
                         metadata["ingestkit_sheet_name"] = meta.sheet_name
-                    if self._entity_name:
-                        metadata["insured_name"] = self._entity_name
 
                     vector = chunk.vector  # pre-computed by VERagEmbeddingAdapter
                     if vector:

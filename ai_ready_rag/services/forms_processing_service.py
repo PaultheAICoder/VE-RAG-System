@@ -635,10 +635,6 @@ class FormsProcessingService:
                     extra={"document_id": document.id, "error": str(exc)},
                 )
 
-        # Inject insured entity name into adapter so all chunks carry insured_name metadata.
-        if hasattr(vector_store, "set_entity_name"):
-            vector_store.set_entity_name(insured_name or None)
-
         # Write all chunks (rechunked + synopsis) in a single upsert call.
         count = vector_store.upsert_chunks("", chunks_to_upsert)
 
