@@ -28,6 +28,11 @@ def upgrade() -> None:
     # Ensure pgvector extension is loaded
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
+    # Skip if table already exists (e.g. created by create_all on a fresh DB)
+    inspector = sa.inspect(bind)
+    if "chunk_vectors" in inspector.get_table_names():
+        return
+
     # chunk_vectors — stores embeddings for all document chunks
     op.create_table(
         "chunk_vectors",

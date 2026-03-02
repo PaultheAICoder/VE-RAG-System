@@ -213,6 +213,103 @@ class VERagVectorStoreAdapter:
         )
 
 
+class _SanitizingEmbeddingAdapter:
+    """Wraps an OllamaEmbedding with two safety behaviours:
+
+    1. None / empty strings → single space (Ollama rejects null input).
+    2. Texts that exceed the model's context window → split on newline
+       boundaries, embed each segment, return mean-pooled vector.
+       This preserves all content without truncation.
+
+    nomic-embed-text on Ollama has a ~4 096-char context window; we keep a
+    conservative margin of 3 800 characters per segment.
+    """
+
+    # Safe character limit per segment (conservative below the ~4096 limit)
+    _MAX_CHARS = 3800
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    # ------------------------------------------------------------------
+    # EmbeddingBackend protocol
+    # ------------------------------------------------------------------
+
+    def embed(self, texts, **kwargs) -> list[list[float]]:
+        # Tolerate bare-string callers (API contract violation in rechunk path)
+        if isinstance(texts, str):
+            texts = [texts]
+
+        # Phase 1 — expand each input into ≥1 segments
+        all_segments: list[str] = []
+        counts: list[int] = []
+
+        for t in texts:
+            if not isinstance(t, str) or not t.strip():
+                all_segments.append(" ")
+                counts.append(1)
+            else:
+                segs = self._split_text(t)
+                all_segments.extend(segs)
+                counts.append(len(segs))
+
+        # Phase 2 — single batch embed call (all segments together)
+        all_vectors = self._inner.embed(all_segments, **kwargs)
+
+        # Phase 3 — mean-pool segments back to one vector per original input
+        result: list[list[float]] = []
+        idx = 0
+        for count in counts:
+            vecs = all_vectors[idx : idx + count]
+            if count == 1:
+                result.append(vecs[0])
+            else:
+                dim = len(vecs[0])
+                mean = [sum(v[i] for v in vecs) / count for i in range(dim)]
+                result.append(mean)
+            idx += count
+
+        return result
+
+    def dimension(self) -> int:
+        return self._inner.dimension()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _split_text(self, text: str) -> list[str]:
+        """Split text on newline boundaries so each segment ≤ _MAX_CHARS.
+
+        Keeps logical lines together; never cuts mid-line.  A line longer
+        than _MAX_CHARS on its own is emitted as a single over-length
+        segment (the model will truncate internally, but that is better
+        than losing the line entirely).
+        """
+        if len(text) <= self._MAX_CHARS:
+            return [text]
+
+        lines = text.split("\n")
+        segments: list[str] = []
+        current: list[str] = []
+        current_len = 0
+
+        for line in lines:
+            line_len = len(line) + 1  # +1 for the newline separator
+            if current_len + line_len > self._MAX_CHARS and current:
+                segments.append("\n".join(current))
+                current = [line]
+                current_len = line_len
+            else:
+                current.append(line)
+                current_len += line_len
+
+        if current:
+            segments.append("\n".join(current))
+
+        return segments or [text[: self._MAX_CHARS]]
+
+
 def create_embedding_adapter(
     *,
     ollama_url: str,
@@ -222,18 +319,19 @@ def create_embedding_adapter(
 ):
     """Create an ingestkit OllamaEmbedding that uses VE-RAG's Ollama settings.
 
-    Returns an OllamaEmbedding instance (satisfies EmbeddingBackend protocol).
+    Returns an EmbeddingBackend-compatible instance wrapped with null sanitization.
     """
     from ingestkit_excel.backends.ollama import OllamaEmbedding
     from ingestkit_excel.config import ExcelProcessorConfig
 
     config = ExcelProcessorConfig(backend_timeout_seconds=backend_timeout)
-    return OllamaEmbedding(
+    inner = OllamaEmbedding(
         base_url=ollama_url,
         model=embedding_model,
         embedding_dimension=embedding_dimension,
         config=config,
     )
+    return _SanitizingEmbeddingAdapter(inner)
 
 
 def create_llm_adapter():
@@ -628,6 +726,45 @@ class VERagFormDBAdapter:
 
         return re.sub(r'"([^"]*)"', replace_identifier, sql)
 
+    @staticmethod
+    def _translate_insert_or_replace(sql: str) -> str:
+        """Translate SQLite INSERT OR REPLACE to PostgreSQL INSERT ... ON CONFLICT.
+
+        ingestkit_forms generates:
+            INSERT OR REPLACE INTO "table" (col1, col2, ...) VALUES (?, ?, ...)
+
+        PostgreSQL requires:
+            INSERT INTO "table" (col1, col2, ...) VALUES (%s, %s, ...)
+            ON CONFLICT (_form_id) DO UPDATE SET col1 = EXCLUDED.col1, ...
+
+        The conflict target is always _form_id (ingestkit spec §9.4).
+        """
+        import re
+
+        m = re.match(
+            r"INSERT\s+OR\s+REPLACE\s+INTO\s+(.+?)\s*\((.+?)\)\s*VALUES\s*\((.+?)\)\s*$",
+            sql.strip(),
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not m:
+            return sql  # Not a recognized INSERT OR REPLACE pattern — pass through
+
+        table_ref = m.group(1).strip()
+        cols_raw = m.group(2).strip()
+        vals_raw = m.group(3).strip()
+
+        # Parse column list (may contain quoted identifiers with commas inside)
+        cols = [c.strip() for c in cols_raw.split(",")]
+
+        # Build ON CONFLICT ... DO UPDATE SET for all non-PK columns
+        update_cols = [c for c in cols if c.strip('"') != "_form_id"]
+        set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+        return (
+            f"INSERT INTO {table_ref} ({cols_raw}) VALUES ({vals_raw}) "
+            f'ON CONFLICT ("_form_id") DO UPDATE SET {set_clause}'
+        )
+
     def execute_sql(self, sql: str, params: tuple | None = None) -> None:
         """Execute a SQL statement (CREATE TABLE, ALTER TABLE, INSERT).
 
@@ -638,9 +775,14 @@ class VERagFormDBAdapter:
         # Translate SQLite-style ? placeholders to psycopg2 %s
         if params:
             sql = sql.replace("?", "%s")
+        # Translate SQLite INSERT OR REPLACE to PostgreSQL ON CONFLICT upsert
+        sql = self._translate_insert_or_replace(sql)
         sql = self._sanitize_identifiers(sql)
         with self._connect() as conn:
             with conn.cursor() as cur:
+                # Set search_path so unqualified table names (from ingestkit_forms
+                # generated SQL) resolve to forms_data rather than public.
+                cur.execute(f'SET LOCAL search_path TO "{self._SCHEMA}", public')
                 cur.execute(sql, params or ())
             conn.commit()
 

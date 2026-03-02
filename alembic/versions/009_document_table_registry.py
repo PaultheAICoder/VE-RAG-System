@@ -19,6 +19,11 @@ def upgrade() -> None:
     if bind.dialect.name != "postgresql":
         return
 
+    # Skip if table already exists (e.g. created by create_all on a fresh DB)
+    inspector = sa.inspect(bind)
+    if "document_table_registry" in inspector.get_table_names():
+        return
+
     op.create_table(
         "document_table_registry",
         sa.Column("id", sa.String(), nullable=False),

@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # Error codes that trigger fallback to standard chunker
 _FALLBACK_ERROR_CODES = {"E_FORM_NO_MATCH", "E_FORM_UNSUPPORTED_FORMAT"}
 
+# Checkbox/binary field values that carry no semantic meaning and dilute embeddings
+_BINARY_FIELD_VALUES = {"0", "1", "\\"}
+
 # High-risk PII patterns for redaction (SSN, EIN, account numbers)
 _HIGH_RISK_PATTERNS = [
     r"\b\d{3}-\d{2}-\d{4}\b",  # SSN
@@ -54,12 +57,17 @@ ACORD_25_GROUPS: dict[str, list[str]] = {
         "Umbrella*",
     ],
     "Workers Comp": ["WorkersCompensation*", "Policy_WorkersCompensation*"],
-    "Other": [
+    # OtherPolicy rows capture D&O, Crime, and similar non-standard coverages.
+    # Keep them separate from CertificateHolder address noise.
+    "Other Coverages": [
         "OtherPolicy_*",
+    ],
+    "Certificate Holder": [
         "CertificateHolder_*",
         "CertificateOf*",
         "Description*",
         "Remarks*",
+        "Form_CompletionDate*",
     ],
 }
 
@@ -143,7 +151,10 @@ class FormsProcessingService:
             "embedding_model": settings.embedding_model or "nomic-embed-text",
             "embedding_dimension": settings.embedding_dimension,
             "default_collection": settings.qdrant_collection,
-            "tenant_id": settings.default_tenant_id,
+            # Use tenant_id=None so "default" global templates are visible to all tenants.
+            # Tenant-specific templates (if added later) will also match because
+            # list_templates with tenant_id=None returns all templates.
+            "tenant_id": None,
             "form_template_storage_path": settings.forms_template_storage_path,
             "redact_patterns": _HIGH_RISK_PATTERNS
             if settings.forms_redact_high_risk_fields
@@ -205,11 +216,13 @@ class FormsProcessingService:
         )
 
         # 4. Match (FormsProcessingService owns this decision)
+        # Pass tenant_id=None so "default" tenant templates are visible to all tenants.
+        # tenant-specific templates (if any) will also match because list_templates
+        # with tenant_id=None returns all templates regardless of their tenant_id.
         try:
             match = await asyncio.to_thread(
                 router.try_match,
                 str(file_path),
-                tenant_id=settings.default_tenant_id,
             )
         except Exception as e:
             logger.warning("forms.match.error", extra={"document_id": document.id, "error": str(e)})
@@ -349,8 +362,10 @@ class FormsProcessingService:
                 # Rechunking is best-effort — original chunks are preserved on failure
                 # (deletion now happens AFTER successful upsert of new chunks)
                 logger.warning(
-                    "forms.rechunk.failed",
-                    extra={"document_id": document.id, "error": str(e)},
+                    "forms.rechunk.failed: %s — %s",
+                    type(e).__name__,
+                    str(e),
+                    exc_info=True,
                 )
 
         # 9. Update document columns (last step — after all writes succeeded)
@@ -416,13 +431,40 @@ class FormsProcessingService:
                 return 0
             fields: dict[str, str] = {}
             for col, val in row.items():
-                if val is not None and str(val).strip():
-                    fields[col] = str(val).strip()
+                v = str(val).strip() if val is not None else ""
+                # Skip empty and binary checkbox values (0, 1, \) — they carry
+                # no semantic meaning and dilute chunk embeddings.
+                if v and v not in _BINARY_FIELD_VALUES:
+                    fields[col] = v
         finally:
             conn.close()
 
         if not fields:
             return 0
+
+        # 2.5 Claude structured extraction — reads raw PDF text and fills in fields
+        #     that the OCR overlay missed (insurer names, OtherPolicy rows, etc.).
+        #     Best-effort: failures are logged and skipped; OCR values are preserved.
+        if getattr(settings, "forms_claude_extraction_enabled", False):
+            _tmpl = document.forms_template_name or "Form"
+            _pdf_path = str(document.file_path or "")
+            _pdf_text = self._extract_pdf_text_for_forms(_pdf_path)
+            claude_fields = self._extract_structured_fields_via_claude(
+                fields, _pdf_text, _tmpl, settings
+            )
+            if claude_fields:
+                fields.update(claude_fields)
+                _form_id = fields.get("_form_id", "")
+                if _form_id:
+                    try:
+                        self._write_claude_extractions_to_db(
+                            form_db, table_name, _form_id, claude_fields
+                        )
+                    except Exception as _exc:
+                        logger.warning(
+                            "forms.claude_extract.db_write_failed",
+                            extra={"document_id": document.id, "error": str(_exc)},
+                        )
 
         # 3. Group fields by ACORD section
         groups: dict[str, dict[str, str]] = {}
@@ -433,10 +475,16 @@ class FormsProcessingService:
             if field_name.startswith("_"):
                 continue
 
+            # Strip XFA widget prefix (e.g. "F[0].P1[0].") so patterns like
+            # "GeneralLiability_*" match the semantic part of the field name.
+            import re as _re
+
+            base_name = _re.sub(r"^F\[.*?\]\.[^.]+\.", "", field_name)
+
             matched = False
             for group_name, patterns in ACORD_25_GROUPS.items():
                 for pattern in patterns:
-                    if fnmatch.fnmatch(field_name, pattern):
+                    if fnmatch.fnmatch(base_name, pattern):
                         if group_name not in groups:
                             groups[group_name] = {}
                         groups[group_name][field_name] = field_value
@@ -464,41 +512,76 @@ class FormsProcessingService:
         if insured_name:
             header += f"Insured: {insured_name}\n"
 
-        # 5. Format each group as natural text
+        # 5. Format each group as natural text, splitting on character boundaries
+        #    so no single chunk exceeds the embedding model's context window.
+        #    nomic-embed-text accepts ~4 096 chars; use 3 800 as a safe margin.
+        _MAX_CHUNK_CHARS = 3800
+
         chunk_texts: list[str] = []
         chunk_sections: list[str] = []
+
         for group_name, group_fields in groups.items():
             if not group_fields:
                 continue
 
-            lines = [f"{header}{group_name}\n"]
+            group_header = f"{header}{group_name}\n"
+            field_lines: list[str] = []
             for fname, fval in group_fields.items():
-                # Clean up field name: CamelCase_SubField -> readable label
-                label = self._field_name_to_label(fname)
-                lines.append(f"{label}: {fval}")
+                # Strip XFA prefix before generating human-readable label
+                import re as _re
 
-            chunk_text = "\n".join(lines)
-            chunk_texts.append(chunk_text)
-            chunk_sections.append(group_name)
+                clean_name = _re.sub(r"^F\[.*?\]\.[^.]+\.", "", fname)
+                label = self._field_name_to_label(clean_name)
+                field_lines.append(f"{label}: {fval}")
+
+            # Accumulate field lines into segments that stay under _MAX_CHUNK_CHARS
+            segments: list[list[str]] = []
+            current_lines: list[str] = []
+            current_len = len(group_header)
+
+            for line in field_lines:
+                line_len = len(line) + 1  # +1 for \n
+                if current_len + line_len > _MAX_CHUNK_CHARS and current_lines:
+                    segments.append(current_lines)
+                    current_lines = [line]
+                    current_len = len(group_header) + line_len
+                else:
+                    current_lines.append(line)
+                    current_len += line_len
+
+            if current_lines:
+                segments.append(current_lines)
+
+            total = len(segments)
+            for seg_idx, seg_lines in enumerate(segments):
+                section_label = (
+                    group_name if total == 1 else f"{group_name} ({seg_idx + 1}/{total})"
+                )
+                chunk_text = group_header + "\n".join(seg_lines)
+                chunk_texts.append(chunk_text)
+                chunk_sections.append(section_label)
 
         if not chunk_texts:
             return 0
 
         # 6. Embed each chunk via the ingestkit embedder
-        from ingestkit_core.models import ChunkMetadata, ChunkPayload
+        from ingestkit_core.models import BaseChunkMetadata, ChunkPayload
 
         chunks_to_upsert: list[ChunkPayload] = []
 
         for i, (text, section) in enumerate(zip(chunk_texts, chunk_sections, strict=True)):
-            embedding = embedder.embed(text)
+            embedding = embedder.embed([text])[0]
             chunk_id = f"{document.id}_form_{i}"
-            metadata = ChunkMetadata(
+            metadata = BaseChunkMetadata(
                 chunk_index=i,
                 section_title=section,
                 source_format="form_rechunk",
                 ingestion_method="rechunk",
                 parser_version="ve-rag-rechunk-1.0",
-                ingest_key=result.ingest_key or "",
+                # Use empty ingest_key so the post-upsert delete_by_filter
+                # (which targets result.ingest_key) only removes the original
+                # mega-chunk and never the rechunked replacements.
+                ingest_key="",
                 chunk_hash="",
                 source_uri=str(document.file_path or ""),
                 ingest_run_id="",
@@ -512,7 +595,44 @@ class FormsProcessingService:
                 )
             )
 
-        # 7. Write new chunks to pgvector via the adapter
+        # 7. Generate synopsis chunk BEFORE upsert so all chunks go in one call.
+        #    upsert_chunks() deletes existing document chunks first — a second call
+        #    would wipe the 8 rechunked chunks written by the first batch.
+        synopsis = self._generate_forms_synopsis(fields, template_name, settings)
+        if synopsis:
+            try:
+                synopsis_embedding = embedder.embed([synopsis])[0]
+                synopsis_id = f"{document.id}_form_synopsis"
+                synopsis_meta = BaseChunkMetadata(
+                    chunk_index=9999,
+                    section_title="Coverage Synopsis",
+                    source_format="form_synopsis",
+                    ingestion_method="rechunk",
+                    parser_version="ve-rag-rechunk-1.0",
+                    ingest_key="",
+                    chunk_hash="",
+                    source_uri=str(document.file_path or ""),
+                    ingest_run_id="",
+                )
+                chunks_to_upsert.append(
+                    ChunkPayload(
+                        id=synopsis_id,
+                        text=synopsis,
+                        vector=synopsis_embedding,
+                        metadata=synopsis_meta,
+                    )
+                )
+                logger.info(
+                    "forms.synopsis.generated",
+                    extra={"document_id": document.id, "length": len(synopsis)},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "forms.synopsis.embed_failed",
+                    extra={"document_id": document.id, "error": str(exc)},
+                )
+
+        # Write all chunks (rechunked + synopsis) in a single upsert call.
         count = vector_store.upsert_chunks("", chunks_to_upsert)
 
         # 8. Delete original mega-chunk AFTER successful upsert of new chunks.
@@ -550,6 +670,242 @@ class FormsProcessingService:
         # Replace underscores with spaces
         name = name.replace("_", " ")
         return name.strip()
+
+    @staticmethod
+    def _generate_forms_synopsis(
+        fields: dict[str, str],
+        template_name: str,
+        settings: Settings,
+    ) -> str | None:
+        """Generate a natural-language synopsis of form fields via Claude CLI.
+
+        Returns synopsis text, or None if Claude CLI is unavailable/disabled.
+        Only runs when CLAUDE_BACKEND=cli.
+        """
+        import os
+        import subprocess
+
+        claude_backend = getattr(settings, "claude_backend", "api")
+        if claude_backend != "cli":
+            return None
+
+        # Build condensed field text (skip metadata/internal columns)
+        lines = [f"{k}: {v}" for k, v in fields.items() if not k.startswith("_")]
+        field_text = "\n".join(lines[:200])  # cap at 200 fields
+
+        prompt = (
+            f"You are reviewing an ACORD 25 Certificate of Liability Insurance (COI) form: {template_name}.\n\n"
+            "FIELD NAMING CONVENTION:\n"
+            "- 'Insurer_FullName_A[0]' through '_F[0]' = insurer company names by letter.\n"
+            "- Standard coverage rows (GL, Auto, etc.) use the INSR LTR suffix to identify the insurer.\n"
+            "- OtherPolicy fields use a ROW INDEX suffix — NOT an insurer letter:\n"
+            "    OtherPolicy_*_A[0]  = first Other coverage row\n"
+            "    OtherPolicy_*_B[0]  = second Other coverage row\n"
+            "  All fields sharing the same row suffix belong to the SAME row:\n"
+            "    OtherPolicyDescription_A[0]   = coverage type for row A\n"
+            "    PolicyNumberIdentifier_A[0]   = policy number for row A\n"
+            "    OtherPolicy_InsurerLetterCode_A[0] = which insurer (A/B/C) covers row A\n"
+            "    CoverageLimitAmount_A[0]       = dollar limit for row A\n"
+            "  Apply the same logic for _B[0], _C[0] etc.\n\n"
+            "RULES:\n"
+            "1. For each OtherPolicy row, use OtherPolicyDescription_*[0] as the coverage name.\n"
+            "2. Match CoverageLimitAmount_*[0] to the row with the SAME suffix letter.\n"
+            "   Do NOT mix limits across rows (e.g. _B[0] limit belongs only to _B[0] row).\n"
+            "3. Ignore CoverageCode_*[0] fields — they contain OCR noise, not reliable data.\n"
+            "4. If a limit field is missing or contains only noise (e.g. 'overage Limit'), omit the limit rather than guessing.\n\n"
+            "Write a plain-text retrieval-optimized COI coverage summary (no markdown, no bullets, no bold).\n"
+            "Format:\n"
+            "1. First line: 'COI coverage limits for [insured name] — [form type], dated [date]:'\n"
+            "2. List each insurer: 'Insurer A: [company from Insurer_FullName_A[0], or Unknown if missing]'\n"
+            "3. For each coverage row, one sentence:\n"
+            "   Standard rows: 'Insurer [INSR LTR] ([company]), Policy [number], [eff] to [exp]: [type] — [limits].'\n"
+            "   OtherPolicy rows: 'Insurer [InsurerLetterCode] ([company]), Policy [PolicyNumberIdentifier], "
+            "[eff] to [exp]: [OtherPolicyDescription] — [CoverageLimitAmount] limit.' "
+            "(use the matching row-index suffix for every field in that sentence)\n"
+            "4. End with a one-sentence summary of total policies and insurers.\n\n"
+            "Include the words 'COI', 'coverage limits', and the insured name in the text.\n\n"
+            f"Form fields:\n{field_text}"
+        )
+
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        try:
+            proc = subprocess.run(
+                ["claude", "-p", prompt],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "forms.synopsis.cli_failed",
+                    extra={
+                        "returncode": proc.returncode,
+                        "stderr": proc.stderr.strip(),
+                    },
+                )
+                return None
+            synopsis = proc.stdout.strip()
+            return synopsis if synopsis else None
+        except Exception as exc:
+            logger.warning("forms.synopsis.error", extra={"error": str(exc)})
+            return None
+
+    @staticmethod
+    def _extract_pdf_text_for_forms(file_path: str, max_chars: int = 8000) -> str:
+        """Extract raw text from PDF using PyMuPDF for Claude enrichment context.
+
+        Used by _extract_structured_fields_via_claude to give Claude the full
+        document text rather than relying solely on OCR overlay field values.
+        """
+        try:
+            import fitz  # PyMuPDF
+
+            doc = fitz.open(file_path)
+            parts = [page.get_text() for page in doc]
+            doc.close()
+            return "\n".join(parts)[:max_chars]
+        except Exception as exc:
+            logger.debug("forms.pdf_text_extract.failed", extra={"error": str(exc)})
+            return ""
+
+    @staticmethod
+    def _extract_structured_fields_via_claude(
+        fields: dict[str, str],
+        pdf_text: str,
+        template_name: str,
+        settings: Settings,
+    ) -> dict[str, str] | None:
+        """Extract/correct ACORD 25 form fields via Claude CLI using raw PDF text.
+
+        The OCR overlay pipeline frequently misses insurer names and OtherPolicy
+        coverage rows due to bounding box alignment issues. This method gives
+        Claude the full raw PDF text and asks it to extract the specific fields
+        that matter most for COI retrieval quality.
+
+        Returns a dict of {xfa_field_name: value} using the same key format as
+        the existing fields dict, so values can be merged directly and written
+        back to the forms SQL table. Returns None if disabled or on failure.
+
+        Only runs when CLAUDE_BACKEND=cli and forms_claude_extraction_enabled=True.
+        """
+        import os
+        import subprocess
+
+        claude_backend = getattr(settings, "claude_backend", "api")
+        if claude_backend != "cli":
+            return None
+
+        # Build condensed OCR field text for context (skip metadata columns)
+        ocr_lines = [f"{k}: {v}" for k, v in fields.items() if not k.startswith("_")]
+        ocr_text = "\n".join(ocr_lines[:150])
+
+        prompt = (
+            f"You are extracting structured data from an ACORD 25 Certificate of Liability Insurance (COI) form: {template_name}\n\n"
+            "Return ONLY a JSON object — no explanation, no markdown, no preamble.\n\n"
+            "Extract values for the fields listed below from the raw document text.\n"
+            "Use the EXACT JSON key strings shown. Omit any key where you cannot find a reliable value.\n\n"
+            "TARGET FIELDS:\n"
+            '  "F[0].P1[0].Insurer_FullName_A[0]": full legal company name of Insurer A\n'
+            '  "F[0].P1[0].Insurer_FullName_B[0]": full legal company name of Insurer B\n'
+            '  "F[0].P1[0].Insurer_FullName_C[0]": full legal company name of Insurer C (if present)\n'
+            '  "F[0].P1[0].OtherPolicy_OtherPolicyDescription_A[0]": coverage type of first Other row (e.g. "Directors & Officers Liability")\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyNumberIdentifier_A[0]": policy number for first Other row\n'
+            '  "F[0].P1[0].OtherPolicy_InsurerLetterCode_A[0]": INSR LTR letter (A/B/C) for first Other row\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyEffectiveDate_A[0]": effective date for first Other row (MM/DD/YYYY)\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyExpirationDate_A[0]": expiration date for first Other row (MM/DD/YYYY)\n'
+            '  "F[0].P1[0].OtherPolicy_CoverageLimitAmount_A[0]": coverage limit for first Other row (digits and commas, e.g. "1,000,000")\n'
+            '  "F[0].P1[0].OtherPolicy_OtherPolicyDescription_B[0]": coverage type of second Other row\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyNumberIdentifier_B[0]": policy number for second Other row\n'
+            '  "F[0].P1[0].OtherPolicy_InsurerLetterCode_B[0]": INSR LTR letter for second Other row\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyEffectiveDate_B[0]": effective date for second Other row (MM/DD/YYYY)\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyExpirationDate_B[0]": expiration date for second Other row (MM/DD/YYYY)\n'
+            '  "F[0].P1[0].OtherPolicy_CoverageLimitAmount_B[0]": coverage limit for second Other row (digits and commas)\n\n'
+            "INSTRUCTIONS:\n"
+            "- Insurer names (Insurer A, B, C...) appear in the INSURERS section listing companies by letter.\n"
+            "- The INSR LTR column on each coverage row links it to an insurer letter (A, B, C...).\n"
+            "- Policy numbers are alphanumeric, e.g. 'HOA1000040673-01' or 'SFD00001993 01'.\n"
+            "- For limits, use digits and commas only (e.g. '250,000' not '$250,000').\n"
+            "- Return {} (empty JSON) if you cannot find any of these values.\n\n"
+            f"Existing OCR-extracted fields (may be incomplete or garbled):\n{ocr_text}\n\n"
+            f"Raw document text:\n{pdf_text}"
+        )
+
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        try:
+            proc = subprocess.run(
+                ["claude", "-p", prompt],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "forms.claude_extract.cli_failed",
+                    extra={"returncode": proc.returncode, "stderr": proc.stderr.strip()[:200]},
+                )
+                return None
+
+            raw = proc.stdout.strip()
+            # Strip accidental markdown fencing
+            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
+            raw = re.sub(r"\s*```\s*$", "", raw, flags=re.MULTILINE)
+
+            try:
+                extracted = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "forms.claude_extract.invalid_json",
+                    extra={"raw_preview": raw[:300]},
+                )
+                return None
+
+            if not isinstance(extracted, dict) or not extracted:
+                return None
+
+            # Keep only non-empty string values
+            result = {k: str(v).strip() for k, v in extracted.items() if v and str(v).strip()}
+            logger.info(
+                "forms.claude_extract.success",
+                extra={"fields_extracted": len(result)},
+            )
+            return result or None
+
+        except Exception as exc:
+            logger.warning("forms.claude_extract.error", extra={"error": str(exc)})
+            return None
+
+    @staticmethod
+    def _write_claude_extractions_to_db(
+        form_db,
+        table_name: str,
+        form_id: str,
+        extracted: dict[str, str],
+    ) -> None:
+        """UPDATE forms SQL table row with Claude-extracted field values.
+
+        Uses a parameterised UPDATE targeting _form_id. Column names are
+        truncated to 63 chars to match the sanitiser applied by ingestkit-forms
+        when the table was created (PostgreSQL max identifier length).
+        """
+        if not extracted or not form_id:
+            return
+
+        def _col(name: str) -> str:
+            return name[:63]
+
+        set_parts = [f'"{_col(col)}" = %s' for col in extracted]
+        schema = getattr(form_db, "_SCHEMA", "forms_data")
+        sql = f'UPDATE "{schema}"."{table_name}" SET {", ".join(set_parts)} WHERE "_form_id" = %s'
+        params = tuple(extracted.values()) + (form_id,)
+        form_db.execute_sql(sql, params)
+        logger.info(
+            "forms.claude_extract.db_updated",
+            extra={"form_id": form_id, "fields_updated": len(extracted)},
+        )
 
     async def _compensate(
         self,
