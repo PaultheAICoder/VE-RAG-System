@@ -263,7 +263,7 @@ class PgVectorService:
                         "ORDER BY vector_embedding <=> CAST(:emb AS vector) "
                         "LIMIT :limit"
                     ),
-                    {"emb": embedding_str, "tenant": tenant_id, "limit": limit * 3},
+                    {"emb": embedding_str, "tenant": tenant_id, "limit": limit * 6},
                 ).fetchall()
             except Exception:
                 # Fall back to JSON embedding comparison (no pgvector)
@@ -272,7 +272,7 @@ class PgVectorService:
                         "SELECT id, document_id, chunk_index, chunk_text, metadata_, 0.5 AS score "
                         "FROM chunk_vectors WHERE tenant_id = :tenant LIMIT :limit"
                     ),
-                    {"tenant": tenant_id, "limit": limit * 3},
+                    {"tenant": tenant_id, "limit": limit * 6},
                 ).fetchall()
 
         for row in rows:
