@@ -197,7 +197,7 @@ class ProcessingService:
                     # ingestkit-forms handled it (success or failure)
                     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
                     if result.success:
-                        await self._run_keyword_rules_from_vectors(document, db)
+                        await self._run_post_indexing_pipeline(document, db)
                         document.status = "ready"
                         document.chunk_count = result.chunk_count
                         document.processing_time_ms = processing_time_ms
@@ -229,7 +229,7 @@ class ProcessingService:
                     # ingestkit-image handled it (success or failure), no fallback
                     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
                     if result.success:
-                        await self._run_keyword_rules_from_vectors(document, db)
+                        await self._run_post_indexing_pipeline(document, db)
                         document.status = "ready"
                         document.chunk_count = result.chunk_count
                         document.processing_time_ms = processing_time_ms
@@ -255,7 +255,7 @@ class ProcessingService:
                     # ingestkit-email handled it (success or failure), no fallback
                     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
                     if result.success:
-                        await self._run_keyword_rules_from_vectors(document, db)
+                        await self._run_post_indexing_pipeline(document, db)
                         document.status = "ready"
                         document.chunk_count = result.chunk_count
                         document.processing_time_ms = processing_time_ms
@@ -280,7 +280,7 @@ class ProcessingService:
                     # ingestkit handled it (success or failure)
                     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
                     if result.success:
-                        await self._run_keyword_rules_from_vectors(document, db)
+                        await self._run_post_indexing_pipeline(document, db)
                         document.status = "ready"
                         document.chunk_count = result.chunk_count
                         document.processing_time_ms = processing_time_ms
@@ -317,7 +317,7 @@ class ProcessingService:
                 if not should_fallback and result is not None:
                     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
                     if result.success:
-                        await self._run_keyword_rules_from_vectors(document, db)
+                        await self._run_post_indexing_pipeline(document, db)
                         document.status = "ready"
                         document.chunk_count = result.chunk_count
                         document.processing_time_ms = processing_time_ms
@@ -902,20 +902,21 @@ class ProcessingService:
         # Flush to ensure tag changes are visible before vector indexing
         db.flush()
 
-    async def _run_keyword_rules_from_vectors(
+    async def _run_post_indexing_pipeline(
         self,
         document: Document,
         db: Session,
     ) -> None:
-        """Run keyword rules using chunks already stored in chunk_vectors.
+        """Post-indexing pipeline for ingestkit paths: keyword rules → enrichment.
 
-        Called by ingestkit processing paths (forms, image, email, xlsx, csv)
-        which index chunks before returning. Reads the indexed text back and
-        delegates to _run_keyword_rules for the actual evaluation.
+        Reads chunks back from chunk_vectors (already indexed by ingestkit
+        adapters), then runs keyword rules and Claude enrichment in sequence.
+        Errors are logged but never fail document processing.
         """
         try:
             from sqlalchemy import text as sa_text
 
+            # 1. Read chunks from DB
             rows = db.execute(
                 sa_text(
                     "SELECT chunk_text FROM chunk_vectors "
@@ -923,45 +924,106 @@ class ProcessingService:
                 ),
                 {"did": document.id},
             ).fetchall()
-            if rows:
-                chunks = [
-                    ChunkInfo(
-                        text=r[0],
-                        chunk_index=i,
-                        page_number=None,
-                        section=None,
-                        token_count=len(r[0]) // 4,
-                    )
-                    for i, r in enumerate(rows)
-                ]
-                tags_before = {t.name for t in document.tags}
-                await self._run_keyword_rules(document, chunks, db)
-                tags_after = {t.name for t in document.tags}
+            if not rows:
+                return
 
-                # If keyword rules changed tags, sync to vector metadata
-                if tags_before != tags_after:
-                    new_tags = [t.name for t in document.tags]
-                    vec_rows = db.execute(
-                        sa_text("SELECT id, metadata_ FROM chunk_vectors WHERE document_id = :did"),
-                        {"did": document.id},
-                    ).fetchall()
-                    for vr in vec_rows:
-                        meta = json.loads(vr[1] or "{}")
-                        meta["tags"] = new_tags
-                        db.execute(
-                            sa_text("UPDATE chunk_vectors SET metadata_ = :meta WHERE id = :vid"),
-                            {"meta": json.dumps(meta), "vid": vr[0]},
-                        )
-                    db.flush()
-                    logger.info(
-                        "keyword_rules.vector_tags_synced",
-                        extra={"document_id": document.id, "tags": new_tags},
+            chunks = [
+                ChunkInfo(
+                    text=r[0],
+                    chunk_index=i,
+                    page_number=None,
+                    section=None,
+                    token_count=len(r[0]) // 4,
+                )
+                for i, r in enumerate(rows)
+            ]
+
+            # 2. Keyword rules
+            tags_before = {t.name for t in document.tags}
+            await self._run_keyword_rules(document, chunks, db)
+            tags_after = {t.name for t in document.tags}
+
+            # 3. Sync tag changes to vector metadata
+            if tags_before != tags_after:
+                new_tags = [t.name for t in document.tags]
+                vec_rows = db.execute(
+                    sa_text("SELECT id, metadata_ FROM chunk_vectors WHERE document_id = :did"),
+                    {"did": document.id},
+                ).fetchall()
+                for vr in vec_rows:
+                    meta = json.loads(vr[1] or "{}")
+                    meta["tags"] = new_tags
+                    db.execute(
+                        sa_text("UPDATE chunk_vectors SET metadata_ = :meta WHERE id = :vid"),
+                        {"meta": json.dumps(meta), "vid": vr[0]},
                     )
+                db.flush()
+                logger.info(
+                    "keyword_rules.vector_tags_synced",
+                    extra={"document_id": document.id, "tags": new_tags},
+                )
+
+            # 4. Claude enrichment (no-op if service is None or disabled)
+            if self._enrichment_service is not None:
+                tag_names = [t.name for t in document.tags]
+                document_text = "\n\n".join(c.text for c in chunks)
+                chunk_dicts_for_enrichment = [
+                    {
+                        "text": c.text,
+                        "chunk_index": c.chunk_index,
+                        "page_number": c.page_number,
+                        "section": c.section,
+                    }
+                    for c in chunks
+                ]
+                try:
+                    await self._enrichment_service.enrich_document(
+                        document_id=document.id,
+                        document_text=document_text,
+                        chunks=chunk_dicts_for_enrichment,
+                    )
+                    from ai_ready_rag.db.models.enrichment import EnrichmentSynopsis
+
+                    synopsis = (
+                        db.query(EnrichmentSynopsis).filter_by(document_id=document.id).first()
+                    )
+                    if synopsis:
+                        document.synopsis_id = synopsis.id
+                        synopsis_chunk_text = _synopsis_to_chunk_text(
+                            synopsis.synopsis_text,
+                            document.original_filename or document.filename,
+                        )
+                        try:
+                            await self.vector_service.add_synopsis_chunk(
+                                document_id=document.id,
+                                document_name=document.original_filename or document.filename,
+                                synopsis_text=synopsis_chunk_text,
+                                tags=tag_names,
+                                uploaded_by=document.uploaded_by,
+                            )
+                            logger.info(
+                                "synopsis_chunk_indexed",
+                                extra={"document_id": document.id},
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "synopsis_chunk_index_failed",
+                                extra={"document_id": document.id, "error": str(exc)},
+                            )
+                    document.enrichment_status = "completed"
+                except Exception as exc:
+                    logger.warning(
+                        "enrichment_failed",
+                        extra={"document_id": document.id, "error": str(exc)},
+                    )
+                    document.enrichment_status = "failed"
+                db.flush()
         except Exception as e:
             logger.warning(
-                "Keyword rules failed for %s: %s",
+                "Post-indexing pipeline failed for %s: %s",
                 document.id,
                 e,
+                exc_info=True,
             )
 
     async def _run_keyword_rules(
