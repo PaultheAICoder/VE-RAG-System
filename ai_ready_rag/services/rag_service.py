@@ -1386,6 +1386,12 @@ class RAGService:
         result: list[SearchResult] = []
 
         for chunk in chunks:
+            # Synopsis chunks (chunk_index=9999) always pass through — they contain
+            # Claude-extracted facts (limits, entities, dates) that are critical for
+            # answering questions and must not be squeezed out by per-doc capping.
+            if chunk.chunk_index == 9999:
+                result.append(chunk)
+                continue
             count = doc_counts.get(chunk.document_id, 0)
             if count < max_per_doc:
                 result.append(chunk)
