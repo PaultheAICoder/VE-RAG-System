@@ -162,7 +162,7 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # Database
-    database_url: str = "sqlite:///./data/ai_ready_rag.db"
+    database_url: str = "postgresql://vaultiq:devpassword@localhost:5432/vaultiq"
     db_pool_size: int | None = None  # None = use profile default
     db_pool_max_overflow: int | None = None  # None = use profile default
     db_pool_timeout: int | None = None  # None = use profile default
@@ -428,7 +428,7 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------------------
     # Database / Vector backend — Issue #374
     # ---------------------------------------------------------------------------
-    database_backend: Literal["sqlite", "postgresql"] | None = None  # None = use profile default
+    database_backend: Literal["postgresql"] | None = None  # None = use profile default
     pgvector_dimension: int = 768
     pgvector_index_type: str = "ivfflat"
     pgvector_lists: int = 100
