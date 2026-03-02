@@ -628,6 +628,45 @@ class VERagFormDBAdapter:
 
         return re.sub(r'"([^"]*)"', replace_identifier, sql)
 
+    @staticmethod
+    def _translate_insert_or_replace(sql: str) -> str:
+        """Translate SQLite INSERT OR REPLACE to PostgreSQL INSERT ... ON CONFLICT.
+
+        ingestkit_forms generates:
+            INSERT OR REPLACE INTO "table" (col1, col2, ...) VALUES (?, ?, ...)
+
+        PostgreSQL requires:
+            INSERT INTO "table" (col1, col2, ...) VALUES (%s, %s, ...)
+            ON CONFLICT (_form_id) DO UPDATE SET col1 = EXCLUDED.col1, ...
+
+        The conflict target is always _form_id (ingestkit spec §9.4).
+        """
+        import re
+
+        m = re.match(
+            r"INSERT\s+OR\s+REPLACE\s+INTO\s+(.+?)\s*\((.+?)\)\s*VALUES\s*\((.+?)\)\s*$",
+            sql.strip(),
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not m:
+            return sql  # Not a recognized INSERT OR REPLACE pattern — pass through
+
+        table_ref = m.group(1).strip()
+        cols_raw = m.group(2).strip()
+        vals_raw = m.group(3).strip()
+
+        # Parse column list (may contain quoted identifiers with commas inside)
+        cols = [c.strip() for c in cols_raw.split(",")]
+
+        # Build ON CONFLICT ... DO UPDATE SET for all non-PK columns
+        update_cols = [c for c in cols if c.strip('"') != "_form_id"]
+        set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+
+        return (
+            f"INSERT INTO {table_ref} ({cols_raw}) VALUES ({vals_raw}) "
+            f'ON CONFLICT ("_form_id") DO UPDATE SET {set_clause}'
+        )
+
     def execute_sql(self, sql: str, params: tuple | None = None) -> None:
         """Execute a SQL statement (CREATE TABLE, ALTER TABLE, INSERT).
 
@@ -638,6 +677,8 @@ class VERagFormDBAdapter:
         # Translate SQLite-style ? placeholders to psycopg2 %s
         if params:
             sql = sql.replace("?", "%s")
+        # Translate SQLite INSERT OR REPLACE to PostgreSQL ON CONFLICT upsert
+        sql = self._translate_insert_or_replace(sql)
         sql = self._sanitize_identifiers(sql)
         with self._connect() as conn:
             with conn.cursor() as cur:
