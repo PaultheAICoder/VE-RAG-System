@@ -3,9 +3,10 @@
 import hashlib
 import json
 import logging
+import re
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -53,6 +54,10 @@ class CacheEntry:
     access_count: int
     document_ids: list[str]
 
+    # Discriminating tokens extracted from query_text (derived, not persisted separately)
+    # Used by Layer 2 semantic cache to prevent cross-entity hits.
+    query_tokens: frozenset[str] = field(default_factory=frozenset)
+
 
 @dataclass
 class CacheStats:
@@ -90,17 +95,39 @@ class MemoryCache:
             entry.access_count += 1
             return entry
 
-    def get_semantic(self, embedding: list[float], threshold: float) -> CacheEntry | None:
+    def get_semantic(
+        self,
+        embedding: list[float],
+        threshold: float,
+        query_tokens: frozenset[str] | None = None,
+    ) -> CacheEntry | None:
         """Get entry by semantic similarity (Layer 2).
 
-        Scans all cached embeddings and returns the best match
-        if similarity > threshold.
+        Scans all cached embeddings and returns the best match if
+        similarity > threshold AND discriminating tokens match.
+
+        query_tokens: proper nouns, years, IDs extracted from the new query.
+        A cached entry is only eligible when its query_tokens == the new query's
+        tokens.  If the new query has NO discriminating tokens (generic question),
+        all entries are eligible.
+
+        This prevents cross-entity hits across any vertical:
+          - Insurance: "COI limits for Cervantes" vs "COI limits for Walnut Creek"
+          - Legal:     "contract terms for Smith Corp" vs "… for Acme LLC"
+          - Medical:   "records for John Doe" vs "… for Jane Smith"
         """
         with self._lock:
             best_entry: CacheEntry | None = None
             best_similarity = threshold  # Must exceed threshold
 
             for entry in self.cache.values():
+                # Token isolation: if the new query names specific entities,
+                # only match cached entries with identical discriminating tokens.
+                if (
+                    query_tokens and entry.query_tokens != query_tokens
+                ):  # Non-empty → query is entity-specific
+                    continue
+
                 similarity = cosine_similarity(embedding, entry.query_embedding)
                 if similarity > best_similarity:
                     best_similarity = similarity
@@ -111,7 +138,10 @@ class MemoryCache:
                 self.cache.move_to_end(best_entry.query_hash)
                 best_entry.last_accessed_at = datetime.utcnow()
                 best_entry.access_count += 1
-                logger.debug(f"Semantic cache hit: similarity={best_similarity:.3f}")
+                logger.debug(
+                    f"Semantic cache hit: similarity={best_similarity:.3f} "
+                    f"tokens={best_entry.query_tokens}"
+                )
 
             return best_entry
 
@@ -234,6 +264,8 @@ class CacheService:
             last_accessed_at=row.last_accessed_at,
             access_count=row.access_count,
             document_ids=json.loads(row.document_ids),
+            # Derived from query_text — no DB column needed
+            query_tokens=self._extract_discriminating_tokens(row.query_text),
         )
 
     @staticmethod
@@ -241,6 +273,106 @@ class CacheService:
         """Generate SHA256 hash of normalized query."""
         normalized = query.lower().strip()
         return hashlib.sha256(normalized.encode()).hexdigest()
+
+    @staticmethod
+    def _extract_discriminating_tokens(query: str) -> frozenset[str]:
+        """Extract entity-specific tokens that make a query non-generic.
+
+        Two queries that differ only in discriminating tokens must NOT share a
+        semantic cache entry, regardless of how similar their embeddings are.
+
+        Extracted as discriminating:
+          - 4-digit years (1990-2099)
+          - Alphanumeric IDs / codes (mixed letters+digits, e.g. HOA1000040673)
+          - Capitalized interior words (not the first word, not common question words)
+
+        Not extracted (generic structural words):
+          - First word of the query (often "What", "List", "Show", etc.)
+          - Common question / instruction words in the stop list
+
+        This is vertical-agnostic: works for client names in insurance, case names
+        in legal, patient names in medical, property addresses in real estate, etc.
+        """
+        _STOP = {
+            "The",
+            "A",
+            "An",
+            "In",
+            "On",
+            "At",
+            "For",
+            "Of",
+            "To",
+            "And",
+            "Or",
+            "But",
+            "With",
+            "From",
+            "By",
+            "Is",
+            "Are",
+            "Was",
+            "Were",
+            "Be",
+            "Been",
+            "What",
+            "Which",
+            "Who",
+            "Where",
+            "When",
+            "How",
+            "Why",
+            "Does",
+            "Do",
+            "Can",
+            "Could",
+            "Would",
+            "Should",
+            "Will",
+            "May",
+            "Might",
+            "Have",
+            "Please",
+            "List",
+            "Show",
+            "Get",
+            "Find",
+            "Give",
+            "Tell",
+            "Provide",
+            "All",
+            "Any",
+            "Each",
+            "Every",
+            "This",
+            "That",
+            "These",
+            "Those",
+        }
+
+        tokens: set[str] = set()
+        words = query.split()
+
+        for i, word in enumerate(words):
+            clean = re.sub(r"[^\w]", "", word)
+            if not clean:
+                continue
+
+            # 4-digit year
+            if re.fullmatch(r"(19|20)\d{2}", clean):
+                tokens.add(clean)
+                continue
+
+            # Alphanumeric ID / policy number (has both letters and digits)
+            if re.search(r"\d", clean) and re.search(r"[a-zA-Z]", clean):
+                tokens.add(clean)
+                continue
+
+            # Capitalized interior word (not sentence-start, not a stop word)
+            if i > 0 and clean[0].isupper() and clean not in _STOP:
+                tokens.add(clean)
+
+        return frozenset(tokens)
 
     # ----- Settings Properties -----
 
@@ -329,8 +461,14 @@ class CacheService:
 
         # Layer 2: Semantic similarity lookup (if embedding provided)
         if query_embedding is not None:
-            logger.debug(f"[CACHE] Trying Layer 2 (semantic), threshold={self.semantic_threshold}")
-            entry = self.memory.get_semantic(query_embedding, self.semantic_threshold)
+            q_tokens = self._extract_discriminating_tokens(query)
+            logger.debug(
+                f"[CACHE] Trying Layer 2 (semantic), threshold={self.semantic_threshold}, "
+                f"tokens={q_tokens!r}"
+            )
+            entry = self.memory.get_semantic(
+                query_embedding, self.semantic_threshold, query_tokens=q_tokens
+            )
             if entry:
                 logger.debug("[CACHE] Layer 2 HIT (semantic)")
                 access_ok = await self.verify_access(entry, user_tags)
@@ -452,6 +590,7 @@ class CacheService:
         query: str,
         embedding: list[float],
         response: Any,  # RAGResponse - avoid import
+        user_tags: list[str] | None = None,
     ) -> None:
         """Store response in cache (memory + SQLite)."""
         if not self.enabled:
@@ -503,6 +642,7 @@ class CacheService:
             last_accessed_at=datetime.utcnow(),
             access_count=1,
             document_ids=doc_ids,
+            query_tokens=self._extract_discriminating_tokens(query),
         )
 
         # Store in memory
@@ -604,6 +744,7 @@ class CacheService:
             last_accessed_at=datetime.utcnow(),
             access_count=1,
             document_ids=["admin_seeded"],
+            query_tokens=self._extract_discriminating_tokens(query),
         )
 
         # Store in memory
