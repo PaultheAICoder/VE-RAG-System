@@ -166,7 +166,8 @@ class TestResolveConflicts:
         for c in conflicts:
             assert "namespace" in c
             assert "path_value" in c
-            assert "llm_value" in c
+            assert "override_value" in c
+            assert "override_source" in c
             assert "winner" in c
             assert "reason" in c
 

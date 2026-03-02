@@ -848,7 +848,7 @@ class ProcessingService:
         # Add conflict-losing LLM tags to discarded
         for conflict in conflicts:
             if conflict["winner"] == "path":
-                discarded_names.append(f"{conflict['namespace']}:{conflict['llm_value']}")
+                discarded_names.append(f"{conflict['namespace']}:{conflict['override_value']}")
         suggested_names = [at.tag_name for at in result.suggested]
 
         # Persist suggestions as TagSuggestion rows for approval workflow
