@@ -767,8 +767,11 @@ async def bulk_reprocess_documents(
             skipped_ids.append(doc_id)
             continue
 
-        # Skip if already queued or actively processing (to avoid double-queueing)
-        if document.status in ("processing", "pending"):
+        # Skip only if actively processing — the worker holds the job and must finish.
+        # Pending docs may be orphaned (worker stalled) so re-enqueueing is intentional:
+        # process_document skips docs already 'ready', and delete_existing=False
+        # for pending docs (no chunks yet, nothing to delete).
+        if document.status == "processing":
             logger.debug(
                 "bulk_reprocess_skip",
                 extra={"document_id": doc_id, "reason": "already_processing"},
