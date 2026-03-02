@@ -239,6 +239,7 @@ class QueryIntent:
     forms_eligible: bool = False  # True when intent matches structured form data
     intent_labels: list[str] | None = None  # All matched labels e.g. ["active_policy", "gl"]
     entity_name: str | None = None  # Customer tag for entity isolation e.g. "client:walnut-creek"
+    is_cross_entity: bool = False  # True when query spans all customers (aggregate/list queries)
 
 
 # Insurance domain intent patterns: (compiled_regex, preferred_tags, label)
@@ -360,6 +361,18 @@ INTENT_PATTERNS: list[tuple[re.Pattern, list[str], str]] = [
 ]
 
 
+CROSS_ENTITY_PATTERNS = [
+    re.compile(r"\ball\s+customers?\b", re.IGNORECASE),
+    re.compile(r"\ball\s+clients?\b", re.IGNORECASE),
+    re.compile(r"\bevery\s+customer\b", re.IGNORECASE),
+    re.compile(r"\beach\s+customer\b", re.IGNORECASE),
+    re.compile(r"\blist\s+all\b", re.IGNORECASE),
+    re.compile(r"\bnext\s+\d+\s+expir", re.IGNORECASE),
+    re.compile(r"\bexpiring\s+(soon|this|next)\b", re.IGNORECASE),
+    re.compile(r"\bupcoming\s+expir", re.IGNORECASE),
+]
+
+
 def detect_query_intent(query: str) -> QueryIntent:
     """Detect intent from user query using regex patterns.
 
@@ -388,12 +401,19 @@ def detect_query_intent(query: str) -> QueryIntent:
 
     forms_eligible = any(label in FORMS_ELIGIBLE_INTENTS for label in labels)
 
+    is_cross_entity = any(p.search(query) for p in CROSS_ENTITY_PATTERNS)
+    if is_cross_entity and re.search(
+        r"\b(coi|certificate|certif|expir|policy|policies)\b", query, re.IGNORECASE
+    ):
+        forms_eligible = True
+
     return QueryIntent(
         preferred_tags=preferred_tags,
         intent_label=labels[0] if labels else None,
         confidence=min(1.0, len(labels) * 0.5) if labels else 0.0,
         forms_eligible=forms_eligible,
         intent_labels=labels if labels else None,
+        is_cross_entity=is_cross_entity,
     )
 
 
@@ -512,6 +532,29 @@ def extract_key_terms(text: str) -> set[str]:
     """
     words = re.findall(r"\b[a-z0-9]+\b", text.lower())
     return {w for w in words if w not in STOPWORDS and len(w) >= 3}
+
+
+def _is_expiring_query(query: str) -> bool:
+    """Return True if the query is asking about expiring/upcoming policies."""
+    expiry_patterns = [
+        re.compile(r"\bexpir", re.IGNORECASE),
+        re.compile(r"\brenew", re.IGNORECASE),
+        re.compile(r"\bupcoming\b", re.IGNORECASE),
+    ]
+    return any(p.search(query) for p in expiry_patterns)
+
+
+def _extract_limit_from_query(query: str, default: int = 10) -> int:
+    """Extract a numeric limit from a query like 'next 5 expiring'. Returns default if not found."""
+    m = re.search(r"\bnext\s+(\d+)\b", query, re.IGNORECASE)
+    if m:
+        val = int(m.group(1))
+        return min(val, 50)  # cap at 50
+    m = re.search(r"\b(\d+)\s+expir", query, re.IGNORECASE)
+    if m:
+        val = int(m.group(1))
+        return min(val, 50)
+    return default
 
 
 def expand_query(question: str, db: Session | None = None) -> list[str]:
@@ -1299,6 +1342,11 @@ class RAGService:
                 intent.entity_name = entity_name
                 logger.info(f"Entity detected in query: {entity_name}")
 
+            # Cross-entity detection: aggregate queries span all customers, disable entity filter
+            if intent.is_cross_entity and intent.entity_name:
+                intent.entity_name = None  # cross-entity overrides single-entity isolation
+                logger.info("Cross-entity query: entity isolation suppressed")
+
             if self.enable_query_expansion:
                 queries = expand_query(query, db=db_session)
                 logger.debug(f"Query expansion: {len(queries)} variants")
@@ -1306,13 +1354,39 @@ class RAGService:
                 queries = [query]
 
             # 1.5 Query forms DB for structured context
-            if intent.forms_eligible and self._forms_query_service:
+            _forms_cap = (
+                min(20, max_chunks * 2) if intent.is_cross_entity else min(4, max_chunks // 2)
+            )
+            if intent.is_cross_entity and self._forms_query_service:
+                try:
+                    if _is_expiring_query(query):
+                        limit = _extract_limit_from_query(query)
+                        forms_results = self._forms_query_service.query_forms_expiring(
+                            intent=intent,
+                            user_tags=user_tags,
+                            db=db_session,
+                            n=limit,
+                        )
+                    else:
+                        forms_results = self._forms_query_service.query_forms_aggregate(
+                            intent=intent,
+                            user_tags=user_tags,
+                            db=db_session,
+                            max_docs=_forms_cap,
+                        )
+                    if forms_results:
+                        logger.info(f"Cross-entity forms query: {len(forms_results)} results")
+                except Exception as e:
+                    logger.warning(
+                        f"Cross-entity forms query failed, continuing with vector only: {e}"
+                    )
+            elif intent.forms_eligible and self._forms_query_service:
                 try:
                     forms_results = self._forms_query_service.query_forms(
                         intent=intent,
                         user_tags=user_tags,
                         db=db_session,
-                        max_results=min(4, max_chunks // 2),
+                        max_results=_forms_cap,
                     )
                     if forms_results:
                         logger.info(

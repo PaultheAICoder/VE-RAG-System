@@ -284,6 +284,192 @@ class FormsQueryService:
 
         return result
 
+    @staticmethod
+    def _parse_acord_date(date_str: str):
+        """Parse ACORD form date string to datetime. Returns None on failure.
+
+        Supports MM/DD/YYYY, MM/DD/YY, and YYYY-MM-DD formats.
+        """
+        from datetime import datetime
+
+        if not date_str or not date_str.strip():
+            return None
+        for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(date_str.strip(), fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _extract_coi_summary(self, grouped_fields: dict) -> dict:
+        """Extract COI summary fields using substring label matching.
+
+        Returns dict with keys: insured, exp_date, insurers, policy_numbers.
+        Uses substring matching because ACORD 25 labels vary by row suffix (A, B, C...).
+        """
+        result: dict = {"insured": "", "exp_date": "", "insurers": [], "policy_numbers": []}
+
+        # Named insured — look in Named Insured group first
+        for _label, value in grouped_fields.get("Named Insured", []):
+            if value and not result["insured"]:
+                result["insured"] = value.strip()
+                break
+
+        # Scan all groups for expiration dates, insurers, policy numbers
+        for group_fields in grouped_fields.values():
+            for label, value in group_fields:
+                if not value or not value.strip():
+                    continue
+                label_lower = label.lower()
+                if ("expir" in label_lower or "exp date" in label_lower) and not result["exp_date"]:
+                    result["exp_date"] = value.strip()
+                elif "insurer" in label_lower or "carrier" in label_lower:
+                    if value.strip() and value.strip() not in result["insurers"]:
+                        result["insurers"].append(value.strip())
+                elif (
+                    "policy" in label_lower
+                    and "number" in label_lower
+                    and value.strip()
+                    and value.strip() not in result["policy_numbers"]
+                ):
+                    result["policy_numbers"].append(value.strip())
+
+        return result
+
+    def query_forms_aggregate(
+        self,
+        intent,
+        user_tags: list[str] | None,
+        db: Session,
+        max_docs: int = 20,
+    ) -> list[SearchResult]:
+        """Return COI summary for ALL accessible customers (cross-entity aggregate query).
+
+        Iterates all accessible ACORD 25 documents, returns one SearchResult per
+        unique insured name. Returns [] for SQLite (dev/test guard).
+        """
+        if not self._database_url or "sqlite" in self._database_url:
+            return []
+
+        documents = self._get_accessible_form_documents(user_tags, db)
+        documents = self._sort_by_recency(documents)
+        results: list[SearchResult] = []
+        seen_insureds: set[str] = set()
+        chunk_index = 0
+
+        for doc in documents[:max_docs]:
+            try:
+                table_names = json.loads(doc.forms_db_table_names)
+                if not table_names or not doc.forms_ingest_key:
+                    continue
+                grouped_fields = self._read_form_fields(table_names[0], doc.forms_ingest_key, None)
+                summary = self._extract_coi_summary(grouped_fields)
+                insured = summary["insured"]
+                if insured in seen_insureds:
+                    continue
+                seen_insureds.add(insured)
+
+                insurers = ", ".join(summary["insurers"][:3]) if summary["insurers"] else "N/A"
+                policies = (
+                    ", ".join(summary["policy_numbers"][:3]) if summary["policy_numbers"] else "N/A"
+                )
+                exp_date = summary["exp_date"] or "N/A"
+
+                text = (
+                    f"ACORD 25 - Certificate of Liability Insurance\n"
+                    f"Customer: {insured}\n"
+                    f"Insurer(s): {insurers}\n"
+                    f"Policy Number(s): {policies}\n"
+                    f"Expiration Date: {exp_date}"
+                )
+                doc_tags = [tag.name for tag in doc.tags] if doc.tags else []
+                results.append(
+                    SearchResult(
+                        chunk_id=f"{doc.id}_agg_{chunk_index}",
+                        document_id=doc.id,
+                        document_name=doc.original_filename,
+                        chunk_text=text,
+                        chunk_index=9500 + chunk_index,
+                        score=0.9,
+                        page_number=1,
+                        section="Aggregate",
+                        tags=doc_tags,
+                    )
+                )
+                chunk_index += 1
+            except Exception:
+                continue
+
+        return results
+
+    def query_forms_expiring(
+        self,
+        intent,
+        user_tags: list[str] | None,
+        db: Session,
+        n: int = 10,
+    ) -> list[SearchResult]:
+        """Return the N soonest-expiring COI policies across all accessible customers.
+
+        Parses expiration dates, filters to future dates, sorts ascending.
+        Returns [] for SQLite (dev/test guard).
+        """
+        from datetime import datetime
+
+        if not self._database_url or "sqlite" in self._database_url:
+            return []
+
+        documents = self._get_accessible_form_documents(user_tags, db)
+        dated_results: list[tuple] = []
+
+        for doc in documents:
+            try:
+                table_names = json.loads(doc.forms_db_table_names)
+                if not table_names or not doc.forms_ingest_key:
+                    continue
+                grouped_fields = self._read_form_fields(table_names[0], doc.forms_ingest_key, None)
+                summary = self._extract_coi_summary(grouped_fields)
+                insured = summary["insured"]
+                exp_str = summary["exp_date"]
+                exp_dt = self._parse_acord_date(exp_str)
+                if exp_dt is None:
+                    continue
+
+                insurers = ", ".join(summary["insurers"][:3]) if summary["insurers"] else "N/A"
+                policies = (
+                    ", ".join(summary["policy_numbers"][:3]) if summary["policy_numbers"] else "N/A"
+                )
+
+                text = (
+                    f"ACORD 25 - Certificate of Liability Insurance\n"
+                    f"Customer: {insured}\n"
+                    f"Insurer(s): {insurers}\n"
+                    f"Policy Number(s): {policies}\n"
+                    f"Expiration Date: {exp_str}"
+                )
+                doc_tags = [tag.name for tag in doc.tags] if doc.tags else []
+                result = SearchResult(
+                    chunk_id=f"{doc.id}_exp_0",
+                    document_id=doc.id,
+                    document_name=doc.original_filename,
+                    chunk_text=text,
+                    chunk_index=9600,
+                    score=0.9,
+                    page_number=1,
+                    section="Expiring",
+                    tags=doc_tags,
+                )
+                dated_results.append((exp_dt, result))
+            except Exception:
+                continue
+
+        # Sort by expiration date ascending (soonest first)
+        dated_results.sort(key=lambda x: x[0])
+        now = datetime.utcnow()
+        future = [(dt, r) for dt, r in dated_results if dt >= now]
+        top = future[:n] if future else dated_results[:n]
+        return [r for _, r in top]
+
     def _format_as_search_result(
         self,
         document: Document,
