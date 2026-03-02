@@ -213,6 +213,25 @@ class VERagVectorStoreAdapter:
         )
 
 
+class _SanitizingEmbeddingAdapter:
+    """Wraps an OllamaEmbedding to replace None/empty texts before embedding.
+
+    Ollama returns HTTP 400 when the input list contains None or non-string
+    values (e.g. from null ACORD form fields). This adapter replaces them with
+    a single space so the request always succeeds and the vector is valid.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        sanitized = [t if isinstance(t, str) and t.strip() else " " for t in texts]
+        return self._inner.embed(sanitized)
+
+    def dimension(self) -> int:
+        return self._inner.dimension()
+
+
 def create_embedding_adapter(
     *,
     ollama_url: str,
@@ -222,18 +241,19 @@ def create_embedding_adapter(
 ):
     """Create an ingestkit OllamaEmbedding that uses VE-RAG's Ollama settings.
 
-    Returns an OllamaEmbedding instance (satisfies EmbeddingBackend protocol).
+    Returns an EmbeddingBackend-compatible instance wrapped with null sanitization.
     """
     from ingestkit_excel.backends.ollama import OllamaEmbedding
     from ingestkit_excel.config import ExcelProcessorConfig
 
     config = ExcelProcessorConfig(backend_timeout_seconds=backend_timeout)
-    return OllamaEmbedding(
+    inner = OllamaEmbedding(
         base_url=ollama_url,
         model=embedding_model,
         embedding_dimension=embedding_dimension,
         config=config,
     )
+    return _SanitizingEmbeddingAdapter(inner)
 
 
 def create_llm_adapter():
