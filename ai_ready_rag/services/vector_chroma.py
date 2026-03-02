@@ -138,6 +138,7 @@ class ChromaVectorService:
         limit: int = 5,
         score_threshold: float = 0.3,
         preferred_tags: list[str] | None = None,
+        entity_hint: str | None = None,
     ) -> list[SearchResult]:
         """Search vectors filtered by user tags."""
         # Generate query embedding

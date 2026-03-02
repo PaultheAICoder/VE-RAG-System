@@ -238,6 +238,7 @@ class QueryIntent:
     confidence: float  # 0.0-1.0
     forms_eligible: bool = False  # True when intent matches structured form data
     intent_labels: list[str] | None = None  # All matched labels e.g. ["active_policy", "gl"]
+    entity_name: str | None = None  # Detected entity/insured name from query
 
 
 # Insurance domain intent patterns: (compiled_regex, preferred_tags, label)
@@ -459,6 +460,50 @@ def enrich_intent_with_tags(intent: QueryIntent, query: str, db: Session) -> Que
             seen.add(tag_name)
 
     return intent
+
+
+_ENTITY_CACHE: dict[str, list[str]] = {}
+_ENTITY_CACHE_TIME: float = 0.0
+_ENTITY_CACHE_TTL: float = 300.0  # 5 minutes
+
+
+def _get_known_entities(db: Session, tenant_id: str = "default") -> list[str]:
+    """Load distinct insured_name values from chunk metadata. Cached 5 min."""
+    import time
+
+    from sqlalchemy import text
+
+    global _ENTITY_CACHE_TIME
+    now = time.monotonic()
+    if tenant_id in _ENTITY_CACHE and (now - _ENTITY_CACHE_TIME) < _ENTITY_CACHE_TTL:
+        return _ENTITY_CACHE[tenant_id]
+    try:
+        rows = db.execute(
+            text(
+                "SELECT DISTINCT metadata_::jsonb->>'insured_name' AS entity_name "
+                "FROM chunk_vectors "
+                "WHERE tenant_id = :tenant "
+                "  AND metadata_::jsonb->>'insured_name' IS NOT NULL "
+                "  AND metadata_::jsonb->>'insured_name' != ''"
+            ),
+            {"tenant": tenant_id},
+        ).fetchall()
+        entities = [r[0] for r in rows if r[0]]
+    except Exception:
+        entities = []
+    _ENTITY_CACHE[tenant_id] = entities
+    _ENTITY_CACHE_TIME = now
+    return entities
+
+
+def detect_entity_in_query(query: str, db: Session, tenant_id: str = "default") -> str | None:
+    """Return the known entity name that appears in the query, or None."""
+    entities = _get_known_entities(db, tenant_id)
+    query_lower = query.lower()
+    matches = [e for e in entities if e.lower() in query_lower]
+    if not matches:
+        return None
+    return max(matches, key=len)  # Longest match = most specific
 
 
 def extract_key_terms(text: str) -> set[str]:
@@ -1252,6 +1297,12 @@ class RAGService:
             if intent.preferred_tags:
                 logger.info(f"Intent: {intent.intent_label} -> {intent.preferred_tags}")
 
+            # Detect named entity in query for cross-contamination isolation
+            entity_name = detect_entity_in_query(query, db_session, tenant_id or "default")
+            if entity_name:
+                intent.entity_name = entity_name
+                logger.info(f"Entity detected in query: {entity_name}")
+
             if self.enable_query_expansion:
                 queries = expand_query(query, db=db_session)
                 logger.debug(f"Query expansion: {len(queries)} variants")
@@ -1289,6 +1340,7 @@ class RAGService:
                 limit=candidate_limit,
                 score_threshold=0.0,  # Filter later for more control
                 preferred_tags=intent.preferred_tags or None,
+                entity_hint=intent.entity_name,
             )
             if candidates:
                 query_results.append(candidates)
@@ -1329,14 +1381,12 @@ class RAGService:
         # 5. Deduplicate (Jaccard similarity > 0.9)
         deduped = self._deduplicate_chunks(filtered)
 
-        # 6. Limit per document
-        limited = self._limit_per_document(deduped, max_per_doc=self.max_chunks_per_doc)
+        # 6. Limit per document (+1 to accommodate synopsis chunks that now count against cap)
+        limited = self._limit_per_document(deduped, max_per_doc=self.max_chunks_per_doc + 1)
 
-        # 7. Return top-k — synopsis chunks (chunk_index=9999) always included, not counted
-        #    against max_chunks so they can't be crowded out by high-scoring regular chunks.
-        synopsis = [c for c in limited if c.chunk_index == 9999]
-        regular = [c for c in limited if c.chunk_index != 9999]
-        return regular[:max_chunks] + synopsis
+        # 7. Return top-k — synopsis chunks compete normally within the cap;
+        #    entity isolation (Phase 1) prevents other-entity synopses from appearing.
+        return limited[:max_chunks]
 
     def _deduplicate_chunks(self, chunks: list[SearchResult]) -> list[SearchResult]:
         """Remove near-duplicate chunks using Jaccard similarity.
@@ -1389,12 +1439,10 @@ class RAGService:
         result: list[SearchResult] = []
 
         for chunk in chunks:
-            # Synopsis chunks (chunk_index=9999) always pass through — they contain
-            # Claude-extracted facts (limits, entities, dates) that are critical for
-            # answering questions and must not be squeezed out by per-doc capping.
-            if chunk.chunk_index == 9999:
-                result.append(chunk)
-                continue
+            # Synopsis chunks (chunk_index=9999) count against the per-doc cap.
+            # Entity isolation (Phase 1) blocks other-entity synopses, so synopsis
+            # chunks no longer need a blanket exemption that could allow cross-entity
+            # contamination. max_per_doc is raised by 1 to preserve coverage.
             count = doc_counts.get(chunk.document_id, 0)
             if count < max_per_doc:
                 result.append(chunk)
