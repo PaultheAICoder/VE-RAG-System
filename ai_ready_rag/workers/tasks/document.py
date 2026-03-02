@@ -109,14 +109,14 @@ async def process_document(
                     processing_service.process_document(
                         document, db, processing_options=processing_options
                     ),
-                    timeout=600,  # 10 minute max per document
+                    timeout=1800,  # 30 minute max per document (CPU OCR can take 7+ min)
                 )
             except TimeoutError:
-                logger.error(f"[ARQ] Document {document_id} processing timed out after 10 minutes")
+                logger.error(f"[ARQ] Document {document_id} processing timed out after 30 minutes")
                 document = db.query(Document).filter(Document.id == document_id).first()
                 if document:
                     document.status = "failed"
-                    document.error_message = "Processing timed out after 10 minutes"
+                    document.error_message = "Processing timed out after 30 minutes"
                     db.commit()
                 return {"success": False, "error": "Processing timed out after 10 minutes"}
 
