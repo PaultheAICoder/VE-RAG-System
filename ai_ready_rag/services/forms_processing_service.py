@@ -57,12 +57,17 @@ ACORD_25_GROUPS: dict[str, list[str]] = {
         "Umbrella*",
     ],
     "Workers Comp": ["WorkersCompensation*", "Policy_WorkersCompensation*"],
-    "Other": [
+    # OtherPolicy rows capture D&O, Crime, and similar non-standard coverages.
+    # Keep them separate from CertificateHolder address noise.
+    "Other Coverages": [
         "OtherPolicy_*",
+    ],
+    "Certificate Holder": [
         "CertificateHolder_*",
         "CertificateOf*",
         "Description*",
         "Remarks*",
+        "Form_CompletionDate*",
     ],
 }
 
@@ -665,15 +670,23 @@ class FormsProcessingService:
         field_text = "\n".join(lines[:200])  # cap at 200 fields
 
         prompt = (
-            f"You are reviewing a {template_name} insurance form. "
-            "Write a plain-text retrieval-optimized summary (no markdown, no bullet points, no bold). "
-            "Start with: 'Coverage limits for [insured name] — [form type] (COI):' "
-            "then list every coverage type with its exact dollar limit "
-            "(e.g. General Liability Each Occurrence $1,000,000, General Aggregate $2,000,000, "
-            "Auto Liability Combined Single Limit $1,000,000, etc.). "
-            "Include policy number and effective dates. "
-            "Use plain sentences, include the words 'coverage limits', 'COI', and the insured name. "
-            "Do not use markdown formatting.\n\n"
+            f"You are reviewing an ACORD 25 Certificate of Liability Insurance (COI) form: {template_name}.\n\n"
+            "FIELD NAMING CONVENTION:\n"
+            "- 'Insurer_FullName_A[0]' through 'F[0]' = insurer company names (A=first insurer, B=second, etc.)\n"
+            "- In coverage rows, the letter suffix on policy fields (e.g. 'PolicyNumberIdentifier_A[0]') "
+            "indicates the INSR LTR — i.e. which insurer (A, B, C...) provides that coverage row.\n"
+            "- The same policy number appearing across multiple coverage types means the same insurer covers all of them.\n"
+            "- 'OtherPolicy_*_A[0]' = first Other row, '_B[0]' = second Other row (row index, not insurer letter).\n\n"
+            "Write a plain-text retrieval-optimized COI coverage summary (no markdown, no bullets, no bold).\n"
+            "Format:\n"
+            "1. First line: 'COI coverage limits for [insured name] — [form type], dated [date]:'\n"
+            "2. List each insurer: 'Insurer A: [company from Insurer_FullName_A[0], or Unknown if missing]'\n"
+            "3. For each coverage row, one sentence: "
+            "'Insurer [letter] ([company name]), Policy [number], [eff date] to [exp date]: "
+            "[coverage type] — [each limit type and dollar amount].'\n"
+            "4. End with a one-sentence summary of total policies and insurers.\n\n"
+            "Use the exact dollar amounts from the fields. "
+            "Include the words 'COI', 'coverage limits', and the insured name in the text.\n\n"
             f"Form fields:\n{field_text}"
         )
 
