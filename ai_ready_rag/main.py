@@ -253,6 +253,10 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Redis unavailable — running in degraded mode (BackgroundTasks fallback)")
 
+    # Store in app.state so watchdog and admin routes can access/update it
+    app.state.arq_worker = arq_worker
+    app.state.redis_pool = redis_pool
+
     # Recover stuck documents from previous crashes
     db = SessionLocal()
     try:
@@ -328,22 +332,33 @@ async def lifespan(app: FastAPI):
     await warming_cleanup.start()
     logger.info("WarmingCleanupService started")
 
-    # Periodic recovery for stuck processing documents (#308)
+    # Periodic recovery for stuck processing documents and orphaned pending docs
     async def _stale_processing_recovery_loop():
-        """Reset documents stuck in 'processing' for >15 min back to 'pending'."""
+        """Two-pass recovery every 5 minutes:
+
+        Pass 1 — Reset documents stuck in 'processing' for >15 min back to
+        'pending' (existing behaviour, guards against worker crash mid-job).
+
+        Pass 2 — Re-enqueue documents stuck in 'pending' for >20 min that have
+        no active ARQ job (orphaned when the worker died before consuming them).
+        Safe to re-enqueue duplicates: process_document skips docs already 'ready'.
+        """
         while True:
             await asyncio.sleep(300)  # Every 5 minutes
             try:
+                from datetime import datetime, timedelta
+
                 recovery_db = SessionLocal()
                 try:
-                    from datetime import datetime, timedelta
+                    now = datetime.utcnow()
 
-                    cutoff = datetime.utcnow() - timedelta(minutes=15)
+                    # Pass 1: processing → pending for docs stuck >15 min
+                    processing_cutoff = now - timedelta(minutes=15)
                     reset_count = (
                         recovery_db.query(Document)
                         .filter(
                             Document.status == "processing",
-                            Document.uploaded_at < cutoff,
+                            Document.uploaded_at < processing_cutoff,
                         )
                         .update(
                             {"status": "pending", "error_message": None},
@@ -353,8 +368,45 @@ async def lifespan(app: FastAPI):
                     recovery_db.commit()
                     if reset_count:
                         logger.warning(
-                            f"[RECOVERY] Reset {reset_count} stale processing documents to pending"
+                            "[RECOVERY] Reset %d stale processing documents to pending",
+                            reset_count,
                         )
+
+                    # Pass 2: re-enqueue orphaned pending docs stuck >20 min
+                    current_redis = app.state.redis_pool
+                    if current_redis:
+                        pending_cutoff = now - timedelta(minutes=20)
+                        orphaned = (
+                            recovery_db.query(Document)
+                            .filter(
+                                Document.status == "pending",
+                                Document.uploaded_at < pending_cutoff,
+                            )
+                            .all()
+                        )
+                        if orphaned:
+                            enqueued = 0
+                            for doc in orphaned:
+                                try:
+                                    await current_redis.enqueue_job(
+                                        "process_document",
+                                        doc.id,
+                                        None,  # processing_options_dict
+                                        False,  # delete_existing
+                                        _queue_name=settings.arq_queue_name,
+                                    )
+                                    enqueued += 1
+                                except Exception as _eq:
+                                    logger.warning(
+                                        "[RECOVERY] Failed to re-enqueue document %s: %s",
+                                        doc.id,
+                                        _eq,
+                                    )
+                            if enqueued:
+                                logger.warning(
+                                    "[RECOVERY] Re-enqueued %d orphaned pending documents",
+                                    enqueued,
+                                )
                 finally:
                     recovery_db.close()
             except asyncio.CancelledError:
@@ -362,18 +414,60 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("[RECOVERY] Error in stale processing recovery loop")
 
+    # Watchdog: checks every 60 s whether the ARQ worker task is still alive
+    # and restarts it if it has crashed.  Pass-2 of the recovery loop will
+    # re-enqueue any pending docs that lost their ARQ jobs when the worker died.
+    async def _arq_worker_watchdog_loop():
+        """Restart the embedded ARQ worker if its asyncio task dies unexpectedly."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                current_worker: EmbeddedArqWorker | None = getattr(app.state, "arq_worker", None)
+                current_redis = app.state.redis_pool
+
+                # Nothing to watch in degraded mode (no Redis)
+                if current_worker is None or current_redis is None:
+                    continue
+
+                if current_worker._task is not None and current_worker._task.done():
+                    # Capture the exception (if any) before discarding the task
+                    exc = None
+                    try:
+                        exc = current_worker._task.exception()
+                    except (asyncio.CancelledError, asyncio.InvalidStateError):
+                        pass
+
+                    logger.error(
+                        "[WATCHDOG] ARQ worker task died unexpectedly — restarting",
+                        exc_info=exc,
+                    )
+
+                    new_worker = EmbeddedArqWorker(current_redis, settings, vector_service)
+                    await new_worker.start()
+                    app.state.arq_worker = new_worker
+                    logger.info("[WATCHDOG] ARQ worker restarted successfully")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("[WATCHDOG] Error in ARQ worker watchdog loop")
+
     recovery_task = asyncio.create_task(_stale_processing_recovery_loop())
     logger.info("Stale processing recovery loop started (every 5 minutes)")
+
+    watchdog_task = asyncio.create_task(_arq_worker_watchdog_loop())
+    logger.info("ARQ worker watchdog started (every 60 seconds)")
 
     yield
 
     # Shutdown
     recovery_task.cancel()
+    watchdog_task.cancel()
     try:
-        await recovery_task
+        await asyncio.gather(recovery_task, watchdog_task, return_exceptions=True)
     except asyncio.CancelledError:
         pass
     logger.info("Stale processing recovery loop stopped")
+    logger.info("ARQ worker watchdog stopped")
 
     await warming_cleanup.stop()
     logger.info("WarmingCleanupService stopped")
@@ -389,8 +483,10 @@ async def lifespan(app: FastAPI):
     await warming_worker.stop()
     logger.info("WarmingWorker stopped")
 
-    if arq_worker:
-        await arq_worker.stop()
+    # Use app.state.arq_worker — the watchdog may have replaced the original instance
+    final_worker: EmbeddedArqWorker | None = getattr(app.state, "arq_worker", None)
+    if final_worker:
+        await final_worker.stop()
 
     await close_redis_pool()
 

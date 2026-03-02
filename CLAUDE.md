@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AI Ready RAG is an enterprise RAG (Retrieval-Augmented Generation) system for NVIDIA DGX Spark. It processes documents using Docling, stores vectors in ChromaDB (migrating to Qdrant), and uses Ollama for LLM inference. All components run locally for air-gap deployment.
+AI Ready RAG is an enterprise RAG (Retrieval-Augmented Generation) system for NVIDIA DGX Spark. It processes documents using Docling, stores vectors in pgvector (PostgreSQL extension), and uses Ollama for LLM inference. All components run locally for air-gap deployment.
 
 **Current Status:** v0.4.1 - FastAPI backend with React frontend. Gradio UI is deprecated.
 
@@ -14,9 +14,9 @@ AI Ready RAG is an enterprise RAG (Retrieval-Augmented Generation) system for NV
 
 | File | Purpose | When to Use |
 |------|---------|-------------|
-| `requirements-wsl.txt` | WSL2/Linux development with Ollama + Qdrant | **Always use this for development** |
+| `requirements-wsl.txt` | WSL2/Linux development with Ollama + pgvector | **Always use this for development** |
 | `requirements-api.txt` | API-only testing (auth, users, tags) | Minimal testing without RAG |
-| `requirements-spark.txt` | DGX Spark production with Docling + Qdrant | **Production on DGX Spark** |
+| `requirements-spark.txt` | DGX Spark production with Docling + pgvector | **Production on DGX Spark** |
 | `requirements.txt` | Legacy (references chromadb) | Deprecated - use requirements-spark.txt |
 
 ```bash
@@ -58,7 +58,8 @@ ruff format ai_ready_rag tests
 - `OLLAMA_BASE_URL` - Ollama server (default: http://localhost:11434)
 - `EMBEDDING_MODEL` - Embedding model (default: nomic-embed-text)
 - `CHAT_MODEL` - Chat model (default: qwen3:8b, options: llama3.2, deepseek-r1:32b)
-- `CHROMA_PERSIST_DIR` - Vector storage path (default: ./chroma_db)
+- `DATABASE_URL` - PostgreSQL connection string (default: configured per profile)
+- `VECTOR_BACKEND` - Vector store backend (default: pgvector)
 
 ## Architecture
 
@@ -78,8 +79,8 @@ FastAPI (:8502)                    React (:5173 dev / :8502 prod)
 **Frontend:** React is the current frontend. Gradio is deprecated and no longer used.
 
 **Key Components:**
-- **SQLite** - Users, sessions, chat history, tags, audit logs (WAL mode)
-- **Qdrant** - Vector storage replacing ChromaDB (tag-based filtering for access control)
+- **PostgreSQL** - Users, sessions, chat history, tags, audit logs, Excel table data
+- **pgvector** - Vector storage as PostgreSQL extension (tag-based filtering for access control)
 - **Ollama** - LLM inference (localhost:11434)
 - **Docling** - Document parsing with OCR, table extraction, semantic chunking
 
@@ -93,8 +94,8 @@ FastAPI (:8502)                    React (:5173 dev / :8502 prod)
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Backend | FastAPI + React | Enterprise auth, REST API, middleware for access control |
-| Vector DB | Qdrant (replacing ChromaDB) | Superior tag filtering, GPU acceleration |
-| App DB | SQLite | Zero infrastructure, air-gap friendly |
+| Vector DB | pgvector (PostgreSQL extension) | Unified stack, tag filtering, GPU acceleration |
+| App DB | PostgreSQL | Single database for app data + vectors, air-gap friendly |
 | Access Control | Pre-retrieval filtering | User tags filter vectors BEFORE search; LLM never sees inaccessible docs |
 | Audit | 3-level configurable | essential, comprehensive, full_debug |
 
@@ -102,7 +103,7 @@ FastAPI (:8502)                    React (:5173 dev / :8502 prod)
 
 - **Python 3.12+**
 - **Document Processing:** Docling 2.68.0, Tesseract/EasyOCR
-- **Vector:** Qdrant 1.13.x
+- **Database:** PostgreSQL + pgvector (extension for vector search)
 - **LLM:** LangChain 0.3.0+, LangChain-Ollama
 - **Frontend:** React (Vite + TypeScript)
 - **Backend:** FastAPI 0.115.x
@@ -116,7 +117,7 @@ ai_ready_rag/
 ├── config.py            # Configuration management
 ├── api/                 # Route handlers
 ├── core/                # Security, dependencies, exceptions, error handlers
-├── db/                  # SQLite models, repositories (BaseRepository pattern)
+├── db/                  # PostgreSQL models, repositories (BaseRepository pattern)
 │   ├── models/          # SQLAlchemy models
 │   └── repositories/    # BaseRepository[T] + concrete repos
 ├── services/            # Business logic (BaseService pattern)

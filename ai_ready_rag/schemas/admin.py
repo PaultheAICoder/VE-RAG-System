@@ -15,6 +15,11 @@ class RecoverResponse(BaseModel):
     message: str
 
 
+class RescueQueuedResponse(BaseModel):
+    enqueued: int
+    message: str
+
+
 # =============================================================================
 # Knowledge Base
 # =============================================================================
