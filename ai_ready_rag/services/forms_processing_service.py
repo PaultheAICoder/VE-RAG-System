@@ -566,11 +566,9 @@ class FormsProcessingService:
                 )
             )
 
-        # 7. Write new chunks to pgvector via the adapter
-        count = vector_store.upsert_chunks("", chunks_to_upsert)
-
-        # 7a. Generate a natural-language synopsis chunk via Claude CLI.
-        #     Stored at chunk_index=9999 so it ranks highly for coverage queries.
+        # 7. Generate synopsis chunk BEFORE upsert so all chunks go in one call.
+        #    upsert_chunks() deletes existing document chunks first — a second call
+        #    would wipe the 8 rechunked chunks written by the first batch.
         synopsis = self._generate_forms_synopsis(fields, template_name, settings)
         if synopsis:
             try:
@@ -587,27 +585,26 @@ class FormsProcessingService:
                     source_uri=str(document.file_path or ""),
                     ingest_run_id="",
                 )
-                vector_store.upsert_chunks(
-                    "",
-                    [
-                        ChunkPayload(
-                            id=synopsis_id,
-                            text=synopsis,
-                            vector=synopsis_embedding,
-                            metadata=synopsis_meta,
-                        )
-                    ],
+                chunks_to_upsert.append(
+                    ChunkPayload(
+                        id=synopsis_id,
+                        text=synopsis,
+                        vector=synopsis_embedding,
+                        metadata=synopsis_meta,
+                    )
                 )
                 logger.info(
-                    "forms.synopsis.stored",
+                    "forms.synopsis.generated",
                     extra={"document_id": document.id, "length": len(synopsis)},
                 )
-                count += 1
             except Exception as exc:
                 logger.warning(
-                    "forms.synopsis.store_failed",
+                    "forms.synopsis.embed_failed",
                     extra={"document_id": document.id, "error": str(exc)},
                 )
+
+        # Write all chunks (rechunked + synopsis) in a single upsert call.
+        count = vector_store.upsert_chunks("", chunks_to_upsert)
 
         # 8. Delete original mega-chunk AFTER successful upsert of new chunks.
         #    This ordering prevents data loss: if embedding or upsert fails above,
