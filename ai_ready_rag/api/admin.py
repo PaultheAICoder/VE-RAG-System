@@ -107,6 +107,7 @@ from ai_ready_rag.schemas.admin import (
     ReindexFailureInfo,
     ReindexFailuresResponse,
     ReindexJobResponse,
+    RescueQueuedResponse,
     ResumeReindexRequest,
     RetrievalSettingsRequest,
     RetrievalSettingsResponse,
@@ -307,6 +308,55 @@ async def recover_stuck_documents(
     return RecoverResponse(
         recovered=recovered,
         message=f"Reset {recovered} stuck documents to pending status",
+    )
+
+
+@router.post("/documents/rescue-queued", response_model=RescueQueuedResponse)
+async def rescue_queued_documents(
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_system_admin),
+    db: Session = Depends(get_db),
+):
+    """Re-enqueue all documents stuck in 'pending' status.
+
+    When the ARQ worker stalls or crashes, documents in 'pending' status no
+    longer have active jobs. This endpoint re-enqueues every pending document
+    via ARQ (or BackgroundTasks in degraded mode) so they will be processed
+    once the worker is running again.
+
+    Safe to call multiple times — the process_document task has an idempotency
+    guard that skips documents already in 'ready' status.
+
+    Admin only.
+    """
+    from ai_ready_rag.api.documents import enqueue_document_processing
+
+    pending_docs = db.query(Document).filter(Document.status == "pending").all()
+
+    if not pending_docs:
+        return RescueQueuedResponse(enqueued=0, message="No pending documents found")
+
+    enqueued = 0
+    for doc in pending_docs:
+        try:
+            await enqueue_document_processing(
+                doc.id,
+                background_tasks,
+                processing_options_dict=None,
+                delete_existing=False,
+            )
+            enqueued += 1
+        except Exception as e:
+            logger.warning(f"[RESCUE] Failed to re-enqueue document {doc.id}: {e}")
+
+    logger.warning(
+        f"[RESCUE] Admin {current_user.email} re-enqueued {enqueued}/{len(pending_docs)} "
+        "pending documents"
+    )
+
+    return RescueQueuedResponse(
+        enqueued=enqueued,
+        message=f"Re-enqueued {enqueued} of {len(pending_docs)} pending documents",
     )
 
 
