@@ -354,8 +354,10 @@ class FormsProcessingService:
                 # Rechunking is best-effort — original chunks are preserved on failure
                 # (deletion now happens AFTER successful upsert of new chunks)
                 logger.warning(
-                    "forms.rechunk.failed",
-                    extra={"document_id": document.id, "error": str(e)},
+                    "forms.rechunk.failed: %s — %s",
+                    type(e).__name__,
+                    str(e),
+                    exc_info=True,
                 )
 
         # 9. Update document columns (last step — after all writes succeeded)
@@ -438,10 +440,16 @@ class FormsProcessingService:
             if field_name.startswith("_"):
                 continue
 
+            # Strip XFA widget prefix (e.g. "F[0].P1[0].") so patterns like
+            # "GeneralLiability_*" match the semantic part of the field name.
+            import re as _re
+
+            base_name = _re.sub(r"^F\[.*?\]\.[^.]+\.", "", field_name)
+
             matched = False
             for group_name, patterns in ACORD_25_GROUPS.items():
                 for pattern in patterns:
-                    if fnmatch.fnmatch(field_name, pattern):
+                    if fnmatch.fnmatch(base_name, pattern):
                         if group_name not in groups:
                             groups[group_name] = {}
                         groups[group_name][field_name] = field_value
@@ -469,41 +477,76 @@ class FormsProcessingService:
         if insured_name:
             header += f"Insured: {insured_name}\n"
 
-        # 5. Format each group as natural text
+        # 5. Format each group as natural text, splitting on character boundaries
+        #    so no single chunk exceeds the embedding model's context window.
+        #    nomic-embed-text accepts ~4 096 chars; use 3 800 as a safe margin.
+        _MAX_CHUNK_CHARS = 3800
+
         chunk_texts: list[str] = []
         chunk_sections: list[str] = []
+
         for group_name, group_fields in groups.items():
             if not group_fields:
                 continue
 
-            lines = [f"{header}{group_name}\n"]
+            group_header = f"{header}{group_name}\n"
+            field_lines: list[str] = []
             for fname, fval in group_fields.items():
-                # Clean up field name: CamelCase_SubField -> readable label
-                label = self._field_name_to_label(fname)
-                lines.append(f"{label}: {fval}")
+                # Strip XFA prefix before generating human-readable label
+                import re as _re
 
-            chunk_text = "\n".join(lines)
-            chunk_texts.append(chunk_text)
-            chunk_sections.append(group_name)
+                clean_name = _re.sub(r"^F\[.*?\]\.[^.]+\.", "", fname)
+                label = self._field_name_to_label(clean_name)
+                field_lines.append(f"{label}: {fval}")
+
+            # Accumulate field lines into segments that stay under _MAX_CHUNK_CHARS
+            segments: list[list[str]] = []
+            current_lines: list[str] = []
+            current_len = len(group_header)
+
+            for line in field_lines:
+                line_len = len(line) + 1  # +1 for \n
+                if current_len + line_len > _MAX_CHUNK_CHARS and current_lines:
+                    segments.append(current_lines)
+                    current_lines = [line]
+                    current_len = len(group_header) + line_len
+                else:
+                    current_lines.append(line)
+                    current_len += line_len
+
+            if current_lines:
+                segments.append(current_lines)
+
+            total = len(segments)
+            for seg_idx, seg_lines in enumerate(segments):
+                section_label = (
+                    group_name if total == 1 else f"{group_name} ({seg_idx + 1}/{total})"
+                )
+                chunk_text = group_header + "\n".join(seg_lines)
+                chunk_texts.append(chunk_text)
+                chunk_sections.append(section_label)
 
         if not chunk_texts:
             return 0
 
         # 6. Embed each chunk via the ingestkit embedder
-        from ingestkit_core.models import ChunkMetadata, ChunkPayload
+        from ingestkit_core.models import BaseChunkMetadata, ChunkPayload
 
         chunks_to_upsert: list[ChunkPayload] = []
 
         for i, (text, section) in enumerate(zip(chunk_texts, chunk_sections, strict=True)):
-            embedding = embedder.embed(text)
+            embedding = embedder.embed([text])[0]
             chunk_id = f"{document.id}_form_{i}"
-            metadata = ChunkMetadata(
+            metadata = BaseChunkMetadata(
                 chunk_index=i,
                 section_title=section,
                 source_format="form_rechunk",
                 ingestion_method="rechunk",
                 parser_version="ve-rag-rechunk-1.0",
-                ingest_key=result.ingest_key or "",
+                # Use empty ingest_key so the post-upsert delete_by_filter
+                # (which targets result.ingest_key) only removes the original
+                # mega-chunk and never the rechunked replacements.
+                ingest_key="",
                 chunk_hash="",
                 source_uri=str(document.file_path or ""),
                 ingest_run_id="",
