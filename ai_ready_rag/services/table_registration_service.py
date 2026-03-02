@@ -202,11 +202,13 @@ class TableRegistrationService:
 
         try:
             col_list = json.loads(row["columns"]) if row["columns"] else []
+            col_list = [str(c) for c in col_list]  # ensure strings for any legacy int columns
         except (json.JSONDecodeError, TypeError):
             col_list = []
 
         try:
             col_types = json.loads(row["column_types"]) if row["column_types"] else {}
+            col_types = {str(k): v for k, v in col_types.items()}  # ensure string keys
         except (json.JSONDecodeError, TypeError):
             col_types = {}
 

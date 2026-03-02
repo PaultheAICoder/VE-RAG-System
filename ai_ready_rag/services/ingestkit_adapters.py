@@ -474,7 +474,7 @@ class VERagPostgresStructuredDB:
         from datetime import datetime
 
         try:
-            columns = list(df.columns.astype(str))
+            columns = [str(c) for c in df.columns]
             column_types = {str(col): str(dtype) for col, dtype in df.dtypes.items()}
             now = datetime.utcnow()
             # Embed access_tags in table_metadata so no schema migration is required.
@@ -544,7 +544,7 @@ class VERagPostgresStructuredDB:
         from ai_ready_rag.utils.signal_canon import sample_row_values
 
         try:
-            columns = list(df.columns.astype(str))
+            columns = [str(c) for c in df.columns]
             column_types = {str(col): str(dtype) for col, dtype in df.dtypes.items()}
             row_samples = sample_row_values(df)
             tenant_id = getattr(self, "_tenant_id", "default")
