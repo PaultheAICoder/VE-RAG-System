@@ -224,9 +224,9 @@ class _SanitizingEmbeddingAdapter:
     def __init__(self, inner):
         self._inner = inner
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], **kwargs) -> list[list[float]]:
         sanitized = [t if isinstance(t, str) and t.strip() else " " for t in texts]
-        return self._inner.embed(sanitized)
+        return self._inner.embed(sanitized, **kwargs)
 
     def dimension(self) -> int:
         return self._inner.dimension()
