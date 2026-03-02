@@ -163,6 +163,7 @@ class PgVectorService:
         tags: list[str],
         uploaded_by: str,
         tenant_id: str | None = None,
+        entity_name: str | None = None,
     ) -> None:
         """Insert a synthetic synopsis chunk into chunk_vectors.
 
@@ -181,6 +182,8 @@ class PgVectorService:
             "uploaded_by": uploaded_by,
             "chunk_type": "synopsis",
         }
+        if entity_name:
+            metadata["insured_name"] = entity_name
         chunk_id = str(uuid.uuid4())
         with SessionLocal() as db:
             # Remove any previous synopsis chunk for this document
@@ -235,6 +238,7 @@ class PgVectorService:
         limit: int = 5,
         score_threshold: float = 0.3,
         preferred_tags: list[str] | None = None,
+        entity_hint: str | None = None,
     ) -> list[Any]:
         """Cosine similarity search with pre-retrieval tag ACL.
 
@@ -282,6 +286,13 @@ class PgVectorService:
             # Pre-retrieval access control: skip if user doesn't have any matching tag
             if user_tags and not any(t in doc_tags for t in user_tags):
                 continue
+
+            # Entity isolation: drop chunks belonging to a different named entity.
+            # Chunks with no insured_name key pass through (non-forms / general docs).
+            if entity_hint:
+                chunk_entity = meta.get("insured_name")
+                if chunk_entity and entity_hint.lower() not in chunk_entity.lower():
+                    continue
 
             score = float(row.score or 0)
             if score < score_threshold:

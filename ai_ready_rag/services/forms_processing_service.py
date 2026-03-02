@@ -632,6 +632,10 @@ class FormsProcessingService:
                     extra={"document_id": document.id, "error": str(exc)},
                 )
 
+        # Inject insured entity name into adapter so all chunks carry insured_name metadata.
+        if hasattr(vector_store, "set_entity_name"):
+            vector_store.set_entity_name(insured_name or None)
+
         # Write all chunks (rechunked + synopsis) in a single upsert call.
         count = vector_store.upsert_chunks("", chunks_to_upsert)
 
@@ -715,7 +719,7 @@ class FormsProcessingService:
             "4. If a limit field is missing or contains only noise (e.g. 'overage Limit'), omit the limit rather than guessing.\n\n"
             "Write a plain-text retrieval-optimized COI coverage summary (no markdown, no bullets, no bold).\n"
             "Format:\n"
-            "1. First line: 'COI coverage limits for [insured name] — [form type], dated [date]:'\n"
+            "1. First line: 'INSURED: [insured name] — COI coverage limits, [form type], dated [date]:'\n"
             "2. List each insurer: 'Insurer A: [company from Insurer_FullName_A[0], or Unknown if missing]'\n"
             "3. For each coverage row, one sentence:\n"
             "   Standard rows: 'Insurer [INSR LTR] ([company]), Policy [number], [eff] to [exp]: [type] — [limits].'\n"

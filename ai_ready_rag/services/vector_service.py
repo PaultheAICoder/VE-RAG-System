@@ -734,6 +734,7 @@ class VectorService:
         score_threshold: float = 0.0,
         tenant_id: str | None = None,
         preferred_tags: list[str] | None = None,
+        entity_hint: str | None = None,
     ) -> list[SearchResult]:
         """Semantic search with access control filtering.
 
