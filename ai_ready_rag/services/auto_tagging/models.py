@@ -78,6 +78,36 @@ class EmailPattern(BaseModel):
     tags: list[EmailPatternTag]
 
 
+class KeywordRule(BaseModel):
+    """A content keyword rule that can override a path-derived tag."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    namespace: str
+    value: str
+    priority: int
+    keywords_any: list[str] = []
+    keywords_all: list[str] = []
+    case_sensitive: bool = False
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, v: int) -> int:
+        """Priority must be >= 1 (path tags have implicit priority 0)."""
+        if v < 1:
+            msg = "priority must be >= 1"
+            raise ValueError(msg)
+        return v
+
+    @model_validator(mode="after")
+    def require_keywords(self) -> KeywordRule:
+        """At least one of keywords_any or keywords_all is required."""
+        if not self.keywords_any and not self.keywords_all:
+            msg = "At least one of keywords_any or keywords_all is required"
+            raise ValueError(msg)
+        return self
+
+
 class StrategyMetadata(BaseModel):
     """Metadata block for a strategy YAML file."""
 
@@ -91,6 +121,10 @@ class StrategyMetadata(BaseModel):
 
 _NAMESPACE_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _DOCTYPE_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# Namespaces that keyword rules are allowed to override (path tags only).
+# client and year are always path-authoritative and cannot be targeted.
+KEYWORD_OVERRIDEABLE = {"doctype", "topic", "entity", "stage"}
 
 
 class StrategyYAML(BaseModel):
@@ -107,6 +141,7 @@ class StrategyYAML(BaseModel):
     entity_extraction: EntityExtractionConfig | None = None
     topic_extraction: TopicExtractionConfig | None = None
     email_patterns: list[EmailPattern] = []
+    keyword_rules: list[KeywordRule] = []
 
     @field_validator("namespaces")
     @classmethod
@@ -167,13 +202,30 @@ class StrategyYAML(BaseModel):
                 raise ValueError(msg)
         return self
 
+    @model_validator(mode="after")
+    def validate_keyword_rule_namespaces(self) -> StrategyYAML:
+        """Validate keyword rules target declared, overrideable namespaces."""
+        declared = set(self.namespaces.keys())
+        for i, rule in enumerate(self.keyword_rules):
+            if rule.namespace not in declared:
+                msg = f"keyword_rules[{i}] references undeclared namespace '{rule.namespace}'"
+                raise ValueError(msg)
+            if rule.namespace not in KEYWORD_OVERRIDEABLE:
+                msg = (
+                    f"keyword_rules[{i}] targets non-overrideable "
+                    f"namespace '{rule.namespace}'. "
+                    f"Allowed: {sorted(KEYWORD_OVERRIDEABLE)}"
+                )
+                raise ValueError(msg)
+        return self
+
 
 class AutoTag(BaseModel):
     """A tag produced by the auto-tagging pipeline."""
 
     namespace: str
     value: str
-    source: Literal["path", "llm", "email", "manual"]
+    source: Literal["path", "llm", "email", "manual", "keyword"]
     confidence: float = 1.0
     strategy_id: str = ""
     strategy_version: str = ""
