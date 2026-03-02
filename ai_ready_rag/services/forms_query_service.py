@@ -135,18 +135,6 @@ class FormsQueryService:
             # Read fields from forms_data.db
             grouped_fields = self._read_form_fields(table_names[0], ingest_key, field_groups)
 
-            # Entity isolation: skip documents belonging to a different named entity.
-            if getattr(intent, "entity_name", None):
-                # Look for insured name in the Named Insured group fields
-                named_insured_fields = grouped_fields.get("Named Insured", [])
-                form_insured = ""
-                for label, value in named_insured_fields:
-                    if "Full Name" in label or "Named" in label or "Name" in label:
-                        form_insured = value.strip()
-                        break
-                if form_insured and intent.entity_name.lower() not in form_insured.lower():
-                    continue  # Skip — belongs to a different entity
-
             # Most recent doc (rank 0) gets 0.97, older docs get 0.93
             score = 0.97 if doc_rank == 0 else 0.93
 
