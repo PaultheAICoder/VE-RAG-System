@@ -425,7 +425,10 @@ class FormsProcessingService:
         conn.autocommit = True
         try:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cursor.execute(f'SELECT * FROM "{form_db._SCHEMA}"."{table_name}" LIMIT 1')
+            cursor.execute(
+                f'SELECT * FROM "{form_db._SCHEMA}"."{table_name}" WHERE _ingest_key = %s LIMIT 1',
+                (result.ingest_key,),
+            )
             row = cursor.fetchone()
             if row is None:
                 return 0
