@@ -143,7 +143,10 @@ class FormsProcessingService:
             "embedding_model": settings.embedding_model or "nomic-embed-text",
             "embedding_dimension": settings.embedding_dimension,
             "default_collection": settings.qdrant_collection,
-            "tenant_id": settings.default_tenant_id,
+            # Use tenant_id=None so "default" global templates are visible to all tenants.
+            # Tenant-specific templates (if added later) will also match because
+            # list_templates with tenant_id=None returns all templates.
+            "tenant_id": None,
             "form_template_storage_path": settings.forms_template_storage_path,
             "redact_patterns": _HIGH_RISK_PATTERNS
             if settings.forms_redact_high_risk_fields
