@@ -358,6 +358,9 @@ class Settings(BaseSettings):
     forms_redact_high_risk_fields: bool = True  # Redact SSN, tax ID, account numbers
     forms_template_require_approval: bool = True  # Templates must be approved before matching
     forms_rechunk_enabled: bool = True  # Split form mega-chunks into field groups
+    forms_claude_extraction_enabled: bool = (
+        False  # Claude-based field extraction from raw PDF text (corrects OCR gaps)
+    )
 
     # ingestkit-image integration
     use_ingestkit_image: bool | None = None  # None = use profile default

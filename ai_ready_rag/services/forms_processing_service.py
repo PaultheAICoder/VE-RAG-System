@@ -442,6 +442,30 @@ class FormsProcessingService:
         if not fields:
             return 0
 
+        # 2.5 Claude structured extraction — reads raw PDF text and fills in fields
+        #     that the OCR overlay missed (insurer names, OtherPolicy rows, etc.).
+        #     Best-effort: failures are logged and skipped; OCR values are preserved.
+        if getattr(settings, "forms_claude_extraction_enabled", False):
+            _tmpl = document.forms_template_name or "Form"
+            _pdf_path = str(document.file_path or "")
+            _pdf_text = self._extract_pdf_text_for_forms(_pdf_path)
+            claude_fields = self._extract_structured_fields_via_claude(
+                fields, _pdf_text, _tmpl, settings
+            )
+            if claude_fields:
+                fields.update(claude_fields)
+                _form_id = fields.get("_form_id", "")
+                if _form_id:
+                    try:
+                        self._write_claude_extractions_to_db(
+                            form_db, table_name, _form_id, claude_fields
+                        )
+                    except Exception as _exc:
+                        logger.warning(
+                            "forms.claude_extract.db_write_failed",
+                            extra={"document_id": document.id, "error": str(_exc)},
+                        )
+
         # 3. Group fields by ACORD section
         groups: dict[str, dict[str, str]] = {}
         ungrouped: dict[str, str] = {}
@@ -714,6 +738,161 @@ class FormsProcessingService:
         except Exception as exc:
             logger.warning("forms.synopsis.error", extra={"error": str(exc)})
             return None
+
+    @staticmethod
+    def _extract_pdf_text_for_forms(file_path: str, max_chars: int = 8000) -> str:
+        """Extract raw text from PDF using PyMuPDF for Claude enrichment context.
+
+        Used by _extract_structured_fields_via_claude to give Claude the full
+        document text rather than relying solely on OCR overlay field values.
+        """
+        try:
+            import fitz  # PyMuPDF
+
+            doc = fitz.open(file_path)
+            parts = [page.get_text() for page in doc]
+            doc.close()
+            return "\n".join(parts)[:max_chars]
+        except Exception as exc:
+            logger.debug("forms.pdf_text_extract.failed", extra={"error": str(exc)})
+            return ""
+
+    @staticmethod
+    def _extract_structured_fields_via_claude(
+        fields: dict[str, str],
+        pdf_text: str,
+        template_name: str,
+        settings: Settings,
+    ) -> dict[str, str] | None:
+        """Extract/correct ACORD 25 form fields via Claude CLI using raw PDF text.
+
+        The OCR overlay pipeline frequently misses insurer names and OtherPolicy
+        coverage rows due to bounding box alignment issues. This method gives
+        Claude the full raw PDF text and asks it to extract the specific fields
+        that matter most for COI retrieval quality.
+
+        Returns a dict of {xfa_field_name: value} using the same key format as
+        the existing fields dict, so values can be merged directly and written
+        back to the forms SQL table. Returns None if disabled or on failure.
+
+        Only runs when CLAUDE_BACKEND=cli and forms_claude_extraction_enabled=True.
+        """
+        import os
+        import subprocess
+
+        claude_backend = getattr(settings, "claude_backend", "api")
+        if claude_backend != "cli":
+            return None
+
+        # Build condensed OCR field text for context (skip metadata columns)
+        ocr_lines = [f"{k}: {v}" for k, v in fields.items() if not k.startswith("_")]
+        ocr_text = "\n".join(ocr_lines[:150])
+
+        prompt = (
+            f"You are extracting structured data from an ACORD 25 Certificate of Liability Insurance (COI) form: {template_name}\n\n"
+            "Return ONLY a JSON object — no explanation, no markdown, no preamble.\n\n"
+            "Extract values for the fields listed below from the raw document text.\n"
+            "Use the EXACT JSON key strings shown. Omit any key where you cannot find a reliable value.\n\n"
+            "TARGET FIELDS:\n"
+            '  "F[0].P1[0].Insurer_FullName_A[0]": full legal company name of Insurer A\n'
+            '  "F[0].P1[0].Insurer_FullName_B[0]": full legal company name of Insurer B\n'
+            '  "F[0].P1[0].Insurer_FullName_C[0]": full legal company name of Insurer C (if present)\n'
+            '  "F[0].P1[0].OtherPolicy_OtherPolicyDescription_A[0]": coverage type of first Other row (e.g. "Directors & Officers Liability")\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyNumberIdentifier_A[0]": policy number for first Other row\n'
+            '  "F[0].P1[0].OtherPolicy_InsurerLetterCode_A[0]": INSR LTR letter (A/B/C) for first Other row\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyEffectiveDate_A[0]": effective date for first Other row (MM/DD/YYYY)\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyExpirationDate_A[0]": expiration date for first Other row (MM/DD/YYYY)\n'
+            '  "F[0].P1[0].OtherPolicy_CoverageLimitAmount_A[0]": coverage limit for first Other row (digits and commas, e.g. "1,000,000")\n'
+            '  "F[0].P1[0].OtherPolicy_OtherPolicyDescription_B[0]": coverage type of second Other row\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyNumberIdentifier_B[0]": policy number for second Other row\n'
+            '  "F[0].P1[0].OtherPolicy_InsurerLetterCode_B[0]": INSR LTR letter for second Other row\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyEffectiveDate_B[0]": effective date for second Other row (MM/DD/YYYY)\n'
+            '  "F[0].P1[0].OtherPolicy_PolicyExpirationDate_B[0]": expiration date for second Other row (MM/DD/YYYY)\n'
+            '  "F[0].P1[0].OtherPolicy_CoverageLimitAmount_B[0]": coverage limit for second Other row (digits and commas)\n\n'
+            "INSTRUCTIONS:\n"
+            "- Insurer names (Insurer A, B, C...) appear in the INSURERS section listing companies by letter.\n"
+            "- The INSR LTR column on each coverage row links it to an insurer letter (A, B, C...).\n"
+            "- Policy numbers are alphanumeric, e.g. 'HOA1000040673-01' or 'SFD00001993 01'.\n"
+            "- For limits, use digits and commas only (e.g. '250,000' not '$250,000').\n"
+            "- Return {} (empty JSON) if you cannot find any of these values.\n\n"
+            f"Existing OCR-extracted fields (may be incomplete or garbled):\n{ocr_text}\n\n"
+            f"Raw document text:\n{pdf_text}"
+        )
+
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        try:
+            proc = subprocess.run(
+                ["claude", "-p", prompt],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "forms.claude_extract.cli_failed",
+                    extra={"returncode": proc.returncode, "stderr": proc.stderr.strip()[:200]},
+                )
+                return None
+
+            raw = proc.stdout.strip()
+            # Strip accidental markdown fencing
+            raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
+            raw = re.sub(r"\s*```\s*$", "", raw, flags=re.MULTILINE)
+
+            try:
+                extracted = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "forms.claude_extract.invalid_json",
+                    extra={"raw_preview": raw[:300]},
+                )
+                return None
+
+            if not isinstance(extracted, dict) or not extracted:
+                return None
+
+            # Keep only non-empty string values
+            result = {k: str(v).strip() for k, v in extracted.items() if v and str(v).strip()}
+            logger.info(
+                "forms.claude_extract.success",
+                extra={"fields_extracted": len(result)},
+            )
+            return result or None
+
+        except Exception as exc:
+            logger.warning("forms.claude_extract.error", extra={"error": str(exc)})
+            return None
+
+    @staticmethod
+    def _write_claude_extractions_to_db(
+        form_db,
+        table_name: str,
+        form_id: str,
+        extracted: dict[str, str],
+    ) -> None:
+        """UPDATE forms SQL table row with Claude-extracted field values.
+
+        Uses a parameterised UPDATE targeting _form_id. Column names are
+        truncated to 63 chars to match the sanitiser applied by ingestkit-forms
+        when the table was created (PostgreSQL max identifier length).
+        """
+        if not extracted or not form_id:
+            return
+
+        def _col(name: str) -> str:
+            return name[:63]
+
+        set_parts = [f'"{_col(col)}" = %s' for col in extracted]
+        schema = getattr(form_db, "_SCHEMA", "forms_data")
+        sql = f'UPDATE "{schema}"."{table_name}" SET {", ".join(set_parts)} WHERE "_form_id" = %s'
+        params = tuple(extracted.values()) + (form_id,)
+        form_db.execute_sql(sql, params)
+        logger.info(
+            "forms.claude_extract.db_updated",
+            extra={"form_id": form_id, "fields_updated": len(extracted)},
+        )
 
     async def _compensate(
         self,
