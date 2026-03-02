@@ -240,8 +240,11 @@ async def lifespan(app: FastAPI):
                 "arq:retry:*",
             ):
                 stale_keys.extend(await redis_pool.keys(pattern))
-            # Also delete the queue sorted set itself
+            # Delete both the default queue key and the tenant-specific queue key.
+            # arq_queue_name returns "arq:queue:{tenant_id}" (the full Redis key),
+            # so both must be cleared to prevent stale jobs from running after restart.
             stale_keys.append("arq:queue")
+            stale_keys.append(settings.arq_queue_name)
             if stale_keys:
                 await redis_pool.delete(*stale_keys)
                 logger.info(f"Cleared {len(stale_keys)} stale ARQ keys")
@@ -257,9 +260,12 @@ async def lifespan(app: FastAPI):
     app.state.arq_worker = arq_worker
     app.state.redis_pool = redis_pool
 
-    # Recover stuck documents from previous crashes
+    # Recover stuck documents from previous crashes and re-enqueue all pending docs.
+    # The ARQ flush above wiped any queued jobs, so every document currently in
+    # 'pending' or 'processing' status needs a fresh job enqueued.
     db = SessionLocal()
     try:
+        # Reset processing → pending (worker was killed mid-job)
         stuck_count = (
             db.query(Document)
             .filter(Document.status == "processing")
@@ -268,7 +274,25 @@ async def lifespan(app: FastAPI):
         db.commit()
         if stuck_count:
             logger.warning(f"Reset {stuck_count} stuck documents to pending status")
-            logger.info(f"Recovered {stuck_count} stuck documents")
+
+        # Re-enqueue every pending document — their ARQ jobs were cleared by the flush
+        if redis_pool:
+            pending_docs = db.query(Document).filter(Document.status == "pending").all()
+            if pending_docs:
+                enqueued = 0
+                for doc in pending_docs:
+                    try:
+                        await redis_pool.enqueue_job(
+                            "process_document",
+                            doc.id,
+                            None,  # processing_options_dict
+                            False,  # delete_existing
+                            _queue_name=settings.arq_queue_name,
+                        )
+                        enqueued += 1
+                    except Exception as _eq:
+                        logger.warning(f"Failed to re-enqueue pending doc {doc.id}: {_eq}")
+                logger.info(f"Re-enqueued {enqueued} pending documents after startup flush")
     finally:
         db.close()
 
