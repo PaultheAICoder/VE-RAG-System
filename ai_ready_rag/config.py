@@ -467,6 +467,12 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context: Any) -> None:
         """Apply profile defaults after Pydantic initialization."""
+        # ANTHROPIC_API_KEY is the standard env var name; map to claude_api_key
+        if not self.claude_api_key:
+            anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+            if anthropic_key:
+                object.__setattr__(self, "claude_api_key", anthropic_key)
+
         profile = PROFILE_DEFAULTS.get(self.env_profile, PROFILE_DEFAULTS["laptop"])
 
         # Apply profile defaults for settings that are None
