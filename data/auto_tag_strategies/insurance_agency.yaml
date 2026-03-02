@@ -203,6 +203,58 @@ llm_prompt: |
   Topic rules:
   {topic_extraction.prompt_instruction}
 
+keyword_rules:
+  - namespace: "doctype"
+    value: "coi"
+    priority: 10
+    keywords_any:
+      - "CERTIFICATE OF INSURANCE"
+      - "CERTIFICATE OF PROPERTY INSURANCE"
+      - "THIS CERTIFICATE IS ISSUED AS A MATTER OF INFORMATION"
+      - "ACORD 25"
+      - "ACORD 27"
+      - "ACORD 28"
+
+  - namespace: "doctype"
+    value: "loss_run"
+    priority: 10
+    keywords_any:
+      - "LOSS RUN"
+      - "LOSS HISTORY"
+      - "CLAIMS EXPERIENCE"
+
+  - namespace: "doctype"
+    value: "endorsement"
+    priority: 8
+    keywords_any:
+      - "POLICY CHANGE"
+      - "ENDORSEMENT NUMBER"
+      - "THIS ENDORSEMENT CHANGES THE POLICY"
+
+  - namespace: "doctype"
+    value: "invoice"
+    priority: 8
+    keywords_any:
+      - "PREMIUM INVOICE"
+      - "AMOUNT DUE"
+      - "PREMIUM DUE"
+
+  - namespace: "doctype"
+    value: "application"
+    priority: 7
+    keywords_all:
+      - "APPLICANT"
+      - "SIGNATURE"
+      - "DATE OF APPLICATION"
+
+  - namespace: "stage"
+    value: "bind"
+    priority: 9
+    keywords_any:
+      - "BIND CONFIRMATION"
+      - "BOUND AS OF"
+      - "COVERAGE IS BOUND"
+
 email_patterns:
   - pattern: "(?i)bind|bound"
     tags: [{namespace: "stage", value: "bind"}]

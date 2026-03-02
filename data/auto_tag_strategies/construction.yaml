@@ -123,6 +123,50 @@ topic_extraction:
       display: "Fire Protection"
       keywords: ["fire", "sprinkler", "alarm", "suppression"]
 
+keyword_rules:
+  - namespace: "doctype"
+    value: "submittal"
+    priority: 9
+    keywords_any:
+      - "SUBMITTAL TRANSMITTAL"
+      - "SHOP DRAWING"
+      - "PRODUCT DATA SUBMITTAL"
+      - "SUBMITTAL NO"
+
+  - namespace: "doctype"
+    value: "rfi"
+    priority: 9
+    keywords_any:
+      - "REQUEST FOR INFORMATION"
+      - "RFI NO"
+      - "CLARIFICATION REQUESTED"
+
+  - namespace: "doctype"
+    value: "change_order"
+    priority: 10
+    keywords_any:
+      - "CHANGE ORDER NO"
+      - "CONSTRUCTION CHANGE DIRECTIVE"
+      - "CHANGE IN CONTRACT"
+
+  - namespace: "doctype"
+    value: "contract"
+    priority: 8
+    keywords_any:
+      - "AIA DOCUMENT A101"
+      - "AIA DOCUMENT A201"
+      - "GENERAL CONDITIONS OF THE CONTRACT"
+      - "SUBCONTRACT AGREEMENT"
+
+  - namespace: "doctype"
+    value: "pay_app"
+    priority: 9
+    keywords_any:
+      - "APPLICATION FOR PAYMENT"
+      - "AIA G702"
+      - "SCHEDULE OF VALUES"
+      - "CONTINUATION SHEET"
+
 llm_prompt: |
   Classify this construction project document. Return JSON only.
 
