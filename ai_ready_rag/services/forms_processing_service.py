@@ -205,11 +205,13 @@ class FormsProcessingService:
         )
 
         # 4. Match (FormsProcessingService owns this decision)
+        # Pass tenant_id=None so "default" tenant templates are visible to all tenants.
+        # tenant-specific templates (if any) will also match because list_templates
+        # with tenant_id=None returns all templates regardless of their tenant_id.
         try:
             match = await asyncio.to_thread(
                 router.try_match,
                 str(file_path),
-                tenant_id=settings.default_tenant_id,
             )
         except Exception as e:
             logger.warning("forms.match.error", extra={"document_id": document.id, "error": str(e)})
