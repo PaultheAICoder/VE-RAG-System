@@ -186,7 +186,7 @@ class ClaudeQueryService:
             ["claude", "-p", full_prompt],
             capture_output=True,
             text=True,
-            timeout=getattr(self._settings, "claude_enrichment_timeout", 120),
+            timeout=getattr(self._settings, "claude_query_timeout", 300),
             env=self._clean_env(),
         )
         if result.returncode != 0:

@@ -420,6 +420,7 @@ class Settings(BaseSettings):
     claude_query_model_simple: str = CLAUDE_QUERY_MODEL_SIMPLE
     claude_query_model_complex: str = CLAUDE_QUERY_MODEL_COMPLEX
     claude_query_cost_limit_usd: float = 50.0  # monthly cap
+    claude_query_timeout: int = 300  # seconds — CLI queries can take longer than enrichment
 
     # ---------------------------------------------------------------------------
     # Database / Vector backend — Issue #374
