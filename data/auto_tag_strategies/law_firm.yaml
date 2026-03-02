@@ -113,6 +113,50 @@ topic_extraction:
       display: "Estate Planning"
       keywords: ["trust", "will", "estate", "probate", "beneficiary"]
 
+keyword_rules:
+  - namespace: "doctype"
+    value: "contract"
+    priority: 9
+    keywords_any:
+      - "THIS AGREEMENT IS ENTERED INTO"
+      - "TERMS AND CONDITIONS"
+      - "PARTIES AGREE AS FOLLOWS"
+
+  - namespace: "doctype"
+    value: "pleading"
+    priority: 9
+    keywords_any:
+      - "COMES NOW THE PLAINTIFF"
+      - "IN THE CIRCUIT COURT"
+      - "PETITION FOR"
+      - "COMPLAINT FOR"
+
+  - namespace: "doctype"
+    value: "discovery"
+    priority: 8
+    keywords_any:
+      - "INTERROGATORIES"
+      - "REQUEST FOR PRODUCTION"
+      - "REQUEST FOR ADMISSION"
+      - "SUBPOENA DUCES TECUM"
+
+  - namespace: "doctype"
+    value: "court_order"
+    priority: 10
+    keywords_any:
+      - "IT IS HEREBY ORDERED"
+      - "THE COURT FINDS"
+      - "ORDER OF THE COURT"
+      - "JUDGMENT IS ENTERED"
+
+  - namespace: "doctype"
+    value: "correspondence"
+    priority: 5
+    keywords_any:
+      - "DEAR COUNSEL"
+      - "PLEASE BE ADVISED"
+      - "ENCLOSED PLEASE FIND"
+
 llm_prompt: |
   Classify this legal document. Return JSON only.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,7 @@ from ai_ready_rag.services.auto_tagging.models import (
     DocumentTypeConfig,
     EmailPattern,
     EntityExtractionConfig,
+    KeywordRule,
     NamespaceConfig,
     StrategyYAML,
     TopicExtractionConfig,
@@ -23,6 +25,21 @@ from ai_ready_rag.services.auto_tagging.models import (
 from ai_ready_rag.services.auto_tagging.transforms import get_transform, resolve_entity
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_for_keyword_match(text: str, case_sensitive: bool = False) -> str:
+    """Normalize text for keyword matching.
+
+    1. Unicode NFC normalization (canonical decomposition + composition)
+    2. Collapse all whitespace sequences to a single space
+    3. Strip leading/trailing whitespace
+    4. Case fold to uppercase (unless case_sensitive=True)
+    """
+    text = unicodedata.normalize("NFC", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not case_sensitive:
+        text = text.upper()
+    return text
 
 
 @dataclass
@@ -90,6 +107,7 @@ class AutoTagStrategy:
         topic_extraction: TopicExtractionConfig | None,
         llm_prompt_template: str,
         email_patterns: list[EmailPattern],
+        keyword_rules: list[KeywordRule] | None = None,
     ) -> None:
         self.id = id
         self.name = name
@@ -103,6 +121,7 @@ class AutoTagStrategy:
         self.topic_extraction = topic_extraction
         self.llm_prompt_template = llm_prompt_template
         self.email_patterns = email_patterns
+        self.keyword_rules = keyword_rules or []
 
     @classmethod
     def load(cls, path: str) -> AutoTagStrategy:
@@ -159,6 +178,7 @@ class AutoTagStrategy:
             topic_extraction=validated.topic_extraction,
             llm_prompt_template=validated.llm_prompt,
             email_patterns=validated.email_patterns,
+            keyword_rules=validated.keyword_rules,
         )
 
     def parse_path(self, source_path: str) -> list[AutoTag]:
@@ -408,5 +428,60 @@ class AutoTagStrategy:
                     email_pattern.pattern,
                     exc_info=True,
                 )
+
+        return tags
+
+    def parse_keywords(self, content_preview: str) -> list[AutoTag]:
+        """Scan normalized extracted text against keyword_rules.
+
+        Args:
+            content_preview: First 1500 chars of normalized Docling-extracted text.
+                Caller is responsible for normalization and truncation.
+
+        Returns:
+            At most one AutoTag per namespace (highest-priority matching rule).
+        """
+        if not self.keyword_rules or not content_preview:
+            return []
+
+        by_namespace: dict[str, list[KeywordRule]] = {}
+        for rule in self.keyword_rules:
+            by_namespace.setdefault(rule.namespace, []).append(rule)
+
+        tags: list[AutoTag] = []
+
+        for namespace, rules in by_namespace.items():
+            for rule in sorted(rules, key=lambda r: r.priority, reverse=True):
+                haystack = content_preview  # already normalized by caller
+
+                any_match = (
+                    any(
+                        normalize_for_keyword_match(kw, rule.case_sensitive) in haystack
+                        for kw in rule.keywords_any
+                    )
+                    if rule.keywords_any
+                    else True
+                )
+                all_match = (
+                    all(
+                        normalize_for_keyword_match(kw, rule.case_sensitive) in haystack
+                        for kw in rule.keywords_all
+                    )
+                    if rule.keywords_all
+                    else True
+                )
+
+                if any_match and all_match:
+                    tags.append(
+                        AutoTag(
+                            namespace=namespace,
+                            value=rule.value,
+                            source="keyword",
+                            confidence=1.0,
+                            strategy_id=self.id,
+                            strategy_version=self.version,
+                        )
+                    )
+                    break  # highest-priority match wins for this namespace
 
         return tags

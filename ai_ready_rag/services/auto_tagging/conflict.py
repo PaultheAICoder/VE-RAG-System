@@ -15,15 +15,22 @@ from ai_ready_rag.services.auto_tagging.models import AutoTag
 # Namespace authority table: which source wins on conflict
 PATH_AUTHORITATIVE = {"client", "year", "stage"}
 LLM_AUTHORITATIVE = {"doctype", "topic", "entity"}
+KEYWORD_AUTHORITATIVE = {"doctype", "topic", "entity", "stage"}
 
 
 class ConflictRecord(TypedDict):
-    """Record of a single namespace conflict between path and LLM tags."""
+    """Record of a single namespace conflict between path and override tags.
+
+    The override_value/override_source fields replace the legacy llm_value field.
+    Existing provenance JSON may contain llm_value; readers should check for
+    override_value first, falling back to llm_value for backward compatibility.
+    """
 
     namespace: str
     path_value: str
-    llm_value: str
-    winner: str  # "path" | "llm"
+    override_value: str  # was: llm_value
+    override_source: str  # "keyword" | "llm"
+    winner: str  # "path" | "keyword" | "llm"
     reason: str
 
 
@@ -87,7 +94,8 @@ def resolve_conflicts(
                     ConflictRecord(
                         namespace=ns,
                         path_value=pt.value,
-                        llm_value=llm_tag.value,
+                        override_value=llm_tag.value,
+                        override_source="llm",
                         winner="path",
                         reason=f"{ns}: path is authoritative",
                     )
@@ -103,7 +111,8 @@ def resolve_conflicts(
                         ConflictRecord(
                             namespace=ns,
                             path_value=pt.value,
-                            llm_value=llm_tag.value,
+                            override_value=llm_tag.value,
+                            override_source="llm",
                             winner="llm",
                             reason=(
                                 f"{ns}: LLM confidence {llm_tag.confidence} "
@@ -118,7 +127,8 @@ def resolve_conflicts(
                         ConflictRecord(
                             namespace=ns,
                             path_value=pt.value,
-                            llm_value=llm_tag.value,
+                            override_value=llm_tag.value,
+                            override_source="llm",
                             winner="path",
                             reason=(
                                 f"{ns}: LLM confidence {llm_tag.confidence} "
@@ -133,13 +143,63 @@ def resolve_conflicts(
                     ConflictRecord(
                         namespace=ns,
                         path_value=pt.value,
-                        llm_value=llm_tag.value,
+                        override_value=llm_tag.value,
+                        override_source="llm",
                         winner="path",
                         reason=f"{ns}: unknown namespace, path wins by default",
                     )
                 )
 
     return winning_llm, losing_path, conflicts
+
+
+def resolve_keyword_conflicts(
+    path_tags: list[AutoTag],
+    keyword_tags: list[AutoTag],
+) -> tuple[list[AutoTag], list[AutoTag], list[ConflictRecord]]:
+    """Resolve keyword-vs-path conflicts.
+
+    Only removes path tags — never manual, email, or other source tags.
+
+    Args:
+        path_tags: Path-derived AutoTag objects (from provenance).
+        keyword_tags: Keyword-derived AutoTag objects (from parse_keywords).
+
+    Returns:
+        Tuple of (winning_keyword_tags, losing_path_tags, conflict_records).
+    """
+    path_by_ns: dict[str, list[AutoTag]] = {}
+    for pt in path_tags:
+        if pt.source == "path":
+            path_by_ns.setdefault(pt.namespace, []).append(pt)
+
+    winning: list[AutoTag] = []
+    losing_path: list[AutoTag] = []
+    conflicts: list[ConflictRecord] = []
+
+    for kw_tag in keyword_tags:
+        ns = kw_tag.namespace
+        path_in_ns = path_by_ns.get(ns)
+        if path_in_ns and ns in KEYWORD_AUTHORITATIVE:
+            for pt in path_in_ns:
+                if pt not in losing_path:
+                    losing_path.append(pt)
+                conflicts.append(
+                    ConflictRecord(
+                        namespace=ns,
+                        path_value=pt.value,
+                        override_value=kw_tag.value,
+                        override_source="keyword",
+                        winner="keyword",
+                        reason=f"{ns}: keyword rule (priority>0) overrides path",
+                    )
+                )
+            winning.append(kw_tag)
+        else:
+            # No path conflict, or namespace not overrideable — keyword passes through
+            winning.append(kw_tag)
+
+    return winning, losing_path, conflicts
 
 
 def enforce_guardrail(
