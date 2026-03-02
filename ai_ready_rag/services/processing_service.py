@@ -934,7 +934,29 @@ class ProcessingService:
                     )
                     for i, r in enumerate(rows)
                 ]
+                tags_before = {t.name for t in document.tags}
                 await self._run_keyword_rules(document, chunks, db)
+                tags_after = {t.name for t in document.tags}
+
+                # If keyword rules changed tags, sync to vector metadata
+                if tags_before != tags_after:
+                    new_tags = [t.name for t in document.tags]
+                    vec_rows = db.execute(
+                        sa_text("SELECT id, metadata_ FROM chunk_vectors WHERE document_id = :did"),
+                        {"did": document.id},
+                    ).fetchall()
+                    for vr in vec_rows:
+                        meta = json.loads(vr[1] or "{}")
+                        meta["tags"] = new_tags
+                        db.execute(
+                            sa_text("UPDATE chunk_vectors SET metadata_ = :meta WHERE id = :vid"),
+                            {"meta": json.dumps(meta), "vid": vr[0]},
+                        )
+                    db.flush()
+                    logger.info(
+                        "keyword_rules.vector_tags_synced",
+                        extra={"document_id": document.id, "tags": new_tags},
+                    )
         except Exception as e:
             logger.warning(
                 "Keyword rules failed for %s: %s",
