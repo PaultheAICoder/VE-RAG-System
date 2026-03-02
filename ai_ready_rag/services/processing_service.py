@@ -391,6 +391,16 @@ class ProcessingService:
             # Calculate word count
             word_count = sum(len(c.text.split()) for c in chunks)
 
+            # --- Layer 2: Keyword Rules ---
+            try:
+                await self._run_keyword_rules(document, chunks, db)
+            except Exception as e:
+                logger.warning(
+                    "Keyword rule evaluation failed for %s, continuing with path tags: %s",
+                    document.id,
+                    e,
+                )
+
             # Generate summary chunk if enabled
             summary_meta_extra: dict | None = None
             if self.settings.generate_summaries:

@@ -20,9 +20,11 @@ class APIClient {
     return headers;
   }
 
-  private async handleResponse<T>(response: Response): Promise<T> {
+  private async handleResponse<T>(response: Response, endpoint?: string): Promise<T> {
     if (!response.ok) {
-      if (response.status === 401) {
+      // Don't trigger logout loop on auth endpoints
+      const isAuthEndpoint = endpoint?.includes('/api/auth/');
+      if (response.status === 401 && !isAuthEndpoint) {
         useAuthStore.getState().logout();
       }
       const error = await response.json().catch(() => ({ detail: 'Request failed' }));
@@ -44,18 +46,16 @@ class APIClient {
       method: 'GET',
       headers: this.getHeaders(),
     });
-    return this.handleResponse<T>(response);
+    return this.handleResponse<T>(response, endpoint);
   }
 
   async post<T>(endpoint: string, data?: unknown): Promise<T> {
-    console.log('API POST:', endpoint, data);
     const response = await fetch(`${this.baseUrl}${endpoint}`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: data ? JSON.stringify(data) : undefined,
     });
-    console.log('API Response:', response.status);
-    return this.handleResponse<T>(response);
+    return this.handleResponse<T>(response, endpoint);
   }
 
   async put<T>(endpoint: string, data: unknown): Promise<T> {
@@ -64,7 +64,7 @@ class APIClient {
       headers: this.getHeaders(),
       body: JSON.stringify(data),
     });
-    return this.handleResponse<T>(response);
+    return this.handleResponse<T>(response, endpoint);
   }
 
   async patch<T>(endpoint: string, data: unknown): Promise<T> {
@@ -73,7 +73,7 @@ class APIClient {
       headers: this.getHeaders(),
       body: JSON.stringify(data),
     });
-    return this.handleResponse<T>(response);
+    return this.handleResponse<T>(response, endpoint);
   }
 
   async delete<T>(endpoint: string, data?: unknown): Promise<T> {
@@ -82,7 +82,7 @@ class APIClient {
       headers: this.getHeaders(),
       body: data ? JSON.stringify(data) : undefined,
     });
-    return this.handleResponse<T>(response);
+    return this.handleResponse<T>(response, endpoint);
   }
 }
 

@@ -704,10 +704,15 @@ class VERagFormDBAdapter:
         PostgreSQL never sees two identifiers that map to the same 63-char prefix.
 
         Only replaces identifiers that actually exceed the limit to minimise diff.
+
+        Uses a stable mapping so the same original identifier always produces
+        the same truncated name within a single SQL statement (critical for
+        ``col = EXCLUDED.col`` in ON CONFLICT clauses).
         """
         import re
 
-        seen: dict[str, int] = {}
+        seen: dict[str, int] = {}  # truncated_base -> next suffix counter
+        resolved: dict[str, str] = {}  # original_name -> final truncated name
         limit = cls._PG_MAX_IDENTIFIER_LEN
 
         def replace_identifier(m: re.Match) -> str:
@@ -715,7 +720,11 @@ class VERagFormDBAdapter:
             if len(ident) <= limit:
                 seen.setdefault(ident, 1)
                 return f'"{ident}"'
+            # Return cached result if we already resolved this identifier
+            if ident in resolved:
+                return f'"{resolved[ident]}"'
             new_ident = cls._deduplicate_identifier(ident, seen)
+            resolved[ident] = new_ident
             if new_ident != ident:
                 logger.debug(
                     "forms.column_truncated: '%s' → '%s'",
@@ -778,6 +787,17 @@ class VERagFormDBAdapter:
         # Translate SQLite INSERT OR REPLACE to PostgreSQL ON CONFLICT upsert
         sql = self._translate_insert_or_replace(sql)
         sql = self._sanitize_identifiers(sql)
+        # Make ALTER TABLE ADD COLUMN idempotent — truncated identifiers may
+        # collide with existing columns when a second document triggers schema
+        # evolution with the same long field name.
+        import re
+
+        sql = re.sub(
+            r"ALTER\s+TABLE\s+(.+?)\s+ADD\s+COLUMN\s+(?!IF\s+NOT\s+EXISTS\b)",
+            r"ALTER TABLE \1 ADD COLUMN IF NOT EXISTS ",
+            sql,
+            flags=re.IGNORECASE,
+        )
         with self._connect() as conn:
             with conn.cursor() as cur:
                 # Set search_path so unqualified table names (from ingestkit_forms
