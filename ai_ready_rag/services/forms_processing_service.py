@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # Error codes that trigger fallback to standard chunker
 _FALLBACK_ERROR_CODES = {"E_FORM_NO_MATCH", "E_FORM_UNSUPPORTED_FORMAT"}
 
+# Checkbox/binary field values that carry no semantic meaning and dilute embeddings
+_BINARY_FIELD_VALUES = {"0", "1", "\\"}
+
 # High-risk PII patterns for redaction (SSN, EIN, account numbers)
 _HIGH_RISK_PATTERNS = [
     r"\b\d{3}-\d{2}-\d{4}\b",  # SSN
@@ -423,8 +426,11 @@ class FormsProcessingService:
                 return 0
             fields: dict[str, str] = {}
             for col, val in row.items():
-                if val is not None and str(val).strip():
-                    fields[col] = str(val).strip()
+                v = str(val).strip() if val is not None else ""
+                # Skip empty and binary checkbox values (0, 1, \) — they carry
+                # no semantic meaning and dilute chunk embeddings.
+                if v and v not in _BINARY_FIELD_VALUES:
+                    fields[col] = v
         finally:
             conn.close()
 
@@ -563,6 +569,46 @@ class FormsProcessingService:
         # 7. Write new chunks to pgvector via the adapter
         count = vector_store.upsert_chunks("", chunks_to_upsert)
 
+        # 7a. Generate a natural-language synopsis chunk via Claude CLI.
+        #     Stored at chunk_index=9999 so it ranks highly for coverage queries.
+        synopsis = self._generate_forms_synopsis(fields, template_name, settings)
+        if synopsis:
+            try:
+                synopsis_embedding = embedder.embed([synopsis])[0]
+                synopsis_id = f"{document.id}_form_synopsis"
+                synopsis_meta = BaseChunkMetadata(
+                    chunk_index=9999,
+                    section_title="Coverage Synopsis",
+                    source_format="form_synopsis",
+                    ingestion_method="rechunk",
+                    parser_version="ve-rag-rechunk-1.0",
+                    ingest_key="",
+                    chunk_hash="",
+                    source_uri=str(document.file_path or ""),
+                    ingest_run_id="",
+                )
+                vector_store.upsert_chunks(
+                    "",
+                    [
+                        ChunkPayload(
+                            id=synopsis_id,
+                            text=synopsis,
+                            vector=synopsis_embedding,
+                            metadata=synopsis_meta,
+                        )
+                    ],
+                )
+                logger.info(
+                    "forms.synopsis.stored",
+                    extra={"document_id": document.id, "length": len(synopsis)},
+                )
+                count += 1
+            except Exception as exc:
+                logger.warning(
+                    "forms.synopsis.store_failed",
+                    extra={"document_id": document.id, "error": str(exc)},
+                )
+
         # 8. Delete original mega-chunk AFTER successful upsert of new chunks.
         #    This ordering prevents data loss: if embedding or upsert fails above,
         #    the exception propagates and original chunks are preserved.
@@ -598,6 +644,62 @@ class FormsProcessingService:
         # Replace underscores with spaces
         name = name.replace("_", " ")
         return name.strip()
+
+    @staticmethod
+    def _generate_forms_synopsis(
+        fields: dict[str, str],
+        template_name: str,
+        settings: Settings,
+    ) -> str | None:
+        """Generate a natural-language synopsis of form fields via Claude CLI.
+
+        Returns synopsis text, or None if Claude CLI is unavailable/disabled.
+        Only runs when CLAUDE_BACKEND=cli.
+        """
+        import os
+        import subprocess
+
+        claude_backend = getattr(settings, "claude_backend", "api")
+        if claude_backend != "cli":
+            return None
+
+        # Build condensed field text (skip metadata/internal columns)
+        lines = [f"{k}: {v}" for k, v in fields.items() if not k.startswith("_")]
+        field_text = "\n".join(lines[:200])  # cap at 200 fields
+
+        prompt = (
+            f"You are reviewing a {template_name} insurance form. "
+            "Summarize the key coverage details in 3-5 sentences covering: "
+            "insured name, policy number (if present), insurer(s), "
+            "coverage types, dollar limits for each coverage, and effective dates. "
+            "Be precise — include all dollar amounts exactly as given.\n\n"
+            f"Form fields:\n{field_text}"
+        )
+
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        try:
+            proc = subprocess.run(
+                ["claude", "-p", prompt],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "forms.synopsis.cli_failed",
+                    extra={
+                        "returncode": proc.returncode,
+                        "stderr": proc.stderr.strip(),
+                    },
+                )
+                return None
+            synopsis = proc.stdout.strip()
+            return synopsis if synopsis else None
+        except Exception as exc:
+            logger.warning("forms.synopsis.error", extra={"error": str(exc)})
+            return None
 
     async def _compensate(
         self,
