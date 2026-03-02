@@ -886,3 +886,154 @@ class ProcessingService:
 
         # Flush to ensure tag changes are visible before vector indexing
         db.flush()
+
+    async def _run_keyword_rules(
+        self,
+        document: Document,
+        chunks: list[ChunkInfo],
+        db: Session,
+    ) -> None:
+        """Evaluate keyword rules against extracted text and swap tags if matched.
+
+        Runs after Docling extraction (chunks available), before LLM classification
+        and vector indexing. Modifies document.tags and document.auto_tag_source
+        in-place. Caller must db.commit() after this returns.
+        """
+        if not (
+            self.settings.auto_tagging_enabled
+            and document.auto_tag_strategy
+            and document.source_path
+        ):
+            return
+
+        # Load strategy
+        from ai_ready_rag.services.auto_tagging import AutoTagStrategy
+        from ai_ready_rag.services.auto_tagging.strategy import (
+            normalize_for_keyword_match,
+        )
+
+        strategy_name = document.auto_tag_strategy or self.settings.auto_tagging_strategy
+        strategy_path = Path(self.settings.auto_tagging_strategies_dir) / f"{strategy_name}.yaml"
+        strategy = AutoTagStrategy.load(str(strategy_path))
+
+        if not strategy.keyword_rules:
+            return
+
+        # Assemble content preview: post-filter chunks, chunk_index order,
+        # space-separated, normalized, truncated at 1500 chars
+        raw_preview = " ".join(chunk.text for chunk in chunks)
+        content_preview = normalize_for_keyword_match(raw_preview, case_sensitive=False)
+        content_preview = content_preview[:1500]
+
+        if not content_preview:
+            return
+
+        keyword_auto_tags = strategy.parse_keywords(content_preview)
+        if not keyword_auto_tags:
+            return
+
+        # Reconstruct path-derived AutoTags from provenance
+        path_auto_tags = self._get_path_auto_tags_from_provenance(document)
+
+        # Resolve keyword-vs-path conflicts
+        from ai_ready_rag.services.auto_tagging.conflict import (
+            resolve_keyword_conflicts,
+        )
+
+        winning_kw, losing_path, keyword_conflicts = resolve_keyword_conflicts(
+            path_tags=path_auto_tags,
+            keyword_tags=keyword_auto_tags,
+        )
+
+        # Swap tags in DB: remove path losers, add keyword winners
+        self._apply_keyword_tag_swaps(document, winning_kw, losing_path, strategy, db)
+
+        # Update provenance with keyword results
+        self._update_provenance_with_keywords(document, keyword_auto_tags, keyword_conflicts)
+
+    def _get_path_auto_tags_from_provenance(self, document: Document) -> list:
+        """Reconstruct path-derived AutoTag objects from provenance JSON.
+
+        Uses provenance.path_candidates to identify which tags are path-derived
+        and therefore eligible for keyword override. Tags not in provenance
+        (manual, email) are excluded — they are immutable to Layer 2.
+        """
+        from ai_ready_rag.services.auto_tagging.models import AutoTag
+
+        provenance = json.loads(document.auto_tag_source or "{}")
+        path_candidates = provenance.get("path_candidates", [])
+
+        tags = []
+        for candidate in path_candidates:
+            tags.append(
+                AutoTag(
+                    namespace=candidate["namespace"],
+                    value=candidate["value"],
+                    source="path",
+                    confidence=candidate.get("confidence", 1.0),
+                )
+            )
+        return tags
+
+    def _apply_keyword_tag_swaps(
+        self,
+        document: Document,
+        winning_kw: list,
+        losing_path: list,
+        strategy,
+        db: Session,
+    ) -> None:
+        """Remove losing path tags from document, add winning keyword tags.
+
+        Only removes tags identified as path-derived via provenance.
+        Manual and other-source tags are never touched.
+        Calls db.flush() to ensure corrected tags are visible before vector indexing.
+        """
+        losing_names = {f"{t.namespace}:{t.value}" for t in losing_path}
+
+        # Remove only path-derived losing tags
+        if losing_names:
+            document.tags = [t for t in document.tags if t.name not in losing_names]
+
+        # Add winning keyword tags
+        from ai_ready_rag.services.document_service import DocumentService
+
+        doc_service = DocumentService(db, self.settings)
+        existing_tag_names = {t.name for t in document.tags}
+        for kw in winning_kw:
+            if kw.tag_name not in existing_tag_names:
+                tag_obj = doc_service.ensure_tag_exists(
+                    tag_name=kw.tag_name,
+                    display_name=kw.display_name,
+                    namespace=kw.namespace,
+                    strategy=strategy,
+                    created_by=document.uploaded_by,
+                )
+                if tag_obj is not None:
+                    document.tags.append(tag_obj)
+                    existing_tag_names.add(kw.tag_name)
+
+        db.flush()  # Corrected tags visible to subsequent vector indexing
+
+    def _update_provenance_with_keywords(
+        self,
+        document: Document,
+        keyword_auto_tags: list,
+        keyword_conflicts: list,
+    ) -> None:
+        """Update provenance JSON with keyword_candidates and keyword conflicts."""
+        provenance = json.loads(document.auto_tag_source or "{}")
+
+        provenance["keyword_candidates"] = [
+            {"namespace": t.namespace, "value": t.value} for t in keyword_auto_tags
+        ]
+
+        # Merge keyword conflicts into existing conflicts list
+        existing_conflicts = provenance.get("conflicts", [])
+        existing_conflicts.extend(keyword_conflicts)
+        provenance["conflicts"] = existing_conflicts
+
+        # Update applied list to reflect current tags
+        provenance["applied"] = [t.name for t in document.tags]
+
+        document.auto_tag_source = json.dumps(provenance)
