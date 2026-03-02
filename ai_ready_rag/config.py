@@ -70,8 +70,8 @@ PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
         "db_pool_size": 5,
         "db_pool_max_overflow": 10,
         "db_pool_timeout": 30,
-        # Concurrent processing - 2 to avoid tesseract/OCR race conditions (same as Spark)
-        "max_concurrent_processing": 2,
+        # Concurrent processing - 1 to avoid OOM on 8GB WSL2 (Docling+OCR+Ollama all on CPU)
+        "max_concurrent_processing": 1,
         # Summary generation
         "generate_summaries": True,
         # ingestkit - all enabled (mirrors Spark)
@@ -210,8 +210,8 @@ class Settings(BaseSettings):
 
     # Redis / ARQ Task Queue
     redis_url: str = "redis://localhost:6379"
-    arq_job_timeout: int = 600  # 10 min max for document processing
-    arq_max_jobs: int = 2  # Max concurrent ARQ jobs (low to avoid tesseract race conditions)
+    arq_job_timeout: int = 1800  # 30 min max for document processing (CPU OCR can take 7+ min)
+    arq_max_jobs: int = 1  # Match max_concurrent_processing to prevent semaphore starvation
     arq_health_check_interval: int = 60  # Seconds between worker health checks
     use_arq_worker: bool = True  # Set False to bypass ARQ and use BackgroundTasks
 
