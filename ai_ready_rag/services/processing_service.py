@@ -197,6 +197,7 @@ class ProcessingService:
                     # ingestkit-forms handled it (success or failure)
                     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
                     if result.success:
+                        await self._run_keyword_rules_from_vectors(document, db)
                         document.status = "ready"
                         document.chunk_count = result.chunk_count
                         document.processing_time_ms = processing_time_ms
@@ -228,6 +229,7 @@ class ProcessingService:
                     # ingestkit-image handled it (success or failure), no fallback
                     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
                     if result.success:
+                        await self._run_keyword_rules_from_vectors(document, db)
                         document.status = "ready"
                         document.chunk_count = result.chunk_count
                         document.processing_time_ms = processing_time_ms
@@ -253,6 +255,7 @@ class ProcessingService:
                     # ingestkit-email handled it (success or failure), no fallback
                     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
                     if result.success:
+                        await self._run_keyword_rules_from_vectors(document, db)
                         document.status = "ready"
                         document.chunk_count = result.chunk_count
                         document.processing_time_ms = processing_time_ms
@@ -277,6 +280,7 @@ class ProcessingService:
                     # ingestkit handled it (success or failure)
                     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
                     if result.success:
+                        await self._run_keyword_rules_from_vectors(document, db)
                         document.status = "ready"
                         document.chunk_count = result.chunk_count
                         document.processing_time_ms = processing_time_ms
@@ -313,6 +317,7 @@ class ProcessingService:
                 if not should_fallback and result is not None:
                     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
                     if result.success:
+                        await self._run_keyword_rules_from_vectors(document, db)
                         document.status = "ready"
                         document.chunk_count = result.chunk_count
                         document.processing_time_ms = processing_time_ms
@@ -897,6 +902,46 @@ class ProcessingService:
         # Flush to ensure tag changes are visible before vector indexing
         db.flush()
 
+    async def _run_keyword_rules_from_vectors(
+        self,
+        document: Document,
+        db: Session,
+    ) -> None:
+        """Run keyword rules using chunks already stored in chunk_vectors.
+
+        Called by ingestkit processing paths (forms, image, email, xlsx, csv)
+        which index chunks before returning. Reads the indexed text back and
+        delegates to _run_keyword_rules for the actual evaluation.
+        """
+        try:
+            from sqlalchemy import text as sa_text
+
+            rows = db.execute(
+                sa_text(
+                    "SELECT chunk_text FROM chunk_vectors "
+                    "WHERE document_id = :did ORDER BY chunk_index"
+                ),
+                {"did": document.id},
+            ).fetchall()
+            if rows:
+                chunks = [
+                    ChunkInfo(
+                        text=r[0],
+                        chunk_index=i,
+                        page_number=None,
+                        section=None,
+                        token_count=len(r[0]) // 4,
+                    )
+                    for i, r in enumerate(rows)
+                ]
+                await self._run_keyword_rules(document, chunks, db)
+        except Exception as e:
+            logger.warning(
+                "Keyword rules failed for %s: %s",
+                document.id,
+                e,
+            )
+
     async def _run_keyword_rules(
         self,
         document: Document,
@@ -942,8 +987,20 @@ class ProcessingService:
         if not keyword_auto_tags:
             return
 
-        # Reconstruct path-derived AutoTags from provenance
+        # Reconstruct path-derived AutoTags from provenance.
+        # Fallback: if provenance is empty (ingestkit paths skip LLM classification),
+        # re-parse path tags from source_path so conflict resolution can still swap.
         path_auto_tags = self._get_path_auto_tags_from_provenance(document)
+        if not path_auto_tags and document.source_path:
+            path_auto_tags = strategy.parse_path(document.source_path)
+            # Seed provenance so _update_provenance_with_keywords has path_candidates
+            if path_auto_tags:
+                provenance = json.loads(document.auto_tag_source or "{}")
+                provenance["path_candidates"] = [
+                    {"namespace": t.namespace, "value": t.value, "confidence": t.confidence}
+                    for t in path_auto_tags
+                ]
+                document.auto_tag_source = json.dumps(provenance)
 
         # Resolve keyword-vs-path conflicts
         from ai_ready_rag.services.auto_tagging.conflict import (
@@ -993,17 +1050,38 @@ class ProcessingService:
         strategy,
         db: Session,
     ) -> None:
-        """Remove losing path tags from document, add winning keyword tags.
+        """Remove conflicting tags from document, add winning keyword tags.
 
-        Only removes tags identified as path-derived via provenance.
-        Manual and other-source tags are never touched.
+        Removes tags in two ways:
+        1. Tags explicitly identified as path-derived losers via provenance.
+        2. Any existing tag in a KEYWORD_AUTHORITATIVE namespace that conflicts
+           with a winning keyword tag (handles LLM-assigned tags too).
+        Manual tags without a namespace prefix are never touched.
         Calls db.flush() to ensure corrected tags are visible before vector indexing.
         """
+        from ai_ready_rag.services.auto_tagging.conflict import KEYWORD_AUTHORITATIVE
+
         losing_names = {f"{t.namespace}:{t.value}" for t in losing_path}
 
-        # Remove only path-derived losing tags
-        if losing_names:
-            document.tags = [t for t in document.tags if t.name not in losing_names]
+        # Build set of winning keyword namespaces and their tag names
+        winning_ns_tags = {}  # namespace -> winning tag_name
+        for kw in winning_kw:
+            if kw.namespace in KEYWORD_AUTHORITATIVE:
+                winning_ns_tags[kw.namespace] = kw.tag_name
+
+        # Remove tags: explicit losers from provenance + any conflicting auto-tag
+        # in the same authoritative namespace as a winning keyword
+        def should_remove(tag) -> bool:
+            if tag.name in losing_names:
+                return True
+            # Check if tag is in a winning keyword's namespace with a different value
+            if ":" in tag.name:
+                ns = tag.name.split(":", 1)[0]
+                if ns in winning_ns_tags and tag.name != winning_ns_tags[ns]:
+                    return True
+            return False
+
+        document.tags = [t for t in document.tags if not should_remove(t)]
 
         # Add winning keyword tags
         from ai_ready_rag.services.document_service import DocumentService
