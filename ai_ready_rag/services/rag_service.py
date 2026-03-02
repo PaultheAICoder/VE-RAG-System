@@ -1332,8 +1332,11 @@ class RAGService:
         # 6. Limit per document
         limited = self._limit_per_document(deduped, max_per_doc=self.max_chunks_per_doc)
 
-        # 7. Return top-k
-        return limited[:max_chunks]
+        # 7. Return top-k — synopsis chunks (chunk_index=9999) always included, not counted
+        #    against max_chunks so they can't be crowded out by high-scoring regular chunks.
+        synopsis = [c for c in limited if c.chunk_index == 9999]
+        regular = [c for c in limited if c.chunk_index != 9999]
+        return regular[:max_chunks] + synopsis
 
     def _deduplicate_chunks(self, chunks: list[SearchResult]) -> list[SearchResult]:
         """Remove near-duplicate chunks using Jaccard similarity.
